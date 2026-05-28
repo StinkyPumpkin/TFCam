@@ -1,0 +1,62 @@
+Description
+-----------
+
+TFCam is a free camera overhaul for Skyrim SE. It adds camera roll, an attached camera light with full color control, time freeze, FOV adjustment, and screenshot hotkeys — all configurable through an in-game menu. No ESP required.
+
+
+Installation
+------------
+
+1. Install SKSE (https://skse.silverlock.org/)
+2. Install SKSE Menu Framework (https://www.nexusmods.com/skyrimspecialedition/mods/96353)
+3. Install TFCam with your mod manager (or manually drop the SKSE folder into Data)
+4. Launch the game. Open the SKSE Menu Framework overlay to configure settings under "FreeCam"
+
+
+Main Features
+-------------
+
+**Camera Roll**
+Hold Q or E while in free camera to roll the camera left or right. Smooth, frame-rate independent rotation. Adjustable roll speed in the menu. Resets automatically when exiting free camera. This is the feature no other free camera mod on Nexus offers.
+
+**Camera Light**
+Shift+Scroll Up to turn on a light attached to the camera. Keep scrolling to increase brightness and radius. Shift+Scroll Down to dim and turn off. Full control in the menu:
+- Radius slider (100–5000)
+- Fade/brightness slider (0.1–10.0)
+- RGB color sliders with live color preview
+- 7 one-click presets: Default, Wide, MageLight, Torch, FaceLight, Candlelight, Moonlight
+- Checkboxes to choose whether scroll adjusts brightness, radius, or both
+- Proper renderer integration — the light casts real illumination, not just a flat glow
+
+**Freeze Time**
+Shift+Middle Mouse Button freezes/unfreezes game time while in free camera. Everything stops — NPCs, particles, weather — while you fly around freely. Time restores automatically when exiting free camera.
+
+**FOV Control**
+Mouse scroll wheel adjusts field of view while in free camera. Adjustable step size in the menu (0.5–10.0 per tick). FOV range 10–150. FOV automatically restores to your original value when exiting free camera.
+
+**Screenshot Hotkey**
+Middle Mouse Button triggers a screenshot (sends PrintScreen) while in free camera.
+
+**Toggle Hotkey**
+Bind any key to toggle free camera on/off from the menu. Press-to-bind — just click the button and press your key.
+
+**All Settings Persist**
+Every setting saves to TFCam.ini automatically. Your configuration is remembered between sessions.
+
+
+Requirements
+------------
+
+- Skyrim SE 1.6.x (AE/SE)
+- SKSE (https://skse.silverlock.org/)
+- Address Library for SKSE Plugins (https://www.nexusmods.com/skyrimspecialedition/mods/32444)
+- SKSE Menu Framework (https://www.nexusmods.com/skyrimspecialedition/mods/96353)
+
+
+Shout Outs
+----------
+
+- SKSE Team for making native plugin development possible
+- Meh321 for Address Library
+- Jeir for SKSE Menu Framework
+- CharmedBaryon and the CommonLibSSE-NG contributors
