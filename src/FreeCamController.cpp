@@ -186,10 +186,12 @@ namespace FreeCam {
                 if (device == RE::INPUT_DEVICE::kMouse && btn->IsDown()) {
                     if (code == RE::BSWin32MouseDevice::Key::kMiddleButton) {
                         bool shiftHeld = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-                        if (shiftHeld) {
+                        if (shiftHeld && s_settings.freezeTimeKey == 0) {
+                            // Shift+MMB freeze only when no keyboard key is bound
                             FreezeTime::Toggle();
                             SKSE::log::info("Freeze toggled via Shift+MMB");
-                        } else {
+                        } else if (!shiftHeld && s_settings.screenshotKey == 0) {
+                            // MMB screenshot only when no keyboard key is bound
                             keybd_event(VK_SNAPSHOT, 0x2C, 0, 0);
                             keybd_event(VK_SNAPSHOT, 0x2C, KEYEVENTF_KEYUP, 0);
                             SKSE::log::info("Screenshot triggered (PrintScreen)");
