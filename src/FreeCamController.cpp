@@ -240,6 +240,15 @@ namespace FreeCam {
                         if (code == s_settings.resetKey) {
                             ResetAll();
                         }
+                        if (s_settings.freezeTimeKey > 0 && code == s_settings.freezeTimeKey) {
+                            FreezeTime::Toggle();
+                            SKSE::log::info("Freeze toggled via keyboard key");
+                        }
+                        if (s_settings.screenshotKey > 0 && code == s_settings.screenshotKey) {
+                            keybd_event(VK_SNAPSHOT, 0x2C, 0, 0);
+                            keybd_event(VK_SNAPSHOT, 0x2C, KEYEVENTF_KEYUP, 0);
+                            SKSE::log::info("Screenshot triggered via keyboard key");
+                        }
                     }
                 }
             }

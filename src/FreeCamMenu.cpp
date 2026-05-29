@@ -15,6 +15,8 @@ namespace FreeCamMenu {
     static int   s_rollCCWKey    = 0x10;   // Q
     static int   s_rollCWKey     = 0x12;   // E
     static int   s_resetKey      = 0x13;   // R
+    static int   s_freezeTimeKey = 0;
+    static int   s_screenshotKey = 0;
     static float s_rollSpeed     = 1.5f;
     static float s_fovStep       = 2.0f;
 
@@ -120,6 +122,8 @@ namespace FreeCamMenu {
     static void SaveINI() {
         WriteINIInt("Hotkeys", "iFreeFlyKey", s_freeFlyKey);
         WriteINIInt("Hotkeys", "iResetKey", s_resetKey);
+        WriteINIInt("Hotkeys", "iFreezeTimeKey", s_freezeTimeKey);
+        WriteINIInt("Hotkeys", "iScreenshotKey", s_screenshotKey);
         WriteINIInt("Roll", "iKeyCCW", s_rollCCWKey);
         WriteINIInt("Roll", "iKeyCW", s_rollCWKey);
         WriteINIFloat("Roll", "fSpeed", s_rollSpeed);
@@ -135,11 +139,13 @@ namespace FreeCamMenu {
 
     static void ApplyToController() {
         auto& settings = FreeCam::GetSettings();
-        settings.rollCCWKey = static_cast<std::uint32_t>(s_rollCCWKey);
-        settings.rollCWKey  = static_cast<std::uint32_t>(s_rollCWKey);
-        settings.resetKey   = static_cast<std::uint32_t>(s_resetKey);
-        settings.rollSpeed  = s_rollSpeed;
-        settings.fovStep    = s_fovStep;
+        settings.rollCCWKey     = static_cast<std::uint32_t>(s_rollCCWKey);
+        settings.rollCWKey      = static_cast<std::uint32_t>(s_rollCWKey);
+        settings.resetKey       = static_cast<std::uint32_t>(s_resetKey);
+        settings.freezeTimeKey  = static_cast<std::uint32_t>(s_freezeTimeKey);
+        settings.screenshotKey  = static_cast<std::uint32_t>(s_screenshotKey);
+        settings.rollSpeed      = s_rollSpeed;
+        settings.fovStep        = s_fovStep;
     }
 
     // --- Press-to-bind key widget (returns true if key changed) ---
@@ -232,6 +238,14 @@ namespace FreeCamMenu {
             SaveINI();
         }
         if (KeyBindField("resetK", "Reset FOV / Roll", &s_resetKey)) {
+            ApplyToController();
+            SaveINI();
+        }
+        if (KeyBindField("freezeK", "Freeze Time (keyboard)", &s_freezeTimeKey)) {
+            ApplyToController();
+            SaveINI();
+        }
+        if (KeyBindField("sshotK", "Screenshot (keyboard)", &s_screenshotKey)) {
             ApplyToController();
             SaveINI();
         }
@@ -328,7 +342,7 @@ namespace FreeCamMenu {
 
         ImGuiMCP::Separator();
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
-            "Shift+MMB: Freeze Time | MMB: Screenshot | Wheel: FOV");
+            "Shift+MMB / Key: Freeze | MMB / Key: Screenshot | Wheel: FOV");
 
         if (FreezeTime::IsFrozen()) {
             ImGuiMCP::TextColored({ 0.3f, 0.8f, 1.0f, 1.0f }, "Time: FROZEN");
@@ -348,8 +362,10 @@ namespace FreeCamMenu {
             return GetPrivateProfileIntA(section, key, def, ini);
         };
 
-        s_freeFlyKey   = readInt("Hotkeys", "iFreeFlyKey", 0);
-        s_resetKey     = readInt("Hotkeys", "iResetKey", 0x13);
+        s_freeFlyKey    = readInt("Hotkeys", "iFreeFlyKey", 0);
+        s_resetKey      = readInt("Hotkeys", "iResetKey", 0x13);
+        s_freezeTimeKey = readInt("Hotkeys", "iFreezeTimeKey", 0);
+        s_screenshotKey = readInt("Hotkeys", "iScreenshotKey", 0);
 
         s_rollCCWKey = readInt("Roll", "iKeyCCW", 0x10);
         s_rollCWKey  = readInt("Roll", "iKeyCW",  0x12);
@@ -379,9 +395,11 @@ namespace FreeCamMenu {
         settings.fovMin     = fovMin;
         settings.fovMax     = fovMax;
         settings.rollSpeed  = s_rollSpeed;
-        settings.rollCCWKey = static_cast<std::uint32_t>(s_rollCCWKey);
-        settings.rollCWKey  = static_cast<std::uint32_t>(s_rollCWKey);
-        settings.resetKey   = static_cast<std::uint32_t>(s_resetKey);
+        settings.rollCCWKey    = static_cast<std::uint32_t>(s_rollCCWKey);
+        settings.rollCWKey     = static_cast<std::uint32_t>(s_rollCWKey);
+        settings.resetKey      = static_cast<std::uint32_t>(s_resetKey);
+        settings.freezeTimeKey = static_cast<std::uint32_t>(s_freezeTimeKey);
+        settings.screenshotKey = static_cast<std::uint32_t>(s_screenshotKey);
 
         SKSE::log::info("FreeCamMenu: loaded — freeFlyKey=0x{:X} resetKey=0x{:X}",
             s_freeFlyKey, s_resetKey);
