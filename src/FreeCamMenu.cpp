@@ -2,6 +2,9 @@
 #include "FreeCamController.h"
 #include "FreezeTime.h"
 #include "CameraLight.h"
+#include "HUDHider.h"
+
+#include <RE/I/INISettingCollection.h>
 
 #include "SKSEMenuFramework.h"
 
@@ -19,6 +22,11 @@ namespace FreeCamMenu {
     static int   s_screenshotKey = 0;
     static float s_rollSpeed     = 1.5f;
     static float s_fovStep       = 2.0f;
+    static float s_cameraSpeed   = 10.0f;  // game default fFreeCameraTranslationSpeed
+    static bool  s_hideHUD       = false;
+    static bool  s_blockAttacks  = true;
+    static int   s_lmbAction     = 0;
+    static int   s_rmbAction     = 0;
 
     // Camera light settings
     static bool  s_lightScrollBrightness = true;
@@ -29,7 +37,8 @@ namespace FreeCamMenu {
     static int   s_lightColorG    = 255;
     static int   s_lightColorB    = 255;
 
-    int GetFreeFlyKey()   { return s_freeFlyKey; }
+    int   GetFreeFlyKey()   { return s_freeFlyKey; }
+    float GetCameraSpeed()  { return s_cameraSpeed; }
 
     // --- Key capture state (thread-safe) ---
     static std::atomic<bool> s_capturing{false};
@@ -37,6 +46,8 @@ namespace FreeCamMenu {
     static int*              s_bindTarget = nullptr;
 
     bool IsCapturingKey() { return s_capturing.load(); }
+
+    bool IsOverlayOpen() { return SKSEMenuFramework::IsAnyBlockingWindowOpened(); }
 
     void StartKeyCapture() {
         s_capturedKey.store(-1);
@@ -124,6 +135,11 @@ namespace FreeCamMenu {
         WriteINIInt("Hotkeys", "iResetKey", s_resetKey);
         WriteINIInt("Hotkeys", "iFreezeTimeKey", s_freezeTimeKey);
         WriteINIInt("Hotkeys", "iScreenshotKey", s_screenshotKey);
+        WriteINIFloat("Camera", "fSpeed", s_cameraSpeed);
+        WriteINIInt("Camera", "bHideHUD", s_hideHUD ? 1 : 0);
+        WriteINIInt("Camera", "bBlockAttacks", s_blockAttacks ? 1 : 0);
+        WriteINIInt("Camera", "iLMBAction", s_lmbAction);
+        WriteINIInt("Camera", "iRMBAction", s_rmbAction);
         WriteINIInt("Roll", "iKeyCCW", s_rollCCWKey);
         WriteINIInt("Roll", "iKeyCW", s_rollCWKey);
         WriteINIFloat("Roll", "fSpeed", s_rollSpeed);
@@ -146,6 +162,9 @@ namespace FreeCamMenu {
         settings.screenshotKey  = static_cast<std::uint32_t>(s_screenshotKey);
         settings.rollSpeed      = s_rollSpeed;
         settings.fovStep        = s_fovStep;
+        settings.blockAttacks   = s_blockAttacks;
+        settings.lmbAction      = s_lmbAction;
+        settings.rmbAction      = s_rmbAction;
     }
 
     // --- Press-to-bind key widget (returns true if key changed) ---
@@ -218,6 +237,16 @@ namespace FreeCamMenu {
         ImGuiMCP::Separator();
 
         ImGuiMCP::SetNextItemWidth(150.0f);
+        if (ImGuiMCP::SliderFloat("Camera Speed##speed", &s_cameraSpeed, 0.5f, 50.0f, "%.1f")) {
+            auto* ini = RE::INISettingCollection::GetSingleton();
+            if (ini) {
+                auto* setting = ini->GetSetting("fFreeCameraTranslationSpeed:Camera");
+                if (setting) setting->data.f = s_cameraSpeed;
+            }
+            SaveINI();
+        }
+
+        ImGuiMCP::SetNextItemWidth(150.0f);
         if (ImGuiMCP::SliderFloat("FOV Step (mouse wheel)##fov", &s_fovStep, 0.5f, 10.0f, "%.1f")) {
             ApplyToController();
             SaveINI();
@@ -227,6 +256,40 @@ namespace FreeCamMenu {
         if (ImGuiMCP::SliderFloat("Roll Speed##roll", &s_rollSpeed, 0.1f, 5.0f, "%.1f")) {
             ApplyToController();
             SaveINI();
+        }
+
+        if (ImGuiMCP::Checkbox("Hide HUD in Free Cam##hideHud", &s_hideHUD)) {
+            HUDHider::SetEnabled(s_hideHUD);
+            SaveINI();
+        }
+
+        // Surgical attack block via AttackBlockHandler hook (no ControlMap — that
+        // crashed in free cam; this leaves mouse camera-vertical untouched).
+        if (ImGuiMCP::Checkbox("Block attacks##blockatk", &s_blockAttacks)) {
+            ApplyToController();
+            SaveINI();
+        }
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "Blocks weapon/spell attacks and enables L/R click remap below.");
+
+        // LMB/RMB remap — only available when attacks are blocked (otherwise
+        // both the remap action and the attack would fire simultaneously).
+        if (s_blockAttacks) {
+            static const char* actionNames[] = {
+                "None (block only)", "Screenshot", "Freeze Time", "Toggle Light",
+                "FOV In", "FOV Out", "Reset FOV/Roll",
+                "Move Forward (W)", "Move Backward (S)", "Move Up", "Move Down"
+            };
+            ImGuiMCP::SetNextItemWidth(180.0f);
+            if (ImGuiMCP::Combo("Left click##lmbAct", &s_lmbAction, actionNames, 11, 11)) {
+                ApplyToController();
+                SaveINI();
+            }
+            ImGuiMCP::SetNextItemWidth(180.0f);
+            if (ImGuiMCP::Combo("Right click##rmbAct", &s_rmbAction, actionNames, 11, 11)) {
+                ApplyToController();
+                SaveINI();
+            }
         }
 
         if (KeyBindField("rollCCW", "Roll Left", &s_rollCCWKey)) {
@@ -342,7 +405,7 @@ namespace FreeCamMenu {
 
         ImGuiMCP::Separator();
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
-            "Shift+MMB / Key: Freeze | MMB / Key: Screenshot | Wheel: FOV");
+            "Alt: Slow camera | Shift+MMB / Key: Freeze | MMB / Key: Screenshot");
 
         if (FreezeTime::IsFrozen()) {
             ImGuiMCP::TextColored({ 0.3f, 0.8f, 1.0f, 1.0f }, "Time: FROZEN");
@@ -375,6 +438,13 @@ namespace FreeCamMenu {
         float fovMin = readFloat("FOV", "fMin", 10.0f);
         float fovMax = readFloat("FOV", "fMax", 150.0f);
 
+        s_cameraSpeed = readFloat("Camera", "fSpeed", 10.0f);
+        s_hideHUD     = readInt("Camera", "bHideHUD", 0) != 0;
+        s_blockAttacks = readInt("Camera", "bBlockAttacks", 1) != 0;
+        s_lmbAction   = readInt("Camera", "iLMBAction", 0);
+        s_rmbAction   = readInt("Camera", "iRMBAction", 0);
+        HUDHider::SetEnabled(s_hideHUD);
+
         // Camera light settings
         s_lightScrollBrightness = readInt("Light", "bScrollBrightness", 1) != 0;
         s_lightScrollRadius     = readInt("Light", "bScrollRadius", 1) != 0;
@@ -400,6 +470,9 @@ namespace FreeCamMenu {
         settings.resetKey      = static_cast<std::uint32_t>(s_resetKey);
         settings.freezeTimeKey = static_cast<std::uint32_t>(s_freezeTimeKey);
         settings.screenshotKey = static_cast<std::uint32_t>(s_screenshotKey);
+        settings.blockAttacks  = s_blockAttacks;
+        settings.lmbAction     = s_lmbAction;
+        settings.rmbAction     = s_rmbAction;
 
         SKSE::log::info("FreeCamMenu: loaded — freeFlyKey=0x{:X} resetKey=0x{:X}",
             s_freeFlyKey, s_resetKey);
@@ -423,6 +496,19 @@ namespace FreeCamMenu {
             return true;
         }
         return false;
+    }
+
+    void ApplyGameSettings() {
+        auto* ini = RE::INISettingCollection::GetSingleton();
+        if (ini) {
+            auto* setting = ini->GetSetting("fFreeCameraTranslationSpeed:Camera");
+            if (setting) {
+                setting->data.f = s_cameraSpeed;
+                SKSE::log::info("FreeCamMenu: camera speed set to {:.1f}", s_cameraSpeed);
+            } else {
+                SKSE::log::warn("FreeCamMenu: fFreeCameraTranslationSpeed:Camera not found");
+            }
+        }
     }
 
     void Register() {

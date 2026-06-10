@@ -5,6 +5,7 @@
 #include <ShlObj.h>
 #include <KnownFolders.h>
 #include <filesystem>
+#include <cstdio>
 
 namespace {
     std::filesystem::path ResolveLogDirectory() {
@@ -41,6 +42,7 @@ namespace {
         case SKSE::MessagingInterface::kDataLoaded:
             FreeCam::Install();
             FreeCamMenu::Register();
+            FreeCamMenu::ApplyGameSettings();
             break;
         }
     }
@@ -50,7 +52,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     SKSE::Init(skse);
     InitializeLogging();
 
-    SKSE::log::info("FreeCam v{} loaded", "0.6.0");
+    SKSE::log::info("FreeCam v{} loaded", "0.7.0");
 
     FreeCamMenu::LoadSettings();
 

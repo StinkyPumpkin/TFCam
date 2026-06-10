@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(TFCam VERSION 0.6.0 LANGUAGES CXX)
+project(TFCam VERSION 0.7.0 LANGUAGES CXX)
 
 if(DEFINED ENV{SKYRIM_MODS_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_MODS_FOLDER}")
     set(OUTPUT_FOLDER "$ENV{SKYRIM_MODS_FOLDER}/FreeCam--Claude")
@@ -14,6 +14,7 @@ add_commonlibsse_plugin(${PROJECT_NAME} SOURCES
     src/FreeCamMenu.cpp
     src/FreezeTime.cpp
     src/CameraLight.cpp
+    src/HUDHider.cpp
 )
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 target_precompile_headers(${PROJECT_NAME} PRIVATE PCH.h)
