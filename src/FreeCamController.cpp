@@ -166,6 +166,7 @@ namespace FreeCam {
         if (ui->GameIsPaused()) return true;
         if (ui->IsMenuOpen("Cursor Menu")) return true;
         if (ui->IsMenuOpen("Console")) return true;
+        if (ui->IsMenuOpen("RaceSex Menu")) return true;
         return false;
     }
 
