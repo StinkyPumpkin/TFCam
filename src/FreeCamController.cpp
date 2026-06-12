@@ -73,7 +73,6 @@ namespace FreeCam {
                 cam->worldFOV = s_baseFOV;
         }
         s_rollAngle = 0.0f;
-        s_baseFOV   = 0.0f;
     }
 
     void ResetAll() {
@@ -306,6 +305,7 @@ namespace FreeCam {
             s_menuSaveValid = false;
             s_menuRestorePending = false;
             HUDHider::OnFreeCamEnter();
+
             SKSE::log::info("FreeCam entered, FOV={:.1f}", s_baseFOV);
         }
         static inline REL::Relocation<decltype(thunk)> func;
@@ -360,15 +360,24 @@ namespace FreeCam {
         btn->heldDownSecs = 0.0f;
     }
 
-    // --- Menu open/close watcher (menu-exit camera restore) ---
-    // When a GAME menu closes while we're in free cam, flag a restore so the next
-    // FreeCameraState::Update re-asserts our saved spot (after any other mod's reset).
+    // --- Menu open/close watcher (menu-exit camera restore + FavoritesMenu kill) ---
     class MenuWatch : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
     public:
         static MenuWatch* GetSingleton() { static MenuWatch instance; return &instance; }
         RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_evt,
             RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
-            if (a_evt && !a_evt->opening && IsActive()) {
+            if (!a_evt || !IsActive())
+                return RE::BSEventNotifyControl::kContinue;
+
+            if (a_evt->opening) {
+                if (a_evt->menuName == RE::FavoritesMenu::MENU_NAME) {
+                    auto* queue = RE::UIMessageQueue::GetSingleton();
+                    if (queue) {
+                        queue->AddMessage(RE::FavoritesMenu::MENU_NAME,
+                            RE::UI_MESSAGE_TYPE::kForceHide, nullptr);
+                    }
+                }
+            } else {
                 s_menuRestorePending = true;
             }
             return RE::BSEventNotifyControl::kContinue;
@@ -538,12 +547,12 @@ namespace FreeCam {
                 }
 
                 // -------------------------------------------------------
-                // Keyboard: Q/E = roll, R = reset
+                // Keyboard: Q/E = roll, R = reset, Tab block
                 // -------------------------------------------------------
                 if (device == RE::INPUT_DEVICE::kKeyboard) {
                     bool consumed = false;
 
-                    if (btn->IsPressed()) {
+                    if (!AnyMenuOpen() && btn->IsPressed()) {
                         if (code == s_settings.rollCCWKey) {
                             s_rollAngle -= s_settings.rollSpeed * s_frameDt;
                             consumed = true;
@@ -553,7 +562,17 @@ namespace FreeCam {
                         }
                     }
 
-                    if (btn->IsDown()) {
+                    // Block Tab from reaching Wheeler/FavoritesMenu
+                    if (code == 0x0F) {
+                        consumed = true;
+                    }
+
+                    // Block roll keys from reaching engine (prevents FavoritesMenu)
+                    if (code == s_settings.rollCCWKey || code == s_settings.rollCWKey) {
+                        consumed = true;
+                    }
+
+                    if (!AnyMenuOpen() && btn->IsDown()) {
                         if (code == s_settings.resetKey) {
                             ResetAll();
                             consumed = true;
@@ -571,10 +590,9 @@ namespace FreeCam {
                         }
                     }
 
-                    // Consume handled keys so they don't propagate to SkyUI
-                    // favorites, hotbar, or other game systems.
                     if (consumed) {
                         ConsumeButton(btn);
+                        btn->userEvent = "";
                         continue;
                     }
                 }
@@ -617,10 +635,11 @@ namespace FreeCam {
             SKSE::log::info("Menu watcher registered (menu-exit camera restore)");
         }
 
-        auto* idm = RE::BSInputDeviceManager::GetSingleton();
-        if (idm) {
+        // Input listener for roll keys, Tab blocking, mouse remaps.
+        if (auto* idm = RE::BSInputDeviceManager::GetSingleton()) {
             idm->AddEventSink(InputListener::GetSingleton());
             SKSE::log::info("Input listener registered");
         }
+
     }
 }
