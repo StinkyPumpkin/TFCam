@@ -15,7 +15,6 @@ namespace FreeCam {
         std::uint32_t freezeTimeKey   = 0;    // keyboard shortcut for freeze time
         std::uint32_t screenshotKey   = 0;    // keyboard shortcut for screenshot
         bool          blockAttacks    = true;  // block LMB/RMB attacks in free cam (default on)
-        bool          rollCorrectMovement = false; // correct WASD/mouselook for roll angle
         int           lmbAction       = 0;    // remap LMB → see MouseAction enum
         int           rmbAction       = 0;    // remap RMB → see MouseAction enum
     };
