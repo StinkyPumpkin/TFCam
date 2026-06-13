@@ -450,7 +450,7 @@ namespace FreeCam {
                 // -------------------------------------------------------
                 // Global hotkeys (work in any camera state)
                 // -------------------------------------------------------
-                if (device == RE::INPUT_DEVICE::kKeyboard && btn->IsDown()) {
+                if (device == RE::INPUT_DEVICE::kKeyboard && btn->IsDown() && !AnyMenuOpen()) {
                     int flyKey = FreeCamMenu::GetFreeFlyKey();
                     if (flyKey > 0 && code == static_cast<std::uint32_t>(flyKey)) {
                         auto* cam = RE::PlayerCamera::GetSingleton();
