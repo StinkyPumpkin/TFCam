@@ -25,6 +25,7 @@ namespace FreeCamMenu {
     static float s_cameraSpeed   = 10.0f;  // game default fFreeCameraTranslationSpeed
     static bool  s_hideHUD       = false;
     static bool  s_blockAttacks  = true;
+    static bool  s_rollCorrectMovement = false;
     static int   s_lmbAction     = 0;
     static int   s_rmbAction     = 0;
 
@@ -143,6 +144,7 @@ namespace FreeCamMenu {
         WriteINIInt("Roll", "iKeyCCW", s_rollCCWKey);
         WriteINIInt("Roll", "iKeyCW", s_rollCWKey);
         WriteINIFloat("Roll", "fSpeed", s_rollSpeed);
+        WriteINIInt("Roll", "bCorrectMovement", s_rollCorrectMovement ? 1 : 0);
         WriteINIFloat("FOV", "fStep", s_fovStep);
         WriteINIInt("Light", "bScrollBrightness", s_lightScrollBrightness ? 1 : 0);
         WriteINIInt("Light", "bScrollRadius", s_lightScrollRadius ? 1 : 0);
@@ -163,6 +165,7 @@ namespace FreeCamMenu {
         settings.rollSpeed      = s_rollSpeed;
         settings.fovStep        = s_fovStep;
         settings.blockAttacks   = s_blockAttacks;
+        settings.rollCorrectMovement = s_rollCorrectMovement;
         settings.lmbAction      = s_lmbAction;
         settings.rmbAction      = s_rmbAction;
     }
@@ -257,6 +260,13 @@ namespace FreeCamMenu {
             ApplyToController();
             SaveINI();
         }
+
+        if (ImGuiMCP::Checkbox("Roll-correct movement##rollcorrect", &s_rollCorrectMovement)) {
+            ApplyToController();
+            SaveINI();
+        }
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "Adjusts WASD/mouselook to match the visual roll angle.");
 
         if (ImGuiMCP::Checkbox("Hide HUD in Free Cam##hideHud", &s_hideHUD)) {
             HUDHider::SetEnabled(s_hideHUD);
@@ -433,6 +443,7 @@ namespace FreeCamMenu {
         s_rollCCWKey = readInt("Roll", "iKeyCCW", 0x10);
         s_rollCWKey  = readInt("Roll", "iKeyCW",  0x12);
         s_rollSpeed  = readFloat("Roll", "fSpeed", 1.5f);
+        s_rollCorrectMovement = readInt("Roll", "bCorrectMovement", 0) != 0;
 
         s_fovStep = readFloat("FOV", "fStep", 2.0f);
         float fovMin = readFloat("FOV", "fMin", 10.0f);
@@ -471,6 +482,7 @@ namespace FreeCamMenu {
         settings.freezeTimeKey = static_cast<std::uint32_t>(s_freezeTimeKey);
         settings.screenshotKey = static_cast<std::uint32_t>(s_screenshotKey);
         settings.blockAttacks  = s_blockAttacks;
+        settings.rollCorrectMovement = s_rollCorrectMovement;
         settings.lmbAction     = s_lmbAction;
         settings.rmbAction     = s_rmbAction;
 

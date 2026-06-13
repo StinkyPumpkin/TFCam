@@ -242,7 +242,80 @@ namespace FreeCam {
                 reinterpret_cast<float*>(base + kOff_zUpDown)[1] = 0.0f;
             }
 
+            // Roll-corrected movement: save pre-Update state so we can rotate the
+            // engine's translation and rotation deltas by -rollAngle after Update.
+            RE::NiPoint3 preTranslation;
+            float prePitch = 0.0f, preYaw = 0.0f;
+            bool doRollCorrection = s_settings.rollCorrectMovement && s_rollAngle != 0.0f && a_this;
+            if (doRollCorrection) {
+                auto base = reinterpret_cast<std::uintptr_t>(a_this);
+                preTranslation = *reinterpret_cast<RE::NiPoint3*>(base + kOff_translation);
+                float* rot = reinterpret_cast<float*>(base + kOff_rotation);
+                prePitch = rot[0];
+                preYaw   = rot[1];
+            }
+
             func(a_this, a_next);  // vanilla Update
+
+            // Apply roll correction to the engine's WASD translation and mouselook deltas.
+            // The engine computes movement in un-rolled camera space; we rotate the deltas
+            // so WASD and mouse feel correct relative to the visually-rolled frame.
+            if (doRollCorrection && a_this) {
+                auto base = reinterpret_cast<std::uintptr_t>(a_this);
+                float* trans = reinterpret_cast<float*>(base + kOff_translation);
+                float* rot   = reinterpret_cast<float*>(base + kOff_rotation);
+
+                // --- Mouselook correction ---
+                // Engine mapped mouseX→yaw, mouseY→pitch. With roll, we need to
+                // rotate those deltas: the visual horizontal is no longer pure yaw.
+                float dPitch = rot[0] - prePitch;
+                float dYaw   = rot[1] - preYaw;
+                if (dPitch != 0.0f || dYaw != 0.0f) {
+                    float cR = std::cos(-s_rollAngle);
+                    float sR = std::sin(-s_rollAngle);
+                    rot[0] = prePitch + dPitch * cR - dYaw * sR;
+                    rot[1] = preYaw   + dPitch * sR + dYaw * cR;
+                }
+
+                // --- WASD translation correction ---
+                // Decompose delta into forward (along look) and lateral (perpendicular).
+                // Rotate lateral by -rollAngle around the look direction.
+                float dx = trans[0] - preTranslation.x;
+                float dy = trans[1] - preTranslation.y;
+                float dz = trans[2] - preTranslation.z;
+                if (dx != 0.0f || dy != 0.0f || dz != 0.0f) {
+                    float pitch = rot[0], yaw = rot[1];
+                    float cp = std::cos(pitch), sp = std::sin(pitch);
+                    float cy = std::cos(yaw),   sy = std::sin(yaw);
+
+                    // Look direction (forward axis)
+                    float fwd[3] = { sy * cp, cy * cp, -sp };
+                    // Project delta onto forward
+                    float fwdDot = dx * fwd[0] + dy * fwd[1] + dz * fwd[2];
+                    // Lateral = delta - forward projection
+                    float lat[3] = { dx - fwdDot * fwd[0], dy - fwdDot * fwd[1], dz - fwdDot * fwd[2] };
+
+                    // Rodrigues rotation of lateral around fwd by -rollAngle
+                    float cA = std::cos(-s_rollAngle);
+                    float sA = std::sin(-s_rollAngle);
+                    // cross(fwd, lat)
+                    float cross[3] = {
+                        fwd[1] * lat[2] - fwd[2] * lat[1],
+                        fwd[2] * lat[0] - fwd[0] * lat[2],
+                        fwd[0] * lat[1] - fwd[1] * lat[0]
+                    };
+                    float dotFL = fwd[0] * lat[0] + fwd[1] * lat[1] + fwd[2] * lat[2];
+                    float rotLat[3] = {
+                        lat[0] * cA + cross[0] * sA + fwd[0] * dotFL * (1.0f - cA),
+                        lat[1] * cA + cross[1] * sA + fwd[1] * dotFL * (1.0f - cA),
+                        lat[2] * cA + cross[2] * sA + fwd[2] * dotFL * (1.0f - cA)
+                    };
+
+                    trans[0] = preTranslation.x + fwdDot * fwd[0] + rotLat[0];
+                    trans[1] = preTranslation.y + fwdDot * fwd[1] + rotLat[1];
+                    trans[2] = preTranslation.z + fwdDot * fwd[2] + rotLat[2];
+                }
+            }
 
             // Continuous move actions (LMB/RMB remapped) — applied AFTER Update
             // by adding to translation. Only when blockAttacks is on (remap active).
