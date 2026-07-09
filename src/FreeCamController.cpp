@@ -63,6 +63,42 @@ namespace FreeCam {
         return cam && cam->IsInFreeCameraMode();
     }
 
+    // Pin / release the player character while free cam is active.
+    //
+    // In free camera the camera flies by reading raw movement input, but that same
+    // input ALSO drives the player character (the movement controls are enabled so
+    // the camera can fly) — so WASD walks the player. During a SexLab scene that
+    // drifts you out of alignment; pushed far it flings the player out of bounds and
+    // can crash on terrain LOD. A cinematic free cam should never move the CHARACTER.
+    //
+    // Fix = Papyrus Actor.SetDontMove: it freezes the ACTOR only. The free camera is
+    // a separate system (FreeCameraState translation), so it still flies. We do NOT
+    // touch EnablePlayerControls/DisablePlayerControls — that combination is what
+    // broke this before (killed the camera / left the player fully stuck). Runs on
+    // the main thread; state-guarded so each direction fires once.
+    static std::atomic<bool> s_playerPinned{ false };
+
+    void PinPlayer(bool a_on) {
+        if (s_playerPinned.exchange(a_on) == a_on) return;  // no state change
+        SKSE::log::info("PinPlayer({})", a_on);
+        SKSE::GetTaskInterface()->AddTask([a_on]() {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+            if (!player || !vm) return;
+            auto* policy = vm->GetObjectHandlePolicy();
+            if (!policy) return;
+            auto handle = policy->GetHandleForObject(
+                static_cast<RE::VMTypeID>(player->GetFormType()), player);
+            if (handle == policy->EmptyHandle()) return;
+            RE::BSTSmartPointer<RE::BSScript::Object> object;
+            vm->FindBoundObject(handle, "Actor", object);
+            if (!object) return;
+            auto args = RE::MakeFunctionArguments(bool(a_on));
+            RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> cb;
+            vm->DispatchMethodCall(object, "SetDontMove", args, cb);
+        });
+    }
+
     float GetRollDegrees() {
         return s_rollAngle * (180.0f / 3.14159265f);
     }
@@ -307,6 +343,9 @@ namespace FreeCam {
             s_menuRestorePending = false;
             HUDHider::OnFreeCamEnter();
 
+            // Freeze the CHARACTER while the camera flies (see PinPlayer note).
+            PinPlayer(true);
+
             SKSE::log::info("FreeCam entered, FOV={:.1f}", s_baseFOV);
         }
         static inline REL::Relocation<decltype(thunk)> func;
@@ -329,6 +368,9 @@ namespace FreeCam {
             // Turn off camera light and restore HUD before exiting free cam
             CameraLight::Cleanup();
             HUDHider::OnFreeCamExit();
+
+            // Release the character freeze as free cam exits.
+            PinPlayer(false);
 
             func(a_this);
 
