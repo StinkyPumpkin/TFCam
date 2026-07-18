@@ -304,7 +304,11 @@ namespace FreeCamMenu {
             SaveINI();
         }
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
-            "WASD move, PageUp/Dn up/down, hold Left Alt + mouse to look.");
+            "WASD move, PageUp/PageDown up/down.");
+        ImGuiMCP::TextColored({ 0.85f, 0.75f, 0.35f, 1.0f },
+            "You must HOLD LEFT ALT to look with the mouse.");
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "(Release Alt to free the mouse for dialogue options.)");
 
         if (KeyBindField("rollCCW", "Roll Left", &s_rollCCWKey)) {
             ApplyToController();
