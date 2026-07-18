@@ -6,6 +6,7 @@
 
 #include <RE/I/INISettingCollection.h>
 #include <RE/A/AttackBlockHandler.h>
+#include <RE/M/MouseMoveEvent.h>
 
 #include <cmath>
 #include <Windows.h>
@@ -44,6 +45,11 @@ namespace FreeCam {
     static LARGE_INTEGER s_qpcFreq = {};
     static LARGE_INTEGER s_qpcLast = {};
     static float         s_frameDt = 0.016f;
+
+    // --Claude: accumulated mouse delta for dialogue free-cam look. Written by the
+    // input sink (main thread), consumed+cleared every frame by the Update hook.
+    static float s_dlgMouseDX = 0.0f;
+    static float s_dlgMouseDY = 0.0f;
 
     static void UpdateFrameTimer() {
         LARGE_INTEGER now;
@@ -170,6 +176,14 @@ namespace FreeCam {
         return false;
     }
 
+    // --Claude: true while the vanilla Dialogue Menu is up. The game suppresses
+    // free-cam movement input in this state, so the dialogue free-cam feature
+    // drives the camera manually (see the Update hook).
+    static bool InDialogue() {
+        auto* ui = RE::UI::GetSingleton();
+        return ui && ui->IsMenuOpen("Dialogue Menu");
+    }
+
     // FreeCameraState internal member offsets (from FreeCameraFramework RE):
     //   0x44 BSTPoint2<float> zUpDown          (accumulated vertical)
     //   0x4C std::int16_t     verticalDirection (per-frame up/down input)
@@ -278,9 +292,63 @@ namespace FreeCam {
                 applyMove(s_settings.rmbAction, rmb);
             }
 
-            // Save the live free-cam transform as the menu-restore anchor — only while
-            // no menu is up, so we never anchor to a menu-camera / reset position.
-            if (a_this && !AnyMenuOpen()) {
+            // --- Dialogue free-cam (--Claude) --------------------------------
+            // The engine suppresses free-cam movement input while the Dialogue
+            // Menu is up. When the user opts in, we drive the camera ourselves:
+            //   WASD          → planar move (write translation directly)
+            //   PageUp/PageDn → rise / descend
+            //   hold Alt + mouse → look (yaw/pitch). Release Alt to free the
+            //                      mouse for clicking dialogue options.
+            // Pitching the view then holding W/S also climbs/descends, since the
+            // forward vector carries the pitch component.
+            if (s_settings.dialogueCam && a_this && InDialogue()) {
+                auto base = reinterpret_cast<std::uintptr_t>(a_this);
+                float* trans = reinterpret_cast<float*>(base + kOff_translation);
+                float* rot   = reinterpret_cast<float*>(base + kOff_rotation);
+
+                // Look — only while the hold-to-look key (Left Alt) is down.
+                if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
+                    constexpr float kSens     = 0.0025f;
+                    constexpr float kPitchLim = 1.55f;  // ~89°, avoid gimbal flip
+                    rot[1] += s_dlgMouseDX * kSens;     // yaw
+                    rot[0] += s_dlgMouseDY * kSens;     // pitch
+                    if (rot[0] >  kPitchLim) rot[0] =  kPitchLim;
+                    if (rot[0] < -kPitchLim) rot[0] = -kPitchLim;
+                }
+                s_dlgMouseDX = 0.0f;   // consume every frame (held or not)
+                s_dlgMouseDY = 0.0f;
+
+                // Move.
+                float speed = 10.0f;
+                if (auto* ini = RE::INISettingCollection::GetSingleton()) {
+                    if (auto* s = ini->GetSetting("fFreeCameraTranslationSpeed:Camera"))
+                        speed = s->data.f;
+                }
+                float amt = speed * s_frameDt * 30.0f;
+                float pitch = rot[0], yaw = rot[1];
+                float cp = std::cos(pitch), sp = std::sin(pitch);
+                auto down = [](int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; };
+
+                if (down('W') || down('S')) {
+                    float dir = down('W') ? 1.0f : -1.0f;
+                    trans[0] += std::sin(yaw) * cp * dir * amt;
+                    trans[1] += std::cos(yaw) * cp * dir * amt;
+                    trans[2] += -sp * dir * amt;
+                }
+                if (down('A') || down('D')) {
+                    float dir = down('D') ? 1.0f : -1.0f;   // strafe along camera-right
+                    trans[0] += std::cos(yaw) * dir * amt;
+                    trans[1] += -std::sin(yaw) * dir * amt;
+                }
+                if (down(VK_PRIOR)) trans[2] += amt;   // Page Up  → rise
+                if (down(VK_NEXT))  trans[2] -= amt;   // Page Down → descend
+            }
+
+            // Save the live free-cam transform as the menu-restore anchor — while no
+            // menu is up, OR (dialogue free-cam) while we're driving the camera during
+            // dialogue, so the menu-close restore sees no movement and never yanks us
+            // back to where the camera was before dialogue opened.
+            if (a_this && (!AnyMenuOpen() || (s_settings.dialogueCam && InDialogue()))) {
                 auto base = reinterpret_cast<std::uintptr_t>(a_this);
                 s_menuSaveTrans = *reinterpret_cast<RE::NiPoint3*>(base + kOff_translation);
                 float* rot = reinterpret_cast<float*>(base + kOff_rotation);
@@ -424,6 +492,16 @@ namespace FreeCam {
             if (active) UpdateFrameTimer();
 
             for (auto* evt = *a_events; evt; evt = evt->next) {
+                // --Claude: accumulate mouse movement for the dialogue free-cam
+                // look. Consumed+cleared each frame by the Update hook (only
+                // applied while the hold-to-look key is down).
+                if (active && s_settings.dialogueCam &&
+                    evt->GetEventType() == RE::INPUT_EVENT_TYPE::kMouseMove) {
+                    auto* mm = static_cast<RE::MouseMoveEvent*>(evt);
+                    s_dlgMouseDX += static_cast<float>(mm->mouseInputX);
+                    s_dlgMouseDY += static_cast<float>(mm->mouseInputY);
+                    continue;
+                }
                 if (evt->GetEventType() != RE::INPUT_EVENT_TYPE::kButton) continue;
 
                 auto* btn = evt->AsButtonEvent();
@@ -450,7 +528,8 @@ namespace FreeCam {
                 // -------------------------------------------------------
                 // Global hotkeys (work in any camera state)
                 // -------------------------------------------------------
-                if (device == RE::INPUT_DEVICE::kKeyboard && btn->IsDown() && !AnyMenuOpen()) {
+                if (device == RE::INPUT_DEVICE::kKeyboard && btn->IsDown() &&
+                    (!AnyMenuOpen() || (s_settings.dialogueCam && InDialogue()))) {
                     int flyKey = FreeCamMenu::GetFreeFlyKey();
                     if (flyKey > 0 && code == static_cast<std::uint32_t>(flyKey)) {
                         auto* cam = RE::PlayerCamera::GetSingleton();

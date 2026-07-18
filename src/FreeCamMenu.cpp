@@ -27,6 +27,7 @@ namespace FreeCamMenu {
     static bool  s_blockAttacks  = true;
     static int   s_lmbAction     = 0;
     static int   s_rmbAction     = 0;
+    static bool  s_dialogueCam   = false;  // --Claude: free-cam movement during dialogue
 
     // Camera light settings
     static bool  s_lightScrollBrightness = true;
@@ -138,6 +139,7 @@ namespace FreeCamMenu {
         WriteINIFloat("Camera", "fSpeed", s_cameraSpeed);
         WriteINIInt("Camera", "bHideHUD", s_hideHUD ? 1 : 0);
         WriteINIInt("Camera", "bBlockAttacks", s_blockAttacks ? 1 : 0);
+        WriteINIInt("Camera", "bDialogueCamera", s_dialogueCam ? 1 : 0);
         WriteINIInt("Camera", "iLMBAction", s_lmbAction);
         WriteINIInt("Camera", "iRMBAction", s_rmbAction);
         WriteINIInt("Roll", "iKeyCCW", s_rollCCWKey);
@@ -165,6 +167,7 @@ namespace FreeCamMenu {
         settings.blockAttacks   = s_blockAttacks;
         settings.lmbAction      = s_lmbAction;
         settings.rmbAction      = s_rmbAction;
+        settings.dialogueCam    = s_dialogueCam;
     }
 
     // --- Press-to-bind key widget (returns true if key changed) ---
@@ -291,6 +294,17 @@ namespace FreeCamMenu {
                 SaveINI();
             }
         }
+
+        // --Claude: allow the free camera to move during conversations. The game
+        // freezes free-cam movement while the Dialogue Menu is up; this drives it
+        // manually. WASD to move, PageUp/PageDown to rise/descend, hold Left Alt +
+        // mouse to look (release Alt to click dialogue options).
+        if (ImGuiMCP::Checkbox("Camera movement in dialogue##dlgcam", &s_dialogueCam)) {
+            ApplyToController();
+            SaveINI();
+        }
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "WASD move, PageUp/Dn up/down, hold Left Alt + mouse to look.");
 
         if (KeyBindField("rollCCW", "Roll Left", &s_rollCCWKey)) {
             ApplyToController();
@@ -441,6 +455,7 @@ namespace FreeCamMenu {
         s_cameraSpeed = readFloat("Camera", "fSpeed", 10.0f);
         s_hideHUD     = readInt("Camera", "bHideHUD", 0) != 0;
         s_blockAttacks = readInt("Camera", "bBlockAttacks", 1) != 0;
+        s_dialogueCam  = readInt("Camera", "bDialogueCamera", 0) != 0;
         s_lmbAction   = readInt("Camera", "iLMBAction", 0);
         s_rmbAction   = readInt("Camera", "iRMBAction", 0);
         HUDHider::SetEnabled(s_hideHUD);
@@ -473,6 +488,7 @@ namespace FreeCamMenu {
         settings.blockAttacks  = s_blockAttacks;
         settings.lmbAction     = s_lmbAction;
         settings.rmbAction     = s_rmbAction;
+        settings.dialogueCam   = s_dialogueCam;
 
         SKSE::log::info("FreeCamMenu: loaded — freeFlyKey=0x{:X} resetKey=0x{:X}",
             s_freeFlyKey, s_resetKey);
