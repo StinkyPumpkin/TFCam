@@ -297,14 +297,14 @@ namespace FreeCamMenu {
 
         // --Claude: allow the free camera to move during conversations. The game
         // freezes free-cam movement while the Dialogue Menu is up; this drives it
-        // manually. WASD to move, PageUp/PageDown to rise/descend, hold Left Alt +
+        // manually. WASD to move (pitch + W/S for vertical), hold Left Alt +
         // mouse to look (release Alt to click dialogue options).
         if (ImGuiMCP::Checkbox("Camera movement in dialogue##dlgcam", &s_dialogueCam)) {
             ApplyToController();
             SaveINI();
         }
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
-            "WASD move, PageUp/PageDown up/down.");
+            "WASD to move (look up/down + W/S to climb or descend).");
         ImGuiMCP::TextColored({ 0.85f, 0.75f, 0.35f, 1.0f },
             "You must HOLD LEFT ALT to look with the mouse.");
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },

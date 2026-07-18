@@ -295,8 +295,7 @@ namespace FreeCam {
             // --- Dialogue free-cam (--Claude) --------------------------------
             // The engine suppresses free-cam movement input while the Dialogue
             // Menu is up. When the user opts in, we drive the camera ourselves:
-            //   WASD          → planar move (write translation directly)
-            //   PageUp/PageDn → rise / descend
+            //   WASD          → move (write translation directly)
             //   hold Alt + mouse → look (yaw/pitch). Release Alt to free the
             //                      mouse for clicking dialogue options.
             // Pitching the view then holding W/S also climbs/descends, since the
@@ -340,8 +339,8 @@ namespace FreeCam {
                     trans[0] += std::cos(yaw) * dir * amt;
                     trans[1] += -std::sin(yaw) * dir * amt;
                 }
-                if (down(VK_PRIOR)) trans[2] += amt;   // Page Up  → rise
-                if (down(VK_NEXT))  trans[2] -= amt;   // Page Down → descend
+                // No dedicated up/down keys: pitch the view (Alt+mouse) and W/S
+                // climbs or dives, since the forward vector carries the pitch.
             }
 
             // Save the live free-cam transform as the menu-restore anchor — while no
