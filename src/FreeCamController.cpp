@@ -300,22 +300,43 @@ namespace FreeCam {
             //                      mouse for clicking dialogue options.
             // Pitching the view then holding W/S also climbs/descends, since the
             // forward vector carries the pitch component.
-            if (s_settings.dialogueCam && a_this && InDialogue()) {
+            // Seed accumulators from the live rotation the first frame we take over,
+            // and clear the seed whenever we're not driving, so re-entry re-seeds.
+            static float s_dlgYaw = 0.0f, s_dlgPitch = 0.0f;
+            static bool  s_dlgSeeded = false;
+            const bool inDlgCam = s_settings.dialogueCam && a_this && InDialogue();
+            if (!inDlgCam) s_dlgSeeded = false;
+
+            if (inDlgCam) {
                 auto base = reinterpret_cast<std::uintptr_t>(a_this);
                 float* trans = reinterpret_cast<float*>(base + kOff_translation);
                 float* rot   = reinterpret_cast<float*>(base + kOff_rotation);
+
+                // The vanilla Update re-aims the free-cam rotation at the speaker every
+                // frame during dialogue, which snapped an additive look straight back.
+                // So we hold our OWN absolute yaw/pitch and write it authoritatively.
+                if (!s_dlgSeeded) {
+                    s_dlgYaw   = rot[1];
+                    s_dlgPitch = rot[0];
+                    s_dlgSeeded = true;
+                }
 
                 // Look — only while the hold-to-look key (Left Alt) is down.
                 if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
                     constexpr float kSens     = 0.0025f;
                     constexpr float kPitchLim = 1.55f;  // ~89°, avoid gimbal flip
-                    rot[1] += s_dlgMouseDX * kSens;     // yaw
-                    rot[0] += s_dlgMouseDY * kSens;     // pitch
-                    if (rot[0] >  kPitchLim) rot[0] =  kPitchLim;
-                    if (rot[0] < -kPitchLim) rot[0] = -kPitchLim;
+                    s_dlgYaw   += s_dlgMouseDX * kSens;
+                    s_dlgPitch += s_dlgMouseDY * kSens;
+                    if (s_dlgPitch >  kPitchLim) s_dlgPitch =  kPitchLim;
+                    if (s_dlgPitch < -kPitchLim) s_dlgPitch = -kPitchLim;
                 }
                 s_dlgMouseDX = 0.0f;   // consume every frame (held or not)
                 s_dlgMouseDY = 0.0f;
+
+                // Write our orientation back every frame, overriding the vanilla
+                // per-frame reset so the view the user set actually sticks.
+                rot[1] = s_dlgYaw;
+                rot[0] = s_dlgPitch;
 
                 // Move.
                 float speed = 10.0f;
