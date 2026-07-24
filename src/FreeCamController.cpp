@@ -436,6 +436,27 @@ namespace FreeCam {
             FreezeTime::Restore();
             s_menuSaveValid = false;   // invalidate menu-restore anchor on exit
             s_menuRestorePending = false;
+
+            // --Claude 2026-07-24 (user report: "exiting tfcam, player turning was locked
+            // to the mouse"): a free-cam exit can strand ThirdPersonState with
+            // freeRotationEnabled=false — the state where mouse yaw steers the ACTOR
+            // instead of orbiting the camera. Re-assert it one tick after the state
+            // transition settles. Logged so a recurrence tells us if this was the cause.
+            if (auto* tasks = SKSE::GetTaskInterface()) {
+                tasks->AddTask([]() {
+                    auto* cam = RE::PlayerCamera::GetSingleton();
+                    if (!cam) return;
+                    auto& third = cam->cameraStates[RE::CameraState::kThirdPerson];
+                    if (third && cam->currentState.get() == third.get()) {
+                        auto* tps = static_cast<RE::ThirdPersonState*>(third.get());
+                        if (!tps->freeRotationEnabled) {
+                            tps->freeRotationEnabled = true;
+                            SKSE::log::info("FreeCam: third-person free rotation was OFF after exit - re-enabled");
+                        }
+                    }
+                });
+            }
+
             SKSE::log::info("FreeCam exited");
         }
         static inline REL::Relocation<decltype(thunk)> func;
