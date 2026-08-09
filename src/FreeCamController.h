@@ -18,6 +18,7 @@ namespace FreeCam {
         int           lmbAction       = 0;    // remap LMB → see MouseAction enum
         int           rmbAction       = 0;    // remap RMB → see MouseAction enum
         bool          dialogueCam     = false; // --Claude: allow free-cam movement during dialogue (WASD move, hold Alt to look)
+        bool          raceMenuCam     = true;  // --Claude: allow free-cam movement during RaceMenu / RaceSex Menu (WASD move, hold Alt to look)
     };
 
     // Actions that LMB/RMB can be remapped to.

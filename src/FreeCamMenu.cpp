@@ -28,6 +28,7 @@ namespace FreeCamMenu {
     static int   s_lmbAction     = 0;
     static int   s_rmbAction     = 0;
     static bool  s_dialogueCam   = false;  // --Claude: free-cam movement during dialogue
+    static bool  s_raceMenuCam   = true;   // --Claude: free-cam movement during RaceMenu (on by default)
 
     // Camera light settings
     static bool  s_lightScrollBrightness = true;
@@ -140,6 +141,7 @@ namespace FreeCamMenu {
         WriteINIInt("Camera", "bHideHUD", s_hideHUD ? 1 : 0);
         WriteINIInt("Camera", "bBlockAttacks", s_blockAttacks ? 1 : 0);
         WriteINIInt("Camera", "bDialogueCamera", s_dialogueCam ? 1 : 0);
+        WriteINIInt("Camera", "bRaceMenuCamera", s_raceMenuCam ? 1 : 0);
         WriteINIInt("Camera", "iLMBAction", s_lmbAction);
         WriteINIInt("Camera", "iRMBAction", s_rmbAction);
         WriteINIInt("Roll", "iKeyCCW", s_rollCCWKey);
@@ -168,6 +170,7 @@ namespace FreeCamMenu {
         settings.lmbAction      = s_lmbAction;
         settings.rmbAction      = s_rmbAction;
         settings.dialogueCam    = s_dialogueCam;
+        settings.raceMenuCam    = s_raceMenuCam;
     }
 
     // --- Press-to-bind key widget (returns true if key changed) ---
@@ -309,6 +312,15 @@ namespace FreeCamMenu {
             "You must HOLD LEFT ALT to look with the mouse.");
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
             "(Release Alt to free the mouse for dialogue options.)");
+
+        // --Claude: same manual-drive path for RaceMenu — fly around the character
+        // while it's open. Hold Left Alt + mouse to look; release Alt to click sliders.
+        if (ImGuiMCP::Checkbox("Camera movement in RaceMenu##racecam", &s_raceMenuCam)) {
+            ApplyToController();
+            SaveINI();
+        }
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "Fly around the character in RaceMenu (WASD + Alt-look).");
 
         if (KeyBindField("rollCCW", "Roll Left", &s_rollCCWKey)) {
             ApplyToController();
@@ -460,6 +472,7 @@ namespace FreeCamMenu {
         s_hideHUD     = readInt("Camera", "bHideHUD", 0) != 0;
         s_blockAttacks = readInt("Camera", "bBlockAttacks", 1) != 0;
         s_dialogueCam  = readInt("Camera", "bDialogueCamera", 0) != 0;
+        s_raceMenuCam  = readInt("Camera", "bRaceMenuCamera", 1) != 0;  // --Claude: on by default
         s_lmbAction   = readInt("Camera", "iLMBAction", 0);
         s_rmbAction   = readInt("Camera", "iRMBAction", 0);
         HUDHider::SetEnabled(s_hideHUD);
@@ -493,6 +506,7 @@ namespace FreeCamMenu {
         settings.lmbAction     = s_lmbAction;
         settings.rmbAction     = s_rmbAction;
         settings.dialogueCam   = s_dialogueCam;
+        settings.raceMenuCam   = s_raceMenuCam;
 
         SKSE::log::info("FreeCamMenu: loaded — freeFlyKey=0x{:X} resetKey=0x{:X}",
             s_freeFlyKey, s_resetKey);

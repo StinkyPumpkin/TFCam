@@ -184,6 +184,15 @@ namespace FreeCam {
         return ui && ui->IsMenuOpen("Dialogue Menu");
     }
 
+    // --Claude: true while RaceMenu (the "RaceSex Menu") is up. Like dialogue, the
+    // game suppresses free-cam movement input under this menu, so when the user opts
+    // in we drive the camera manually (same WASD-move / hold-Alt-to-look path as the
+    // dialogue free-cam) — letting them fly around the character while editing.
+    static bool InRaceMenu() {
+        auto* ui = RE::UI::GetSingleton();
+        return ui && ui->IsMenuOpen("RaceSex Menu");
+    }
+
     // FreeCameraState internal member offsets (from FreeCameraFramework RE):
     //   0x44 BSTPoint2<float> zUpDown          (accumulated vertical)
     //   0x4C std::int16_t     verticalDirection (per-frame up/down input)
@@ -304,10 +313,14 @@ namespace FreeCam {
             // and clear the seed whenever we're not driving, so re-entry re-seeds.
             static float s_dlgYaw = 0.0f, s_dlgPitch = 0.0f;
             static bool  s_dlgSeeded = false;
-            const bool inDlgCam = s_settings.dialogueCam && a_this && InDialogue();
-            if (!inDlgCam) s_dlgSeeded = false;
+            // --Claude: the same manual-drive path serves BOTH menus that suppress free-cam
+            // input — the Dialogue Menu and RaceMenu (RaceSex Menu). Writing our own absolute
+            // yaw/pitch/translation each frame is harmless even where vanilla doesn't re-aim.
+            const bool inMenuCam = a_this &&
+                ((s_settings.dialogueCam && InDialogue()) || (s_settings.raceMenuCam && InRaceMenu()));
+            if (!inMenuCam) s_dlgSeeded = false;
 
-            if (inDlgCam) {
+            if (inMenuCam) {
                 auto base = reinterpret_cast<std::uintptr_t>(a_this);
                 float* trans = reinterpret_cast<float*>(base + kOff_translation);
                 float* rot   = reinterpret_cast<float*>(base + kOff_rotation);
@@ -368,7 +381,8 @@ namespace FreeCam {
             // menu is up, OR (dialogue free-cam) while we're driving the camera during
             // dialogue, so the menu-close restore sees no movement and never yanks us
             // back to where the camera was before dialogue opened.
-            if (a_this && (!AnyMenuOpen() || (s_settings.dialogueCam && InDialogue()))) {
+            if (a_this && (!AnyMenuOpen() || (s_settings.dialogueCam && InDialogue())
+                                          || (s_settings.raceMenuCam && InRaceMenu()))) {
                 auto base = reinterpret_cast<std::uintptr_t>(a_this);
                 s_menuSaveTrans = *reinterpret_cast<RE::NiPoint3*>(base + kOff_translation);
                 float* rot = reinterpret_cast<float*>(base + kOff_rotation);
@@ -536,7 +550,7 @@ namespace FreeCam {
                 // --Claude: accumulate mouse movement for the dialogue free-cam
                 // look. Consumed+cleared each frame by the Update hook (only
                 // applied while the hold-to-look key is down).
-                if (active && s_settings.dialogueCam &&
+                if (active && (s_settings.dialogueCam || s_settings.raceMenuCam) &&
                     evt->GetEventType() == RE::INPUT_EVENT_TYPE::kMouseMove) {
                     auto* mm = static_cast<RE::MouseMoveEvent*>(evt);
                     s_dlgMouseDX += static_cast<float>(mm->mouseInputX);
@@ -570,7 +584,8 @@ namespace FreeCam {
                 // Global hotkeys (work in any camera state)
                 // -------------------------------------------------------
                 if (device == RE::INPUT_DEVICE::kKeyboard && btn->IsDown() &&
-                    (!AnyMenuOpen() || (s_settings.dialogueCam && InDialogue()))) {
+                    (!AnyMenuOpen() || (s_settings.dialogueCam && InDialogue())
+                                    || (s_settings.raceMenuCam && InRaceMenu()))) {
                     int flyKey = FreeCamMenu::GetFreeFlyKey();
                     if (flyKey > 0 && code == static_cast<std::uint32_t>(flyKey)) {
                         auto* cam = RE::PlayerCamera::GetSingleton();
