@@ -334,17 +334,29 @@ namespace FreeCam {
                     s_dlgSeeded = true;
                 }
 
-                // Look — only while the hold-to-look key (Left Alt) is down.
+                // Look — hold Left Alt + mouse (where the menu passes mouse deltas), OR keyboard:
+                // Q/E turn left/right, PageUp/PageDown tilt up/down. The keyboard path needs no
+                // mouse, so it works in RaceMenu too (the mouse there is the UI cursor). NOTE: if
+                // the menu pins the camera's aim on its subject (RaceMenu keeps it on the character),
+                // these rotation writes get overridden and look won't visibly change — that's a menu
+                // limitation, not a key that isn't firing.
+                constexpr float kPitchLim = 1.55f;  // ~89°, avoid gimbal flip
                 if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
-                    constexpr float kSens     = 0.0025f;
-                    constexpr float kPitchLim = 1.55f;  // ~89°, avoid gimbal flip
+                    constexpr float kSens = 0.0025f;
                     s_dlgYaw   += s_dlgMouseDX * kSens;
                     s_dlgPitch += s_dlgMouseDY * kSens;
-                    if (s_dlgPitch >  kPitchLim) s_dlgPitch =  kPitchLim;
-                    if (s_dlgPitch < -kPitchLim) s_dlgPitch = -kPitchLim;
                 }
                 s_dlgMouseDX = 0.0f;   // consume every frame (held or not)
                 s_dlgMouseDY = 0.0f;
+                {
+                    float lookAmt = 1.6f * s_frameDt;  // keyboard look rate (rad/sec)
+                    if ((GetAsyncKeyState('Q')      & 0x8000) != 0) s_dlgYaw   -= lookAmt; // turn left
+                    if ((GetAsyncKeyState('E')      & 0x8000) != 0) s_dlgYaw   += lookAmt; // turn right
+                    if ((GetAsyncKeyState(VK_PRIOR) & 0x8000) != 0) s_dlgPitch -= lookAmt; // PageUp = up
+                    if ((GetAsyncKeyState(VK_NEXT)  & 0x8000) != 0) s_dlgPitch += lookAmt; // PageDown = down
+                }
+                if (s_dlgPitch >  kPitchLim) s_dlgPitch =  kPitchLim;
+                if (s_dlgPitch < -kPitchLim) s_dlgPitch = -kPitchLim;
 
                 // Write our orientation back every frame, overriding the vanilla
                 // per-frame reset so the view the user set actually sticks.
@@ -373,8 +385,11 @@ namespace FreeCam {
                     trans[0] += std::cos(yaw) * dir * amt;
                     trans[1] += -std::sin(yaw) * dir * amt;
                 }
-                // No dedicated up/down keys: pitch the view (Alt+mouse) and W/S
-                // climbs or dives, since the forward vector carries the pitch.
+                // --Claude: dedicated vertical — Space = up, Left Ctrl = down. This is straight
+                // translation.z, independent of look, so it works even where the menu pins the
+                // camera's aim (RaceMenu): you can rise/descend around the character regardless.
+                if (down(VK_SPACE))   trans[2] += amt;
+                if (down(VK_CONTROL)) trans[2] -= amt;
             }
 
             // Save the live free-cam transform as the menu-restore anchor — while no
