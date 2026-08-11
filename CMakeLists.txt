@@ -4,8 +4,6 @@ project(TFCam VERSION 0.7.0 LANGUAGES CXX)
 
 if(DEFINED ENV{SKYRIM_MODS_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_MODS_FOLDER}")
     set(OUTPUT_FOLDER "$ENV{SKYRIM_MODS_FOLDER}/FreeCam--Claude")
-else()
-    set(OUTPUT_FOLDER "X:/MODDINGSSE/modorganizer2/mods/FreeCam--Claude")
 endif()
 
 find_package(CommonLibSSE CONFIG REQUIRED)
