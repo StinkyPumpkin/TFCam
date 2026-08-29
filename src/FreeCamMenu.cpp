@@ -28,7 +28,7 @@ namespace FreeCamMenu {
     static int   s_lmbAction     = 0;
     static int   s_rmbAction     = 0;
     static bool  s_dialogueCam   = false;  // --Claude: free-cam movement during dialogue
-    static bool  s_raceMenuCam   = true;   // --Claude: free-cam movement during RaceMenu (on by default)
+    static bool  s_raceMenuCam   = false;  // SHELVED 2026-08-29: RaceMenu drive not working; UI removed, forced off
 
     // Camera light settings
     static bool  s_lightScrollBrightness = true;
@@ -313,14 +313,7 @@ namespace FreeCamMenu {
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
             "(Release Alt to free the mouse for dialogue options.)");
 
-        // --Claude: same manual-drive path for RaceMenu — fly around the character
-        // while it's open. Hold Left Alt + mouse to look; release Alt to click sliders.
-        if (ImGuiMCP::Checkbox("Camera movement in RaceMenu##racecam", &s_raceMenuCam)) {
-            ApplyToController();
-            SaveINI();
-        }
-        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
-            "Fly around the character in RaceMenu (WASD + Alt-look).");
+        // SHELVED 2026-08-29: RaceMenu camera checkbox removed (feature not working; forced off).
 
         if (KeyBindField("rollCCW", "Roll Left", &s_rollCCWKey)) {
             ApplyToController();
@@ -472,7 +465,7 @@ namespace FreeCamMenu {
         s_hideHUD     = readInt("Camera", "bHideHUD", 0) != 0;
         s_blockAttacks = readInt("Camera", "bBlockAttacks", 1) != 0;
         s_dialogueCam  = readInt("Camera", "bDialogueCamera", 0) != 0;
-        s_raceMenuCam  = readInt("Camera", "bRaceMenuCamera", 1) != 0;  // --Claude: on by default
+        s_raceMenuCam  = false; // SHELVED 2026-08-29: forced off regardless of ini
         s_lmbAction   = readInt("Camera", "iLMBAction", 0);
         s_rmbAction   = readInt("Camera", "iRMBAction", 0);
         HUDHider::SetEnabled(s_hideHUD);
