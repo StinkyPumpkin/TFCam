@@ -18,7 +18,10 @@ namespace FreeCam {
         int           lmbAction       = 0;    // remap LMB → see MouseAction enum
         int           rmbAction       = 0;    // remap RMB → see MouseAction enum
         bool          dialogueCam     = false; // --Claude: allow free-cam movement during dialogue (WASD move, hold Alt to look)
-        bool          raceMenuCam     = true;  // --Claude: allow free-cam movement during RaceMenu / RaceSex Menu (WASD move, hold Alt to look)
+        bool          raceMenuCam     = true;
+        std::uint32_t slowKey         = 0x38;  // 0.7.1: hold to move at 1/5 speed (DX scancode, 0x38 = Left Alt, 0 = off)
+        bool          disableShift    = false; // 0.7.1: eat Shift in free cam (stops the engine's sprint-speed / other mods' Shift binds)
+        bool          disableSpace    = false; // 0.7.1: eat Space in free cam (stops jump-up / other mods' Space binds)  // --Claude: allow free-cam movement during RaceMenu / RaceSex Menu (WASD move, hold Alt to look)
     };
 
     // Actions that LMB/RMB can be remapped to.

@@ -17,6 +17,7 @@ namespace FreeCam {
     static float    s_rollAngle = 0.0f;
     static float    s_baseFOV   = 0.0f;
     static bool     s_altSlow   = false;  // Alt slow-mode active
+    static bool     s_slowHeld  = false;  // configurable slow key currently held (fed by the input sink)
     // FreeCameraState field offsets (capture + freeze the transform).
     static constexpr std::ptrdiff_t kOff_translation       = 0x30; // NiPoint3
     static constexpr std::ptrdiff_t kOff_rotation          = 0x3C; // float[2] x=pitch,y=yaw
@@ -388,7 +389,7 @@ namespace FreeCam {
                 // --Claude: dedicated vertical — Space = up, Left Ctrl = down. This is straight
                 // translation.z, independent of look, so it works even where the menu pins the
                 // camera's aim (RaceMenu): you can rise/descend around the character regardless.
-                if (down(VK_SPACE))   trans[2] += amt;
+                if (down(VK_SPACE) && !s_settings.disableSpace) trans[2] += amt;
                 if (down(VK_CONTROL)) trans[2] -= amt;
             }
 
@@ -614,8 +615,26 @@ namespace FreeCam {
 
                 }
 
+                // Slow-key state is tracked globally so a release outside free cam never leaves
+                // it stuck held for the next activation.
+                if (device == RE::INPUT_DEVICE::kKeyboard && s_settings.slowKey != 0 &&
+                    code == s_settings.slowKey) {
+                    s_slowHeld = btn->IsPressed();
+                }
+
                 // Everything below only works when free cam is active
                 if (!active) continue;
+
+                // 0.7.1 (Nexus request): optionally eat Shift / Space while flying so the engine's
+                // sprint speed and jump, and any other mod bound to them, stay quiet.
+                if (device == RE::INPUT_DEVICE::kKeyboard && !AnyMenuOpen()) {
+                    const bool isShift = (code == 0x2A || code == 0x36);
+                    const bool isSpace = (code == 0x39);
+                    if ((s_settings.disableShift && isShift) || (s_settings.disableSpace && isSpace)) {
+                        ConsumeButton(btn);
+                        continue;
+                    }
+                }
 
                 // LMB/RMB in free cam: when blockAttacks is on, consume the
                 // button (prevents attacks) and fire any remapped action.
@@ -639,9 +658,9 @@ namespace FreeCam {
                     continue;
                 }
 
-                // Alt slow-mode: check state on every input event
+                // Slow-mode (configurable key, default Left Alt): check state on every input event
                 {
-                    bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                    bool altHeld = s_slowHeld;
                     if (altHeld && !s_altSlow) {
                         SetCameraSpeed(FreeCamMenu::GetCameraSpeed() / 5.0f);
                         s_altSlow = true;

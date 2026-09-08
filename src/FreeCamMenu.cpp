@@ -28,6 +28,9 @@ namespace FreeCamMenu {
     static int   s_lmbAction     = 0;
     static int   s_rmbAction     = 0;
     static bool  s_dialogueCam   = false;  // --Claude: free-cam movement during dialogue
+    static int   s_slowKey       = 0x38;   // 0.7.1: hold-to-slow key (Left Alt)
+    static bool  s_disableShift  = false;  // 0.7.1
+    static bool  s_disableSpace  = false;  // 0.7.1
     static bool  s_raceMenuCam   = false;  // SHELVED 2026-08-29: RaceMenu drive not working; UI removed, forced off
 
     // Camera light settings
@@ -141,6 +144,9 @@ namespace FreeCamMenu {
         WriteINIInt("Camera", "bHideHUD", s_hideHUD ? 1 : 0);
         WriteINIInt("Camera", "bBlockAttacks", s_blockAttacks ? 1 : 0);
         WriteINIInt("Camera", "bDialogueCamera", s_dialogueCam ? 1 : 0);
+        WriteINIInt("Hotkeys", "iSlowKey", s_slowKey);
+        WriteINIInt("Camera", "bDisableShift", s_disableShift ? 1 : 0);
+        WriteINIInt("Camera", "bDisableSpace", s_disableSpace ? 1 : 0);
         WriteINIInt("Camera", "bRaceMenuCamera", s_raceMenuCam ? 1 : 0);
         WriteINIInt("Camera", "iLMBAction", s_lmbAction);
         WriteINIInt("Camera", "iRMBAction", s_rmbAction);
@@ -170,6 +176,9 @@ namespace FreeCamMenu {
         settings.lmbAction      = s_lmbAction;
         settings.rmbAction      = s_rmbAction;
         settings.dialogueCam    = s_dialogueCam;
+        settings.slowKey       = static_cast<std::uint32_t>(s_slowKey);
+        settings.disableShift  = s_disableShift;
+        settings.disableSpace  = s_disableSpace;
         settings.raceMenuCam    = s_raceMenuCam;
     }
 
@@ -239,6 +248,24 @@ namespace FreeCamMenu {
         if (KeyBindField("freeFly", "Toggle Free Camera", &s_freeFlyKey)) {
             SaveINI();
         }
+
+        if (KeyBindField("slowKey", "Slow movement (hold)", &s_slowKey)) {
+            ApplyToController();
+            SaveINI();
+        }
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "Hold to fly at 1/5 speed. Default Left Alt; unset = off.");
+
+        if (ImGuiMCP::Checkbox("Disable Shift in free cam##noshift", &s_disableShift)) {
+            ApplyToController();
+            SaveINI();
+        }
+        if (ImGuiMCP::Checkbox("Disable Space in free cam##nospace", &s_disableSpace)) {
+            ApplyToController();
+            SaveINI();
+        }
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "Eats the key while flying: no sprint-speed / jump, and other mods bound to it stay quiet.");
 
         ImGuiMCP::Separator();
 
@@ -465,6 +492,9 @@ namespace FreeCamMenu {
         s_hideHUD     = readInt("Camera", "bHideHUD", 0) != 0;
         s_blockAttacks = readInt("Camera", "bBlockAttacks", 1) != 0;
         s_dialogueCam  = readInt("Camera", "bDialogueCamera", 0) != 0;
+        s_slowKey      = readInt("Hotkeys", "iSlowKey", 0x38);
+        s_disableShift = readInt("Camera", "bDisableShift", 0) != 0;
+        s_disableSpace = readInt("Camera", "bDisableSpace", 0) != 0;
         s_raceMenuCam  = false; // SHELVED 2026-08-29: forced off regardless of ini
         s_lmbAction   = readInt("Camera", "iLMBAction", 0);
         s_rmbAction   = readInt("Camera", "iRMBAction", 0);
@@ -499,6 +529,9 @@ namespace FreeCamMenu {
         settings.lmbAction     = s_lmbAction;
         settings.rmbAction     = s_rmbAction;
         settings.dialogueCam   = s_dialogueCam;
+        settings.slowKey       = static_cast<std::uint32_t>(s_slowKey);
+        settings.disableShift  = s_disableShift;
+        settings.disableSpace  = s_disableSpace;
         settings.raceMenuCam   = s_raceMenuCam;
 
         SKSE::log::info("FreeCamMenu: loaded — freeFlyKey=0x{:X} resetKey=0x{:X}",

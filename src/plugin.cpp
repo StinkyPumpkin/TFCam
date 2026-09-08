@@ -45,13 +45,15 @@ namespace {
     // plainly — the game keeps running without TFCam.
     bool AddressLibraryPresent() {
         const auto ver = REL::Module::get().version();
+        // Same file CommonLib's IDDatabase::load() opens: VR reads a .csv, AE a versionlib .bin,
+        // SE a version .bin. (0.7.0 looked for a .bin on VR, so VR users got the "missing" popup.)
         std::string file;
-        if (ver.major() == 1 && ver.minor() < 6) {
-            file = std::format("Data/SKSE/Plugins/version-{}-{}-{}-{}.bin",
-                               ver.major(), ver.minor(), ver.patch(), ver.build());
+        if (REL::Module::IsVR()) {
+            file = std::format("Data/SKSE/Plugins/version-{}.csv", ver.string());
+        } else if (REL::Module::IsAE()) {
+            file = std::format("Data/SKSE/Plugins/versionlib-{}.bin", ver.string());
         } else {
-            file = std::format("Data/SKSE/Plugins/versionlib-{}-{}-{}-{}.bin",
-                               ver.major(), ver.minor(), ver.patch(), ver.build());
+            file = std::format("Data/SKSE/Plugins/version-{}.bin", ver.string());
         }
         std::error_code ec;
         if (std::filesystem::exists(std::filesystem::current_path() / file, ec)) {
