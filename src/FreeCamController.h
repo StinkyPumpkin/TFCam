@@ -22,6 +22,7 @@ namespace FreeCam {
         std::uint32_t slowKey         = 0x38;  // 0.7.1: hold to move at 1/5 speed (DX scancode, 0x38 = Left Alt, 0 = off)
         bool          disableShift    = false; // 0.7.1: eat Shift in free cam (stops the engine's sprint-speed / other mods' Shift binds)
         bool          disableSpace    = false; // 0.7.1: eat Space in free cam (stops jump-up / other mods' Space binds)  // --Claude: allow free-cam movement during RaceMenu / RaceSex Menu (WASD move, hold Alt to look)
+        bool          disableActivate = true;  // 0.7.2: eat the Activate user event (E / gamepad A) in free cam - no sitting on furniture or using load doors the crosshair hits from the camera's viewpoint
     };
 
     // Actions that LMB/RMB can be remapped to.

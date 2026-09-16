@@ -636,6 +636,19 @@ namespace FreeCam {
                     }
                 }
 
+                // 0.7.2 (Nexus request): eat the Activate user event while flying. In tfc the
+                // activation ray comes from the camera, so E over a chair sat the player down and
+                // E over a cave door loaded the interior. Matched by user event, so it covers a
+                // remapped key and the gamepad button too.
+                if (s_settings.disableActivate && !AnyMenuOpen()) {
+                    auto* ue = RE::UserEvents::GetSingleton();
+                    if (ue && btn->QUserEvent() == ue->activate) {
+                        ConsumeButton(btn);
+                        btn->userEvent = "";
+                        continue;
+                    }
+                }
+
                 // LMB/RMB in free cam: when blockAttacks is on, consume the
                 // button (prevents attacks) and fire any remapped action.
                 // When blockAttacks is off, let the event pass through so

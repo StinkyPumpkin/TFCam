@@ -31,6 +31,7 @@ namespace FreeCamMenu {
     static int   s_slowKey       = 0x38;   // 0.7.1: hold-to-slow key (Left Alt)
     static bool  s_disableShift  = false;  // 0.7.1
     static bool  s_disableSpace  = false;  // 0.7.1
+    static bool  s_disableActivate = true; // 0.7.2
     static bool  s_raceMenuCam   = false;  // SHELVED 2026-08-29: RaceMenu drive not working; UI removed, forced off
 
     // Camera light settings
@@ -147,6 +148,7 @@ namespace FreeCamMenu {
         WriteINIInt("Hotkeys", "iSlowKey", s_slowKey);
         WriteINIInt("Camera", "bDisableShift", s_disableShift ? 1 : 0);
         WriteINIInt("Camera", "bDisableSpace", s_disableSpace ? 1 : 0);
+        WriteINIInt("Camera", "bDisableActivate", s_disableActivate ? 1 : 0);
         WriteINIInt("Camera", "bRaceMenuCamera", s_raceMenuCam ? 1 : 0);
         WriteINIInt("Camera", "iLMBAction", s_lmbAction);
         WriteINIInt("Camera", "iRMBAction", s_rmbAction);
@@ -177,6 +179,7 @@ namespace FreeCamMenu {
         settings.rmbAction      = s_rmbAction;
         settings.dialogueCam    = s_dialogueCam;
         settings.slowKey       = static_cast<std::uint32_t>(s_slowKey);
+        settings.disableActivate = s_disableActivate;
         settings.disableShift  = s_disableShift;
         settings.disableSpace  = s_disableSpace;
         settings.raceMenuCam    = s_raceMenuCam;
@@ -266,6 +269,12 @@ namespace FreeCamMenu {
         }
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
             "Eats the key while flying: no sprint-speed / jump, and other mods bound to it stay quiet.");
+        if (ImGuiMCP::Checkbox("Disable Activate in free cam##noactivate", &s_disableActivate)) {
+            ApplyToController();
+            SaveINI();
+        }
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "Stops E / gamepad A from sitting you on furniture or using a door the camera is pointing at.");
 
         ImGuiMCP::Separator();
 
@@ -495,6 +504,7 @@ namespace FreeCamMenu {
         s_slowKey      = readInt("Hotkeys", "iSlowKey", 0x38);
         s_disableShift = readInt("Camera", "bDisableShift", 0) != 0;
         s_disableSpace = readInt("Camera", "bDisableSpace", 0) != 0;
+        s_disableActivate = readInt("Camera", "bDisableActivate", 1) != 0;
         s_raceMenuCam  = false; // SHELVED 2026-08-29: forced off regardless of ini
         s_lmbAction   = readInt("Camera", "iLMBAction", 0);
         s_rmbAction   = readInt("Camera", "iRMBAction", 0);
@@ -530,6 +540,7 @@ namespace FreeCamMenu {
         settings.rmbAction     = s_rmbAction;
         settings.dialogueCam   = s_dialogueCam;
         settings.slowKey       = static_cast<std::uint32_t>(s_slowKey);
+        settings.disableActivate = s_disableActivate;
         settings.disableShift  = s_disableShift;
         settings.disableSpace  = s_disableSpace;
         settings.raceMenuCam   = s_raceMenuCam;
