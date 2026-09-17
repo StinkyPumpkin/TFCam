@@ -334,21 +334,8 @@ namespace FreeCamMenu {
             }
         }
 
-        // --Claude: allow the free camera to move during conversations. The game
-        // freezes free-cam movement while the Dialogue Menu is up; this drives it
-        // manually. WASD to move (pitch + W/S for vertical), hold Left Alt +
-        // mouse to look (release Alt to click dialogue options).
-        if (ImGuiMCP::Checkbox("Camera movement in dialogue##dlgcam", &s_dialogueCam)) {
-            ApplyToController();
-            SaveINI();
-        }
-        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
-            "WASD to move (look up/down + W/S to climb or descend).");
-        ImGuiMCP::TextColored({ 0.85f, 0.75f, 0.35f, 1.0f },
-            "You must HOLD LEFT ALT to look with the mouse.");
-        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
-            "(Release Alt to free the mouse for dialogue options.)");
-
+        // SHELVED 2026-09-17: dialogue camera checkbox removed (manual drive under the Dialogue
+        // Menu does not work properly yet; forced off in LoadINI). Code paths kept for a retry.
         // SHELVED 2026-08-29: RaceMenu camera checkbox removed (feature not working; forced off).
 
         if (KeyBindField("rollCCW", "Roll Left", &s_rollCCWKey)) {
@@ -500,7 +487,7 @@ namespace FreeCamMenu {
         s_cameraSpeed = readFloat("Camera", "fSpeed", 10.0f);
         s_hideHUD     = readInt("Camera", "bHideHUD", 0) != 0;
         s_blockAttacks = readInt("Camera", "bBlockAttacks", 1) != 0;
-        s_dialogueCam  = readInt("Camera", "bDialogueCamera", 0) != 0;
+        s_dialogueCam  = false; // SHELVED 2026-09-17: forced off regardless of ini (drive not working properly yet)
         s_slowKey      = readInt("Hotkeys", "iSlowKey", 0x38);
         s_disableShift = readInt("Camera", "bDisableShift", 0) != 0;
         s_disableSpace = readInt("Camera", "bDisableSpace", 0) != 0;
