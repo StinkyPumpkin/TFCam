@@ -636,6 +636,20 @@ namespace FreeCam {
                     }
                 }
 
+                // 0.7.3: eat the Jump user event while flying. Vanilla tfc leaves the jump
+                // handler live, so the body still hopped under the free camera. Matched by
+                // user event so a remapped key and the gamepad button are covered too, and
+                // Space still drives the camera's ascend (that reads GetAsyncKeyState, not
+                // the event queue).
+                {
+                    auto* ue = RE::UserEvents::GetSingleton();
+                    if (ue && btn->QUserEvent() == ue->jump) {
+                        ConsumeButton(btn);
+                        btn->userEvent = "";
+                        continue;
+                    }
+                }
+
                 // 0.7.2 (Nexus request): eat the Activate user event while flying. In tfc the
                 // activation ray comes from the camera, so E over a chair sat the player down and
                 // E over a cave door loaded the interior. Matched by user event, so it covers a

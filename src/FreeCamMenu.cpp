@@ -268,7 +268,8 @@ namespace FreeCamMenu {
             SaveINI();
         }
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
-            "Eats the key while flying: no sprint-speed / jump, and other mods bound to it stay quiet.");
+            "Eats the key while flying so other mods bound to it stay quiet (Space also gives up the "
+            "camera's ascend). Jump itself is always blocked in free cam.");
         if (ImGuiMCP::Checkbox("Disable Activate in free cam##noactivate", &s_disableActivate)) {
             ApplyToController();
             SaveINI();
