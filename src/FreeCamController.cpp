@@ -636,12 +636,23 @@ namespace FreeCam {
                     }
                 }
 
+                // 0.7.4 FIX: computed once, ahead of every user-event eat below. A roll key must
+                // never be swallowed by one of those `continue`s — they sit above the roll block,
+                // so anything they eat never rolls. E is the vanilla Activate binding, which is
+                // exactly how roll-clockwise died in 0.7.2. The jump eat below is not even
+                // setting-gated, so a user who rebinds Jump onto a roll key would hit the same
+                // thing. Roll keys fall through; the roll block consumes them itself, so they
+                // still do not reach the engine.
+                const bool isRollKey =
+                    device == RE::INPUT_DEVICE::kKeyboard &&
+                    (code == s_settings.rollCCWKey || code == s_settings.rollCWKey);
+
                 // 0.7.3: eat the Jump user event while flying. Vanilla tfc leaves the jump
                 // handler live, so the body still hopped under the free camera. Matched by
                 // user event so a remapped key and the gamepad button are covered too, and
                 // Space still drives the camera's ascend (that reads GetAsyncKeyState, not
                 // the event queue).
-                {
+                if (!isRollKey) {
                     auto* ue = RE::UserEvents::GetSingleton();
                     if (ue && btn->QUserEvent() == ue->jump) {
                         ConsumeButton(btn);
@@ -654,7 +665,10 @@ namespace FreeCam {
                 // activation ray comes from the camera, so E over a chair sat the player down and
                 // E over a cave door loaded the interior. Matched by user event, so it covers a
                 // remapped key and the gamepad button too.
-                if (s_settings.disableActivate && !AnyMenuOpen()) {
+                //
+                // 0.7.4 FIX: `!isRollKey` (declared above) — with bDisableActivate=1 this eat
+                // swallowed E, the vanilla Activate binding, so roll-clockwise never ran.
+                if (s_settings.disableActivate && !AnyMenuOpen() && !isRollKey) {
                     auto* ue = RE::UserEvents::GetSingleton();
                     if (ue && btn->QUserEvent() == ue->activate) {
                         ConsumeButton(btn);
