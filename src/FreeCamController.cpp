@@ -543,6 +543,21 @@ namespace FreeCam {
         static inline REL::Relocation<decltype(thunk)> func;
     };
 
+    // 0.7.5: the 0.7.3 Jump eat in InputListener never worked. That sink is added with
+    // AddEventSink, i.e. AFTER PlayerControls, so JumpHandler had already jumped by the time
+    // we zeroed the event (the same is true of bDisableSpace). Refuse the jump at the handler
+    // itself instead, like the attack block above - covers a remapped key and the gamepad too.
+    struct JumpBlockHook {
+        static void thunk(RE::JumpHandler* a_this, RE::ButtonEvent* a_event,
+                          RE::PlayerControlsData* a_data) {
+            if (IsActive()) {
+                return;
+            }
+            func(a_this, a_event, a_data);
+        }
+        static inline REL::Relocation<decltype(thunk)> func;
+    };
+
     // --- Input event sink ---
 
     class InputListener : public RE::BSTEventSink<RE::InputEvent*> {
@@ -839,6 +854,10 @@ namespace FreeCam {
         REL::Relocation<std::uintptr_t> abhVtable(RE::VTABLE_AttackBlockHandler[0]);
         AttackBlockHook::func = abhVtable.write_vfunc(0x4, AttackBlockHook::thunk);
         SKSE::log::info("AttackBlockHandler::ProcessButton hooked (vtable[4])");
+
+        REL::Relocation<std::uintptr_t> jumpVtable(RE::VTABLE_JumpHandler[0]);
+        JumpBlockHook::func = jumpVtable.write_vfunc(0x4, JumpBlockHook::thunk);
+        SKSE::log::info("JumpHandler::ProcessButton hooked (vtable[4])");
 
         // Menu open/close watcher (menu-exit camera restore).
         if (auto* ui = RE::UI::GetSingleton()) {
