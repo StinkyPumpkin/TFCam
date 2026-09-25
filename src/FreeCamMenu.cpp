@@ -268,9 +268,9 @@ namespace FreeCamMenu {
             SaveINI();
         }
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
-            "Ticked: the key does nothing to your character while flying (Shift: sprint / run / "
-            "run toggle; Space: jump, on any key or gamepad). "
-            "Unticked: the key works as it does without TFCam.");
+            "Ticked, while flying: Shift no longer drives sprint / run / run toggle (a Shift+key run "
+            "toggle too), and Jump is blocked on any key or gamepad. Mods that read a key directly "
+            "may still see it. Unticked: the key works as it does without TFCam.");
         if (ImGuiMCP::Checkbox("Disable Activate in free cam##noactivate", &s_disableActivate)) {
             ApplyToController();
             SaveINI();

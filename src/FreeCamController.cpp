@@ -576,26 +576,43 @@ namespace FreeCam {
     // Sprint and Run are held-state handlers and ToggleRun flips a flag: letting through the
     // release of a press we swallowed (or swallowing the release of a press that got through,
     // e.g. Shift already held when free cam starts) would leave the player sprinting or flip
-    // walk/run.
+    // walk/run. The latch remembers WHICH key it swallowed, so the combo case below (the event
+    // arrives under the other key, not Shift) releases on that key's own key-up.
+    //
+    // a_comboToo (ToggleRun only): a press made while Shift is physically held also counts.
+    // A Shift+key binding (the reporter's controlmap: Toggle Always Run = 0x2a+0x2e, Shift+C)
+    // reaches the handler under the other key, so IsShiftKey alone never matched it and Shift+C
+    // still flipped always-run while flying.
     struct ShiftGate {
-        bool swallowing = false;
-        bool Blocks(const RE::ButtonEvent* a_event) {
-            if (!IsShiftKey(a_event)) return false;
-            if (a_event->IsDown()) {
-                swallowing = s_settings.disableShift && IsActive();
+        bool             swallowing = false;
+        RE::INPUT_DEVICE device     = RE::INPUT_DEVICE::kNone;
+        std::uint32_t    code       = 0;
+        bool Blocks(const RE::ButtonEvent* a_event, bool a_comboToo) {
+            if (!a_event) return false;
+            const auto dev = a_event->GetDevice();
+            const auto id  = a_event->GetIDCode();
+            if (swallowing && dev == device && id == code) {
+                if (a_event->IsUp()) swallowing = false;  // the release of the press we swallowed
+                return true;
             }
-            const bool block = swallowing;
-            if (a_event->IsUp()) {
-                swallowing = false;
+            if (!a_event->IsDown()) return false;
+            const bool shiftPress = IsShiftKey(a_event) ||
+                (a_comboToo && dev == RE::INPUT_DEVICE::kKeyboard &&
+                 (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0);
+            if (shiftPress && s_settings.disableShift && IsActive()) {
+                swallowing = true;
+                device     = dev;
+                code       = id;
+                return true;
             }
-            return block;
+            return false;
         }
     };
 
-    template <class Handler>
+    template <class Handler, bool ComboToo = false>
     struct ShiftBlockHook {
         static void thunk(Handler* a_this, RE::ButtonEvent* a_event, RE::PlayerControlsData* a_data) {
-            if (gate.Blocks(a_event)) {
+            if (gate.Blocks(a_event, ComboToo)) {
                 return;
             }
             func(a_this, a_event, a_data);
@@ -908,9 +925,10 @@ namespace FreeCam {
         REL::Relocation<std::uintptr_t> runVtable(RE::VTABLE_RunHandler[0]);
         ShiftBlockHook<RE::RunHandler>::func =
             runVtable.write_vfunc(0x4, ShiftBlockHook<RE::RunHandler>::thunk);
+        // ToggleRun also swallows a press made while Shift is held (Shift+key combo binding).
         REL::Relocation<std::uintptr_t> toggleRunVtable(RE::VTABLE_ToggleRunHandler[0]);
-        ShiftBlockHook<RE::ToggleRunHandler>::func =
-            toggleRunVtable.write_vfunc(0x4, ShiftBlockHook<RE::ToggleRunHandler>::thunk);
+        ShiftBlockHook<RE::ToggleRunHandler, true>::func =
+            toggleRunVtable.write_vfunc(0x4, ShiftBlockHook<RE::ToggleRunHandler, true>::thunk);
         // The free camera's own input handler (second vtable, the PlayerInputHandler base). It
         // carries a run-speed flag (FreeCameraState::useRunSpeed, +0x4E); what sets it was not
         // verified (SkyrimSE.exe .text is encrypted on disk), so this only matters if it is Shift.
