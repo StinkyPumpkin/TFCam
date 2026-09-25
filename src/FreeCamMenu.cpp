@@ -30,7 +30,7 @@ namespace FreeCamMenu {
     static bool  s_dialogueCam   = false;  // --Claude: free-cam movement during dialogue
     static int   s_slowKey       = 0x38;   // 0.7.1: hold-to-slow key (Left Alt)
     static bool  s_disableShift  = false;  // 0.7.1
-    static bool  s_disableSpace  = false;  // 0.7.1
+    static bool  s_disableSpace  = true;   // 0.7.1; default ON since 0.7.6 (keeps 0.7.3-0.7.5's jump block)
     static bool  s_disableActivate = true; // 0.7.2
     static bool  s_raceMenuCam   = false;  // SHELVED 2026-08-29: RaceMenu drive not working; UI removed, forced off
 
@@ -263,13 +263,14 @@ namespace FreeCamMenu {
             ApplyToController();
             SaveINI();
         }
-        if (ImGuiMCP::Checkbox("Disable Space in free cam##nospace", &s_disableSpace)) {
+        if (ImGuiMCP::Checkbox("Disable Space / Jump in free cam##nospace", &s_disableSpace)) {
             ApplyToController();
             SaveINI();
         }
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
-            "Eats the key while flying so other mods bound to it stay quiet (Space also gives up the "
-            "camera's ascend). Jump itself is always blocked in free cam.");
+            "Ticked: the key does nothing to your character while flying (Shift: sprint / run / "
+            "run toggle; Space: jump, on any key or gamepad). "
+            "Unticked: the key works as it does without TFCam.");
         if (ImGuiMCP::Checkbox("Disable Activate in free cam##noactivate", &s_disableActivate)) {
             ApplyToController();
             SaveINI();
@@ -491,7 +492,7 @@ namespace FreeCamMenu {
         s_dialogueCam  = false; // SHELVED 2026-09-17: forced off regardless of ini (drive not working properly yet)
         s_slowKey      = readInt("Hotkeys", "iSlowKey", 0x38);
         s_disableShift = readInt("Camera", "bDisableShift", 0) != 0;
-        s_disableSpace = readInt("Camera", "bDisableSpace", 0) != 0;
+        s_disableSpace = readInt("Camera", "bDisableSpace", 1) != 0;  // 0.7.6: default ON, see s_disableSpace
         s_disableActivate = readInt("Camera", "bDisableActivate", 1) != 0;
         s_raceMenuCam  = false; // SHELVED 2026-08-29: forced off regardless of ini
         s_lmbAction   = readInt("Camera", "iLMBAction", 0);

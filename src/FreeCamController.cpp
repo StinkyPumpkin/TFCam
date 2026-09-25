@@ -547,14 +547,60 @@ namespace FreeCam {
     // AddEventSink, i.e. AFTER PlayerControls, so JumpHandler had already jumped by the time
     // we zeroed the event (the same is true of bDisableSpace). Refuse the jump at the handler
     // itself instead, like the attack block above - covers a remapped key and the gamepad too.
+    //
+    // 0.7.6: gated on bDisableSpace. 0.7.5 blocked unconditionally, so the "Disable Space"
+    // checkbox changed nothing: ticked or not, the jump was refused here.
     struct JumpBlockHook {
         static void thunk(RE::JumpHandler* a_this, RE::ButtonEvent* a_event,
                           RE::PlayerControlsData* a_data) {
-            if (IsActive()) {
+            if (s_settings.disableSpace && IsActive()) {
                 return;
             }
             func(a_this, a_event, a_data);
         }
+        static inline REL::Relocation<decltype(thunk)> func;
+    };
+
+    // 0.7.6: bDisableShift at the handlers. The 0.7.1 ConsumeButton in InputListener has the
+    // same ordering problem as the Jump eat: PlayerControls has already run Sprint / Run /
+    // ToggleRun (and the free camera's own input handler) by the time our sink sees the event.
+    // Matched by the physical key, so it follows Shift whichever of these the controlmap binds
+    // it to (vanilla: Run; a common remap: Sprint).
+    static bool IsShiftKey(const RE::ButtonEvent* a_event) {
+        if (!a_event || a_event->GetDevice() != RE::INPUT_DEVICE::kKeyboard) return false;
+        const auto code = a_event->GetIDCode();
+        return code == 0x2A || code == 0x36;  // Left Shift / Right Shift
+    }
+
+    // Decided once per press, on the key-down edge, and kept until that press is released.
+    // Sprint and Run are held-state handlers and ToggleRun flips a flag: letting through the
+    // release of a press we swallowed (or swallowing the release of a press that got through,
+    // e.g. Shift already held when free cam starts) would leave the player sprinting or flip
+    // walk/run.
+    struct ShiftGate {
+        bool swallowing = false;
+        bool Blocks(const RE::ButtonEvent* a_event) {
+            if (!IsShiftKey(a_event)) return false;
+            if (a_event->IsDown()) {
+                swallowing = s_settings.disableShift && IsActive();
+            }
+            const bool block = swallowing;
+            if (a_event->IsUp()) {
+                swallowing = false;
+            }
+            return block;
+        }
+    };
+
+    template <class Handler>
+    struct ShiftBlockHook {
+        static void thunk(Handler* a_this, RE::ButtonEvent* a_event, RE::PlayerControlsData* a_data) {
+            if (gate.Blocks(a_event)) {
+                return;
+            }
+            func(a_this, a_event, a_data);
+        }
+        static inline ShiftGate gate;
         static inline REL::Relocation<decltype(thunk)> func;
     };
 
@@ -640,41 +686,18 @@ namespace FreeCam {
                 // Everything below only works when free cam is active
                 if (!active) continue;
 
-                // 0.7.1 (Nexus request): optionally eat Shift / Space while flying so the engine's
-                // sprint speed and jump, and any other mod bound to them, stay quiet.
-                if (device == RE::INPUT_DEVICE::kKeyboard && !AnyMenuOpen()) {
-                    const bool isShift = (code == 0x2A || code == 0x36);
-                    const bool isSpace = (code == 0x39);
-                    if ((s_settings.disableShift && isShift) || (s_settings.disableSpace && isSpace)) {
-                        ConsumeButton(btn);
-                        continue;
-                    }
-                }
+                // 0.7.6: the Shift / Space / Jump eats moved to the END of this loop (see there).
+                // Up here, ending in `continue`, they swallowed any TFCam hotkey bound to Shift or
+                // Space before the roll/reset/freeze/screenshot block could see it (the 0.7.4 trap).
 
                 // 0.7.4 FIX: computed once, ahead of every user-event eat below. A roll key must
                 // never be swallowed by one of those `continue`s — they sit above the roll block,
                 // so anything they eat never rolls. E is the vanilla Activate binding, which is
-                // exactly how roll-clockwise died in 0.7.2. The jump eat below is not even
-                // setting-gated, so a user who rebinds Jump onto a roll key would hit the same
-                // thing. Roll keys fall through; the roll block consumes them itself, so they
-                // still do not reach the engine.
+                // exactly how roll-clockwise died in 0.7.2. Roll keys fall through; the roll block
+                // consumes them itself, so they still do not reach the engine.
                 const bool isRollKey =
                     device == RE::INPUT_DEVICE::kKeyboard &&
                     (code == s_settings.rollCCWKey || code == s_settings.rollCWKey);
-
-                // 0.7.3: eat the Jump user event while flying. Vanilla tfc leaves the jump
-                // handler live, so the body still hopped under the free camera. Matched by
-                // user event so a remapped key and the gamepad button are covered too, and
-                // Space still drives the camera's ascend (that reads GetAsyncKeyState, not
-                // the event queue).
-                if (!isRollKey) {
-                    auto* ue = RE::UserEvents::GetSingleton();
-                    if (ue && btn->QUserEvent() == ue->jump) {
-                        ConsumeButton(btn);
-                        btn->userEvent = "";
-                        continue;
-                    }
-                }
 
                 // 0.7.2 (Nexus request): eat the Activate user event while flying. In tfc the
                 // activation ray comes from the camera, so E over a chair sat the player down and
@@ -822,6 +845,25 @@ namespace FreeCam {
                         continue;
                     }
                 }
+
+                // 0.7.1 / 0.7.3, reworked 0.7.6: with Disable Shift / Disable Space ticked, zero
+                // those keys (and, for Space, the Jump user event on any key or the gamepad) for
+                // the sinks registered after this one. The engine itself is stopped at the
+                // handlers (JumpBlockHook / ShiftBlockHook) - this sink runs after PlayerControls,
+                // so it is too late for that. Last in the loop so a TFCam hotkey bound to one of
+                // these keys has already been handled above. Unticked = the event passes untouched.
+                if (!AnyMenuOpen()) {
+                    const bool isKeyboard = device == RE::INPUT_DEVICE::kKeyboard;
+                    const bool isShift = isKeyboard && (code == 0x2A || code == 0x36);
+                    const bool isSpace = isKeyboard && code == 0x39;
+                    auto* ue = RE::UserEvents::GetSingleton();
+                    const bool isJump = ue && btn->QUserEvent() == ue->jump;
+                    if ((s_settings.disableShift && isShift) ||
+                        (s_settings.disableSpace && (isSpace || isJump))) {
+                        ConsumeButton(btn);
+                        btn->userEvent = "";
+                    }
+                }
             }
 
             return RE::BSEventNotifyControl::kContinue;
@@ -858,6 +900,24 @@ namespace FreeCam {
         REL::Relocation<std::uintptr_t> jumpVtable(RE::VTABLE_JumpHandler[0]);
         JumpBlockHook::func = jumpVtable.write_vfunc(0x4, JumpBlockHook::thunk);
         SKSE::log::info("JumpHandler::ProcessButton hooked (vtable[4])");
+
+        // 0.7.6: Disable Shift - every handler Shift can drive while flying, ProcessButton = [4].
+        REL::Relocation<std::uintptr_t> sprintVtable(RE::VTABLE_SprintHandler[0]);
+        ShiftBlockHook<RE::SprintHandler>::func =
+            sprintVtable.write_vfunc(0x4, ShiftBlockHook<RE::SprintHandler>::thunk);
+        REL::Relocation<std::uintptr_t> runVtable(RE::VTABLE_RunHandler[0]);
+        ShiftBlockHook<RE::RunHandler>::func =
+            runVtable.write_vfunc(0x4, ShiftBlockHook<RE::RunHandler>::thunk);
+        REL::Relocation<std::uintptr_t> toggleRunVtable(RE::VTABLE_ToggleRunHandler[0]);
+        ShiftBlockHook<RE::ToggleRunHandler>::func =
+            toggleRunVtable.write_vfunc(0x4, ShiftBlockHook<RE::ToggleRunHandler>::thunk);
+        // The free camera's own input handler (second vtable, the PlayerInputHandler base). It
+        // carries a run-speed flag (FreeCameraState::useRunSpeed, +0x4E); what sets it was not
+        // verified (SkyrimSE.exe .text is encrypted on disk), so this only matters if it is Shift.
+        REL::Relocation<std::uintptr_t> fcsInputVtable(RE::VTABLE_FreeCameraState[1]);
+        ShiftBlockHook<RE::PlayerInputHandler>::func =
+            fcsInputVtable.write_vfunc(0x4, ShiftBlockHook<RE::PlayerInputHandler>::thunk);
+        SKSE::log::info("Sprint/Run/ToggleRun/FreeCameraState ProcessButton hooked (vtable[4]) for Disable Shift");
 
         // Menu open/close watcher (menu-exit camera restore).
         if (auto* ui = RE::UI::GetSingleton()) {

@@ -20,8 +20,8 @@ namespace FreeCam {
         bool          dialogueCam     = false; // --Claude: allow free-cam movement during dialogue (WASD move, hold Alt to look)
         bool          raceMenuCam     = true;
         std::uint32_t slowKey         = 0x38;  // 0.7.1: hold to move at 1/5 speed (DX scancode, 0x38 = Left Alt, 0 = off)
-        bool          disableShift    = false; // 0.7.1: eat Shift in free cam (stops the engine's sprint-speed / other mods' Shift binds)
-        bool          disableSpace    = false; // 0.7.1: eat Space in free cam (stops jump-up / other mods' Space binds)  // --Claude: allow free-cam movement during RaceMenu / RaceSex Menu (WASD move, hold Alt to look)
+        bool          disableShift    = false; // 0.7.1: Shift does nothing to the player in free cam (Sprint/Run/ToggleRun + FreeCameraState ProcessButton hooks, 0.7.6)
+        bool          disableSpace    = true;  // 0.7.1: Space / Jump does nothing in free cam (JumpHandler hook, 0.7.6; default ON keeps the 0.7.5 jump block)
         bool          disableActivate = true;  // 0.7.2: eat the Activate user event (E / gamepad A) in free cam - no sitting on furniture or using load doors the crosshair hits from the camera's viewpoint
     };
 
