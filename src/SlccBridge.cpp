@@ -704,7 +704,9 @@ namespace SlccBridge {
         void OnSkseMessage(SKSE::MessagingInterface::Message* a_msg) {
             if (!a_msg || a_msg->type != kMsgToggleFreeFly) return;
             SKSE::log::info("SLCC bridge: 'TFCF' toggle request from {}", a_msg->sender ? a_msg->sender : "?");
-            if (!s_ready) return;  // before kDataLoaded / TFCam inert (no Address Library)
+            // Only before kDataLoaded: the listener is registered only when the Address Library is
+            // present (plugin.cpp), so an inert TFCam never accepts a request it would drop.
+            if (!s_ready) return;
             s_tfcfPending = true;  // the sender's thread is unknown - act on the main thread
             Schedule();
         }

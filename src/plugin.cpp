@@ -45,22 +45,31 @@ namespace {
     // (e.g. a user on the new patch without the updated Address Library). Check for the
     // file ourselves before any REL-dependent install; if missing, stay inert and say so
     // plainly — the game keeps running without TFCam.
-    bool AddressLibraryPresent() {
+    std::string AddressLibraryFile() {
         const auto ver = REL::Module::get().version();
         // Same file CommonLib's IDDatabase::load() opens: VR reads a .csv, AE a versionlib .bin,
         // SE a version .bin. (0.7.0 looked for a .bin on VR, so VR users got the "missing" popup.)
-        std::string file;
         if (REL::Module::IsVR()) {
-            file = std::format("Data/SKSE/Plugins/version-{}.csv", ver.string());
-        } else if (REL::Module::IsAE()) {
-            file = std::format("Data/SKSE/Plugins/versionlib-{}.bin", ver.string());
-        } else {
-            file = std::format("Data/SKSE/Plugins/version-{}.bin", ver.string());
+            return std::format("Data/SKSE/Plugins/version-{}.csv", ver.string());
         }
+        if (REL::Module::IsAE()) {
+            return std::format("Data/SKSE/Plugins/versionlib-{}.bin", ver.string());
+        }
+        return std::format("Data/SKSE/Plugins/version-{}.bin", ver.string());
+    }
+
+    // Quiet check (no REL::ID lookup, no popup) - safe at kPostLoad.
+    bool AddressLibraryFileExists() {
         std::error_code ec;
-        if (std::filesystem::exists(std::filesystem::current_path() / file, ec)) {
+        return std::filesystem::exists(std::filesystem::current_path() / AddressLibraryFile(), ec);
+    }
+
+    bool AddressLibraryPresent() {
+        if (AddressLibraryFileExists()) {
             return true;
         }
+        const auto ver = REL::Module::get().version();
+        const std::string file = AddressLibraryFile();
         SKSE::log::error("Address Library missing for runtime {}.{}.{}.{} ({}) - TFCam disabled",
                          ver.major(), ver.minor(), ver.patch(), ver.build(), file);
         const std::string text = std::format(
@@ -77,7 +86,14 @@ namespace {
         case SKSE::MessagingInterface::kPostLoad:
             // 0.7.7: every plugin is loaded now - FCFW's API and SLUI's 'TFCF' messages.
             FcfwBridge::Init();
-            SlccBridge::OnPostLoad();
+            // Listen for SLUI's 'TFCF' only if TFCam will arm at kDataLoaded. Without the Address
+            // Library TFCam stays inert; with no listener SLUI's Dispatch returns false and SLUI does
+            // its own plain toggle, instead of the request being accepted and silently dropped.
+            if (AddressLibraryFileExists()) {
+                SlccBridge::OnPostLoad();
+            } else {
+                SKSE::log::info("SLCC bridge: Address Library missing - no 'TFCF' listener (SLUI toggles on its own)");
+            }
             break;
         case SKSE::MessagingInterface::kDataLoaded:
             if (!AddressLibraryPresent()) {

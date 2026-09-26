@@ -18,7 +18,7 @@ namespace SlccBridge {
     inline constexpr std::uint32_t kMsgToggleFreeFly = 0x54464346;  // 'TFCF'
     inline constexpr const char*   kSluiPluginName   = "SLUI";  // SLUI's SKSEPluginInfo .Name
 
-    void OnPostLoad();                        // kPostLoad: listen for 'TFCF' from SLUI
+    void OnPostLoad();                        // kPostLoad: listen for 'TFCF' from SLUI (only when TFCam will arm)
     void Install();                           // kDataLoaded: wrap console tfc, arm the bridge
     void RequestToggle(const char* a_source); // free-fly key / 'TFCF'
     void OnFreeCamBegin(bool a_tfcamDriving); // FreeCameraState::Begin hook, after vanilla
