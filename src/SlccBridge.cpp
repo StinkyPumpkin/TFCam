@@ -80,7 +80,14 @@ namespace SlccBridge {
         constexpr double kReleaseTimeout   = 1.50;  // Director key -> FCFW idle / FCFW busy again
         constexpr double kFallbackPairSec  = 0.25;  // End -> Begin re-entry window (fallback detector)
         constexpr double kReentryPairSec   = 0.50;  // 0.7.8: FCFW-owned End -> FCFW re-entry Begin (P+ key)
-        constexpr double kPplusPressWindow = 2.00;  // 0.7.8: P+ key press -> its Papyrus OnKeyDown toggles free cam
+        // P+ key press -> P+'s Papyrus OnKeyDown toggles free cam. The toggle rides the Papyrus VM, which
+        // can lag seconds behind during P+ scenes (SLCC's spec records 15-20 s event backlogs on AE + P+).
+        //  - short window: Begins that SexLab P+ Prism's own 0.5 s free-cam re-entry could also explain
+        //  - late window:  the FCFW re-entry pair (only a free cam toggle under SLCC's running timeline makes
+        //                  it) and the exit from TFCam free-fly (scene end is handled by OnPlayerSceneEnd)
+        constexpr double kPplusPressWindow = 2.00;
+        constexpr double kPplusLateWindow  = 10.00;
+        constexpr double kPrismReentrySec  = 1.50;  // P+ key turned free cam off -> Prism's poll turns it back on
 
         State  s_state          = State::kIdle;
         bool   s_ready          = false;  // Install() ran (Address Library present, TFCam hooks in)
@@ -116,6 +123,9 @@ namespace SlccBridge {
         bool   s_selfToggle         = false;  // our own ToggleFreeCameraMode call is running
         std::uint32_t s_pplusKey     = 0;      // SexLab P+ iToggleFreeCamera (DIK code), 0 = none / not keyboard
         double s_pplusPressAt       = -1000.0;  // last physical press of that key with no menu open
+        bool   s_pplusPressInCycle  = false;    // ...made during a scene / SLCC camera / hand-over (expiry is logged)
+        bool   s_prismPresent       = false;    // SexLab P+ Prism loaded (SexLabPPrism.dll + SexLabPPrism.esp)
+        double s_pplusOffAt         = -1000.0;  // a cycle key (P+'s or TFCam's) turned free cam off, SLCC not driving
 
         std::atomic<bool> s_stepQueued{ false };
         std::atomic<bool> s_inStep{ false };
@@ -130,9 +140,23 @@ namespace SlccBridge {
             return static_cast<double>(t.QuadPart) / static_cast<double>(freq.QuadPart);
         }
 
+        // Hand-over steps in flight: a press of P+'s key here is not a cycle step (NoteKeyDown).
+        bool IsBusy(State a_state) {
+            return a_state == State::kEnterKeyUp || a_state == State::kEnterWaitRelease ||
+                   a_state == State::kResumeKeyUp || a_state == State::kResumeVerify;
+        }
+
+        bool PplusPressArmed() { return s_pplusPressAt > -500.0; }
+
         void SetState(State a_new, std::string_view a_reason) {
             SKSE::log::info("SLCC bridge: {} -> {} ({}) [suspendedByUs={}, FCFW timeline={}]",
                 Name(s_state), Name(a_new), a_reason, s_suspendedByUs, FcfwBridge::ActiveTimelineID());
+            if (IsBusy(s_state) && !IsBusy(a_new) && PplusPressArmed()) {
+                // A press still armed when a hand-over ends would otherwise be matched to an unrelated
+                // free cam exit or entry later (Prism, P+ at scene end).
+                SKSE::log::info("SLCC bridge: dropping a SexLab P+ free camera key press left over from the hand-over");
+                s_pplusPressAt = -1000.0;
+            }
             s_state         = a_new;
             s_gateOpenSince = -1.0;
             s_bindingReady  = false;
@@ -150,13 +174,24 @@ namespace SlccBridge {
         }
 
         // 0.7.8: the cycle's HUD line. Main thread only (every caller is: hooks, input sink, SKSE tasks).
-        void Announce(Mode a_mode, std::string_view a_why) {
+        void Announce(Mode a_mode, std::string_view a_why, std::string_view a_suffix = {}) {
             s_cycleMode = a_mode;
-            const char* text = a_mode == Mode::kTFCam ? "Camera: TFCam" :
+            std::string text = a_mode == Mode::kTFCam ? "Camera: TFCam" :
                                a_mode == Mode::kSLCC  ? "Camera: SLCC" :
                                                         "Camera: Off";
+            text += a_suffix;
             SKSE::log::info("Camera cycle: {} ({})", text, a_why);
-            RE::DebugNotification(text);
+            RE::DebugNotification(text.c_str());
+        }
+
+        // SexLab P+ Prism (SLP_PrismController) owns "free camera on" for every player scene it tracks:
+        // BeginTracking sets FreecamOwned and its 0.5 s poll (EnsureFreecam) calls
+        // SexLabUtil.ToggleFreeCamera(1) whenever PlayerCamera is not in free cam. Only Cleanup (scene end)
+        // and its First Person button release that hold. So during a player scene with Prism, "free cam
+        // off" (the cycle's Off) lasts at most 0.5 s before Prism puts a vanilla free cam - which TFCam
+        // drives - back on. The cycle then skips Off: TFCam <-> SLCC.
+        bool PrismHoldsFreeCam() {
+            return s_prismPresent && SceneTracker::PlayerSceneActive();
         }
 
         // Our own free cam toggles. FCFW's detour on ToggleFreeCameraMode still sees them; the Begin/End
@@ -384,7 +419,13 @@ namespace SlccBridge {
         }
 
         bool PplusPressFresh(double a_now) { return a_now - s_pplusPressAt <= kPplusPressWindow; }
+        bool PplusPressWithinLate(double a_now) { return a_now - s_pplusPressAt <= kPplusLateWindow; }
         void ConsumePplusPress() { s_pplusPressAt = -1000.0; }
+
+        void LogPplusMatch(double a_now, std::string_view a_what) {
+            SKSE::log::info("SLCC bridge: SexLab P+ free camera key press matched {} after {:.0f} ms", a_what,
+                (a_now - s_pplusPressAt) * 1000.0);
+        }
 
         // Only during a scene / an SLCC camera / a hand-over of ours; otherwise the key is a plain toggle.
         bool CycleContext() {
@@ -626,13 +667,23 @@ namespace SlccBridge {
 
         // Turn SLCC's director back on. a_keepFreeCam: scene end / load restore - no scene for SLCC to
         // film, so a free cam the user is still in stays. a_userCycle: the user asked for SLCC.
+        // Finding (0.7.8 review): a late P+ toggle made the TFCam -> SLCC step look like "another mod", so the
+        // cycle position stayed TFCam and the next press skipped Off. Any resume inside a live player scene is
+        // now that step: the position is recorded here and "Camera: SLCC" is decided at the Director key.
         void BeginResume(bool a_keepFreeCam, bool a_userCycle, std::string_view a_reason) {
             s_resumeKeepFreeCam = a_keepFreeCam;
             s_resumeForeignFcfw = false;
             s_announceSlcc      = a_userCycle;
-            if (a_userCycle) s_cycleMode = Mode::kSLCC;
+            if (!a_keepFreeCam && (a_userCycle || SceneTracker::PlayerSceneActive())) s_cycleMode = Mode::kSLCC;
             SetState(State::kResumeWaitGate, a_reason);
             Schedule();
+        }
+
+        // At the Director key: a user step, or any resume while the player's scene still runs (SLCC gets the
+        // camera back either way). Not for scene-end / load restores or a foreign FCFW timeline.
+        bool ResumeShowsSlcc() {
+            return s_announceSlcc ||
+                   (!s_resumeKeepFreeCam && !s_resumeForeignFcfw && SceneTracker::PlayerSceneActive());
         }
 
         void CycleStep(const char* a_source);
@@ -779,7 +830,7 @@ namespace SlccBridge {
                         s_suspendedByUs = false;
                         SetState(State::kIdle, "an FCFW timeline owns the camera before TFCam pressed the Director key - "
                                                "SLCC's director was turned back on outside TFCam");
-                        if (s_announceSlcc) Announce(Mode::kSLCC, "SLCC took the camera back itself");
+                        if (ResumeShowsSlcc()) Announce(Mode::kSLCC, "SLCC took the camera back itself");
                         s_announceSlcc = false;
                         return;
                     }
@@ -816,6 +867,7 @@ namespace SlccBridge {
                     s_keyDownAt      = now;
                     s_lastInjectDown = now;
                     SetState(State::kResumeKeyUp, "Director key down sent to turn SLCC's director back ON");
+                    s_announceSlcc = ResumeShowsSlcc();
                     if (s_announceSlcc) Announce(Mode::kSLCC, "SLCC director turned back on");
                     return;
                 }
@@ -851,6 +903,8 @@ namespace SlccBridge {
         //   SLCC camera (FCFW owns it) -> Off if the cycle put SLCC there, else TFCam (scene start)
         //   TFCam free-fly             -> SLCC
         //   Off                        -> TFCam
+        // With SexLab P+ Prism in a player scene there is no Off (Prism turns free cam back on within
+        // 0.5 s, see PrismHoldsFreeCam): SLCC -> TFCam -> SLCC.
         // ------------------------------------------------------------------------------------
         void CycleStep(const char* a_source) {
             auto* cam = RE::PlayerCamera::GetSingleton();
@@ -859,7 +913,12 @@ namespace SlccBridge {
             switch (s_state) {
             case State::kIdle:
                 if (FcfwBridge::FcfwOwnsCamera() && SlccHandlingApplies()) {
-                    const Mode target = s_cycleMode == Mode::kSLCC ? Mode::kOff : Mode::kTFCam;
+                    Mode target = s_cycleMode == Mode::kSLCC ? Mode::kOff : Mode::kTFCam;
+                    if (target == Mode::kOff && PrismHoldsFreeCam()) {
+                        SKSE::log::info("SLCC bridge: SexLab P+ Prism holds the free cam during this scene - Off would "
+                                        "last 0.5 s, so the cycle goes SLCC -> TFCam");
+                        target = Mode::kTFCam;
+                    }
                     BeginEnter(target, std::string(a_source) + ": SLCC -> " + Name(target) + ", pausing SLCC's director");
                     return;
                 }
@@ -870,7 +929,16 @@ namespace SlccBridge {
                     const bool on = cam->IsInFreeCameraMode();
                     SKSE::log::info("SLCC bridge: {} - no SLCC camera to hand over; plain free cam toggle ({} -> {})",
                         a_source, wasOn ? "on" : "off", on ? "on" : "off");
-                    if (on != wasOn) Announce(on ? Mode::kTFCam : Mode::kOff, a_source);
+                    if (on != wasOn) {
+                        if (!on && PrismHoldsFreeCam()) {
+                            // Prism's next poll turns it back on; OnFreeCamBegin says so when it does.
+                            s_pplusOffAt = Now();
+                            SKSE::log::info("SLCC bridge: SexLab P+ Prism holds the free cam during this scene - "
+                                            "expecting it back within 0.5 s, 'Camera: Off' not shown");
+                        } else {
+                            Announce(on ? Mode::kTFCam : Mode::kOff, a_source);
+                        }
+                    }
                 }
                 return;
 
@@ -904,6 +972,20 @@ namespace SlccBridge {
                 return;
 
             case State::kResumeWaitGate:
+                if (!s_resumeKeepFreeCam && PrismHoldsFreeCam()) {
+                    // SLCC -> next before the director went back on. With Prism the next step is TFCam (see
+                    // PrismHoldsFreeCam): keep the director paused and fly (Prism may have the free cam on already).
+                    if (EnterFreeCam(false)) {
+                        s_announceSlcc = false;
+                        SetState(State::kSuspendedFlying, std::string(a_source) +
+                                 " before SLCC was resumed: SLCC -> TFCam (Prism holds the free cam, no Off)");
+                        Announce(Mode::kTFCam, a_source);
+                    } else {
+                        SKSE::log::error("SLCC bridge: {} - ToggleFreeCameraMode did not enter free cam; SLCC's "
+                                         "director still goes back on", a_source);
+                    }
+                    return;
+                }
                 if (!s_resumeKeepFreeCam) {
                     // SLCC -> Off before the director went back on: simply do not turn it on.
                     if (cam->IsInFreeCameraMode() && !FcfwBridge::FcfwOwnsCamera()) {
@@ -1034,6 +1116,19 @@ namespace SlccBridge {
         }
         SKSE::log::info("SLCC bridge: armed (FCFW API present, SLCCNative.dll loaded)");
         RefreshPplusKey("data loaded");
+
+        // SexLab P+ Prism: its Papyrus controller (SexLabPPrism.esp) keeps free cam on during player scenes.
+        {
+            auto*      dh     = RE::TESDataHandler::GetSingleton();
+            const bool dll    = ::GetModuleHandleA("SexLabPPrism.dll") != nullptr;
+            const bool plugin = dh && (dh->LookupLoadedModByName("SexLabPPrism.esp") ||
+                                       dh->LookupLoadedLightModByName("SexLabPPrism.esp"));
+            s_prismPresent = dll && plugin;
+            SKSE::log::info("SLCC bridge: SexLab P+ Prism {} (SexLabPPrism.dll {}, SexLabPPrism.esp {}){}",
+                s_prismPresent ? "present" : "not present", dll ? "loaded" : "not loaded",
+                plugin ? "active" : "not active",
+                s_prismPresent ? " - it holds the free cam in player scenes, so the camera cycle there is TFCam <-> SLCC" : "");
+        }
     }
 
     // SLUI 'TFCF': TFCam free-fly <-> SLCC, as in 0.7.7 (plus the Off state the cycle can leave behind).
@@ -1117,8 +1212,11 @@ namespace SlccBridge {
             // put SLCC's camera straight back), so this is the moment to step the cycle. Gated on a physical
             // press of P+'s key: P+ also toggles free cam off by itself (UnlockActor / Prism Cleanup at scene
             // end, DisableHotkeys), which makes exactly the same End/Begin pair while SLCC still plays.
-            if (reentry && PplusPressFresh(now) && (s_state == State::kIdle || s_state == State::kEnterWaitGate) &&
-                SlccHandlingApplies()) {
+            // The late window applies: only a free cam toggle under SLCC's running timeline makes this pair,
+            // so a press whose Papyrus toggle arrived seconds later (VM backlog) still counts.
+            if (reentry && PplusPressWithinLate(now) &&
+                (s_state == State::kIdle || s_state == State::kEnterWaitGate) && SlccHandlingApplies()) {
+                LogPplusMatch(now, "FCFW's re-entry of SLCC's camera");
                 ConsumePplusPress();
                 SKSE::log::info("SLCC bridge: SexLab P+'s free camera key toggled SLCC's camera (FCFW re-entered it) "
                                 "- stepping the camera cycle");
@@ -1135,6 +1233,11 @@ namespace SlccBridge {
                 BeginEnter(Mode::kTFCam, "FCFW re-entered right after an FCFW-owned exit with the console open - "
                                          "treating it as console tfc (fallback)");
                 return;
+            }
+            if (reentry && s_state == State::kIdle) {
+                SKSE::log::info("SLCC bridge: FCFW re-entered its camera after a free cam toggle with no P+ key press "
+                                "in the last {:.0f} s (P+ / Prism at scene end, Prism's First Person button, or a mod) - "
+                                "not a cycle step", kPplusLateWindow);
             }
 
             // SLCC took the camera during Off: the user pressed SLCC's own Director key.
@@ -1173,7 +1276,13 @@ namespace SlccBridge {
         case State::kIdle:
             if (pplus && SceneTracker::PlayerSceneActive()) {
                 ConsumePplusPress();
+                s_pplusOffAt = -1000.0;
                 Announce(Mode::kTFCam, "SexLab P+'s free camera key; SLCC is not driving this scene");
+            } else if (now - s_pplusOffAt <= kPrismReentrySec && PrismHoldsFreeCam()) {
+                // The press turned free cam off (OnFreeCamEnd / CycleStep) and Prism's poll put it back.
+                s_pplusOffAt = -1000.0;
+                Announce(Mode::kTFCam, "SexLab P+ Prism turned the free cam back on after the key turned it off",
+                    " (Prism keeps free cam on in scenes)");
             }
             return;
 
@@ -1191,8 +1300,13 @@ namespace SlccBridge {
         if (s_state == State::kSuspendedFlying) {
             // User exits (TFCam key / 'TFCF' = our own toggle, P+'s key, console tfc) step the cycle to SLCC.
             // P+ / Prism turning free cam off at scene end is not announced: there is no scene left to film.
-            const bool pplus = !s_selfToggle && PplusPressFresh(now);
-            if (pplus) ConsumePplusPress();
+            // Late window: a P+ toggle that took seconds through the Papyrus VM still counts as the press.
+            // (Unmatched, the step still happens: BeginResume records SLCC for any in-scene resume.)
+            const bool pplus = !s_selfToggle && PplusPressWithinLate(now);
+            if (pplus) {
+                LogPplusMatch(now, "the exit from TFCam free-fly");
+                ConsumePplusPress();
+            }
             const bool user = s_selfToggle || pplus || ConsoleOpen();
             BeginResume(false, user,
                 pplus ? "SexLab P+'s free camera key left TFCam free-fly - SLCC's director goes back on once gameplay input is open"
@@ -1204,7 +1318,14 @@ namespace SlccBridge {
         if (s_state == State::kIdle && !a_fcfwOwnedAtEnd && !s_selfToggle && PplusPressFresh(now) &&
             SceneTracker::PlayerSceneActive()) {
             ConsumePplusPress();
-            Announce(Mode::kOff, "SexLab P+'s free camera key; SLCC is not driving this scene");
+            if (PrismHoldsFreeCam()) {
+                // Prism's poll turns free cam back on within 0.5 s; OnFreeCamBegin announces it when it does.
+                s_pplusOffAt = now;
+                SKSE::log::info("SLCC bridge: SexLab P+'s free camera key turned free cam off while SLCC is not driving; "
+                                "SexLab P+ Prism holds the free cam during this scene - 'Camera: Off' not shown");
+            } else {
+                Announce(Mode::kOff, "SexLab P+'s free camera key; SLCC is not driving this scene");
+            }
         }
     }
 
@@ -1213,6 +1334,7 @@ namespace SlccBridge {
         s_cycleMode         = Mode::kNone;
         s_announceSlcc      = false;
         s_restoreAfterEnter = false;
+        s_pplusOffAt        = -1000.0;
         ConsumePplusPress();
         RefreshPplusKey(a_why);
         if (!s_installed) return;
@@ -1235,6 +1357,19 @@ namespace SlccBridge {
     // The UI-task hop normally re-arms the step every frame; this only matters if it ever did not.
     void Pump() {
         if (NeedsStepping()) Schedule();
+        // A press of P+'s key during a scene that no free cam toggle ever matched: say so, so a lost press
+        // can be told apart from one TFCam misread (TFCam.log).
+        if (PplusPressArmed()) {
+            const double now = Now();
+            if (now - s_pplusPressAt > kPplusLateWindow) {
+                if (s_pplusPressInCycle) {
+                    SKSE::log::info("SLCC bridge: SexLab P+ free camera key press expired - no free cam toggle "
+                                    "matched it within {:.0f} s [{} | cycle {} | FCFW timeline {}]",
+                        kPplusLateWindow, Name(s_state), Name(s_cycleMode), FcfwBridge::ActiveTimelineID());
+                }
+                ConsumePplusPress();
+            }
+        }
     }
 
     bool IsInjecting() { return s_injecting; }
@@ -1245,7 +1380,17 @@ namespace SlccBridge {
 
     void NoteKeyDown(std::uint32_t a_dikCode) {
         if (!s_installed || s_pplusKey == 0 || a_dikCode != s_pplusKey) return;
-        s_pplusPressAt = Now();
+        if (IsBusy(s_state)) {
+            // Mid hand-over the press is not a cycle step, and arming it would let it match an unrelated
+            // exit later. P+ still toggles the vanilla free cam on it (its own Papyrus key handler).
+            ConsumePplusPress();
+            SKSE::log::info("SLCC bridge: SexLab P+ free camera key (0x{:X}) pressed during the hand-over [{}] - "
+                            "not a cycle step", a_dikCode, Name(s_state));
+            Notify("Camera: switching - press again in a moment");
+            return;
+        }
+        s_pplusPressAt      = Now();
+        s_pplusPressInCycle = CycleContext();
         SKSE::log::info("SLCC bridge: SexLab P+ free camera key (0x{:X}) pressed [{} | cycle {} | FCFW timeline {}]",
             a_dikCode, Name(s_state), Name(s_cycleMode), FcfwBridge::ActiveTimelineID());
     }
@@ -1267,7 +1412,8 @@ namespace SlccBridge {
 
     // STEP 3: Off / free-fly must not leave SLCC's director off for the next scene.
     void OnPlayerSceneEnd(int a_tid) {
-        s_cycleMode = Mode::kNone;
+        s_cycleMode  = Mode::kNone;
+        s_pplusOffAt = -1000.0;
         ConsumePplusPress();  // a press right at scene end must not be matched to P+'s scene-end toggle
         if (!s_installed) return;
         SKSE::log::info("SLCC bridge: player SexLab scene (thread {}) ended [{}, director paused by TFCam: {}]", a_tid,

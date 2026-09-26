@@ -17,6 +17,8 @@
 // free cam through PapyrusUtil's MiscUtil.ToggleFreeCamera, a direct PlayerCamera::ToggleFreeCameraMode
 // call (no console command), so TFCam follows that toggle from its FreeCameraState Begin/End hooks,
 // gated on a physical press of P+'s key. The first press of a scene goes SLCC -> TFCam.
+// With SexLab P+ Prism loaded, a player scene has no Off: Prism re-enters the vanilla free cam within
+// 0.5 s whenever it is off (SLP_PrismController.EnsureFreecam), so the cycle there is TFCam <-> SLCC.
 namespace SlccBridge {
     // Shared message contract with SLUI (E:\dev\SexLabUI-PrismaUI): SLUI sends
     //   SKSE::GetMessagingInterface()->Dispatch(kMsgToggleFreeFly, nullptr, 0, "TFCam");
