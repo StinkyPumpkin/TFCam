@@ -109,22 +109,24 @@ namespace HUDHider {
     }
 
     static void ShowHUD() {
-        auto* ui = RE::UI::GetSingleton();
-        if (!ui) return;
-        auto view = ui->GetMovieView("HUD Menu");
-        if (!view) return;
-
-        SetGfxAlpha(view.get(), "_root.HUDMovieBaseInstance", 100.0);
-        SetGfxAlpha(view.get(), "_root.WidgetContainer", 100.0);
-
-        SetMenuRootAlpha("TrueHUD", 100.0);
-
-        SetSTBAlpha(100.0);
+        // 0.7.7 (reported by the Aroused Widget side): the old early returns on a missing UI /
+        // "HUD Menu" view skipped the RestoreAll message and left s_hidden set, so the widgets
+        // stayed hidden. Restore every piece that exists; the message and the flag always go out.
+        bool hudMenu = false;
+        if (auto* ui = RE::UI::GetSingleton()) {
+            if (auto view = ui->GetMovieView("HUD Menu")) {
+                SetGfxAlpha(view.get(), "_root.HUDMovieBaseInstance", 100.0);
+                SetGfxAlpha(view.get(), "_root.WidgetContainer", 100.0);
+                hudMenu = true;
+            }
+            SetMenuRootAlpha("TrueHUD", 100.0);
+            SetSTBAlpha(100.0);
+        }
 
         SendArousedMessage(kRestoreAll);
 
         s_hidden = false;
-        SKSE::log::info("HUDHider: shown (all restored)");
+        SKSE::log::info("HUDHider: shown (all restored{})", hudMenu ? "" : "; HUD Menu view was not available");
     }
 
     // ---- Public API ----

@@ -1,5 +1,7 @@
 #include "FreeCamController.h"
 #include "FreeCamMenu.h"
+#include "FcfwBridge.h"
+#include "SlccBridge.h"
 
 #include <spdlog/sinks/basic_file_sink.h>
 #include <ShlObj.h>
@@ -72,13 +74,27 @@ namespace {
 
     void MessageHandler(SKSE::MessagingInterface::Message* a_msg) {
         switch (a_msg->type) {
+        case SKSE::MessagingInterface::kPostLoad:
+            // 0.7.7: every plugin is loaded now - FCFW's API and SLUI's 'TFCF' messages.
+            FcfwBridge::Init();
+            SlccBridge::OnPostLoad();
+            break;
         case SKSE::MessagingInterface::kDataLoaded:
             if (!AddressLibraryPresent()) {
                 break;
             }
             FreeCam::Install();
+            SlccBridge::Install();
             FreeCamMenu::Register();
             FreeCamMenu::ApplyGameSettings();
+            break;
+        case SKSE::MessagingInterface::kPostLoadGame:
+            SlccBridge::OnGameLoaded("save loaded");
+            break;
+        case SKSE::MessagingInterface::kNewGame:
+            SlccBridge::OnGameLoaded("new game");
+            break;
+        default:
             break;
         }
     }
@@ -88,7 +104,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     SKSE::Init(skse);
     InitializeLogging();
 
-    SKSE::log::info("FreeCam v{} loaded", "0.7.0");
+    SKSE::log::info("TFCam v{} loaded", "0.7.7");
 
     FreeCamMenu::LoadSettings();
 

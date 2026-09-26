@@ -45,5 +45,16 @@ namespace FreeCam {
 
     float GetRollDegrees();
     void  ResetAll();
-    bool  IsActive();
+    bool  IsActive();       // vanilla free camera is on - whoever drives it (input blocks key on this)
+
+    // 0.7.7: free camera is on AND no FreeCamera Framework timeline owns it (SLCC's cinematic camera
+    // runs inside the same FreeCameraState). Camera writes (FOV, roll, reset, transforms, HUD hide)
+    // key on this, evaluated at call time.
+    bool  TFCamDriving();
+
+    // 0.7.7 SLCC hand-over: read the live free-cam transform (FCFW's, just before SLCC lets go) and
+    // start the next TFCam-driven free-cam session from it instead of from the third-person camera.
+    bool  CaptureFreeCamPose(RE::NiPoint3& a_pos, float& a_pitch, float& a_yaw);
+    void  SetEntryPose(const RE::NiPoint3& a_pos, float a_pitch, float a_yaw);
+    void  ClearEntryPose();
 }

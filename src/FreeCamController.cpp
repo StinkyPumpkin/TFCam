@@ -3,6 +3,8 @@
 #include "FreeCamMenu.h"
 #include "CameraLight.h"
 #include "HUDHider.h"
+#include "FcfwBridge.h"
+#include "SlccBridge.h"
 
 #include <RE/I/INISettingCollection.h>
 #include <RE/A/AttackBlockHandler.h>
@@ -33,6 +35,15 @@ namespace FreeCam {
     static float         s_menuSaveFOV = 0.0f;
     static bool          s_menuRestorePending = false;
     static bool          s_menuSaveValid = false;  // have we captured a real position this session?
+
+    // 0.7.7: this free-cam session was begun by TFCam / vanilla tfc (no FCFW timeline at Begin).
+    static bool          s_sessionDriven = false;
+
+    // 0.7.7 SLCC hand-over: pose to start the next TFCam-driven session from (applied on its first Update).
+    static bool          s_entryPosePending = false;
+    static RE::NiPoint3  s_entryPos{0.0f, 0.0f, 0.0f};
+    static float         s_entryPitch = 0.0f;
+    static float         s_entryYaw   = 0.0f;
 
     static void SetCameraSpeed(float speed) {
         auto* ini = RE::INISettingCollection::GetSingleton();
@@ -70,6 +81,39 @@ namespace FreeCam {
         return cam && cam->IsInFreeCameraMode();
     }
 
+    bool TFCamDriving() {
+        return IsActive() && !FcfwBridge::FcfwOwnsCamera();
+    }
+
+    bool CaptureFreeCamPose(RE::NiPoint3& a_pos, float& a_pitch, float& a_yaw) {
+        auto* cam = RE::PlayerCamera::GetSingleton();
+        if (!cam || !cam->IsInFreeCameraMode()) return false;
+        auto* state = cam->currentState.get();
+        if (!state) return false;
+        const auto base = reinterpret_cast<std::uintptr_t>(state);
+        a_pos = *reinterpret_cast<RE::NiPoint3*>(base + kOff_translation);
+        const float* rot = reinterpret_cast<float*>(base + kOff_rotation);
+        a_pitch = rot[0];
+        a_yaw   = rot[1];
+        const bool ok = std::isfinite(a_pos.x) && std::isfinite(a_pos.y) && std::isfinite(a_pos.z) &&
+                        std::isfinite(a_pitch) && std::isfinite(a_yaw) &&
+                        (a_pos.x != 0.0f || a_pos.y != 0.0f || a_pos.z != 0.0f);
+        SKSE::log::info("FreeCam: hand-over pose captured ({:.1f}, {:.1f}, {:.1f}) pitch={:.3f} yaw={:.3f}{}",
+            a_pos.x, a_pos.y, a_pos.z, a_pitch, a_yaw, ok ? "" : " - rejected");
+        return ok;
+    }
+
+    void SetEntryPose(const RE::NiPoint3& a_pos, float a_pitch, float a_yaw) {
+        s_entryPos         = a_pos;
+        s_entryPitch       = a_pitch;
+        s_entryYaw         = a_yaw;
+        s_entryPosePending = true;
+    }
+
+    void ClearEntryPose() {
+        s_entryPosePending = false;
+    }
+
     float GetRollDegrees() {
         return s_rollAngle * (180.0f / 3.14159265f);
     }
@@ -93,7 +137,8 @@ namespace FreeCam {
         static void thunk(RE::TESCameraState* a_this, RE::NiQuaternion& a_rotation) {
             func(a_this, a_rotation);
 
-            if (s_rollAngle != 0.0f) {
+            // 0.7.7: never roll a camera an FCFW timeline (SLCC) is driving - it has its own roll.
+            if (s_rollAngle != 0.0f && !FcfwBridge::FcfwOwnsCamera()) {
                 float halfAngle = s_rollAngle * 0.5f;
                 float cH = std::cos(halfAngle);
                 float sH = std::sin(halfAngle);
@@ -119,8 +164,12 @@ namespace FreeCam {
     };
 
     // Run a remapped mouse-button action (LMB/RMB → one of our functions).
-    static void ExecuteMouseAction(int action) {
+    // 0.7.7: the camera-writing actions (FOV, reset) only while TFCam drives the camera.
+    static void ExecuteMouseAction(int action, bool a_driving) {
         auto* cam = RE::PlayerCamera::GetSingleton();
+        if (!a_driving && (action == kFovIn || action == kFovOut || action == kResetCam)) {
+            return;
+        }
         switch (action) {
             case kScreenshot:
                 keybd_event(VK_SNAPSHOT, 0x2C, 0, 0);
@@ -230,6 +279,24 @@ namespace FreeCam {
             bool lmb = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
             bool rmb = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
 
+            // 0.7.7: this Update runs for EVERY FreeCameraState, including the one an FCFW timeline
+            // (SLCC) drives. Every camera write below is TFCam's only while no timeline owns it.
+            const bool driving = !FcfwBridge::FcfwOwnsCamera();
+            SlccBridge::Pump();
+
+            // 0.7.7 SLCC hand-over: start where SLCC's camera was, not behind the player. Written
+            // before the vanilla Update, the same way as the menu-exit restore below.
+            if (s_entryPosePending && a_this && driving) {
+                s_entryPosePending = false;
+                auto base = reinterpret_cast<std::uintptr_t>(a_this);
+                *reinterpret_cast<RE::NiPoint3*>(base + kOff_translation) = s_entryPos;
+                float* rot = reinterpret_cast<float*>(base + kOff_rotation);
+                rot[0] = s_entryPitch;
+                rot[1] = s_entryYaw;
+                SKSE::log::info("FreeCam: started from SLCC's last camera pose ({:.1f}, {:.1f}, {:.1f})",
+                    s_entryPos.x, s_entryPos.y, s_entryPos.z);
+            }
+
             // Menu-exit restore: a game menu just closed → re-assert our saved free-cam
             // transform IF the camera was actually yanked (another mod reset it). Guards:
             //  - only with a VALID capture from THIS free-cam session (never restore a
@@ -238,7 +305,7 @@ namespace FreeCam {
             //    closes / HUD toggles don't cause a 1-frame hitch).
             if (s_menuRestorePending && a_this) {
                 s_menuRestorePending = false;
-                if (s_menuSaveValid) {
+                if (s_menuSaveValid && driving) {
                     auto base = reinterpret_cast<std::uintptr_t>(a_this);
                     auto* cur = reinterpret_cast<RE::NiPoint3*>(base + kOff_translation);
                     float dx = cur->x - s_menuSaveTrans.x;
@@ -259,7 +326,7 @@ namespace FreeCam {
             // Block the mouse-button-driven vertical at its source.
             // LMB/RMB are always remapped — vanilla up/down is replaced by
             // the remap system (user can assign Move Up/Down if desired).
-            if (!AnyMenuOpen() && (lmb || rmb) && a_this) {
+            if (driving && !AnyMenuOpen() && (lmb || rmb) && a_this) {
                 auto base = reinterpret_cast<std::uintptr_t>(a_this);
                 *reinterpret_cast<std::int16_t*>(base + kOff_verticalDirection) = 0;
                 reinterpret_cast<float*>(base + kOff_zUpDown)[0] = 0.0f;
@@ -270,7 +337,7 @@ namespace FreeCam {
 
             // Continuous move actions (LMB/RMB remapped) — applied AFTER Update
             // by adding to translation. Only when blockAttacks is on (remap active).
-            if (s_settings.blockAttacks && !AnyMenuOpen() && a_this) {
+            if (driving && s_settings.blockAttacks && !AnyMenuOpen() && a_this) {
                 auto applyMove = [&](int action, bool held) {
                     if (!held) return;
 
@@ -317,7 +384,7 @@ namespace FreeCam {
             // --Claude: the same manual-drive path serves BOTH menus that suppress free-cam
             // input — the Dialogue Menu and RaceMenu (RaceSex Menu). Writing our own absolute
             // yaw/pitch/translation each frame is harmless even where vanilla doesn't re-aim.
-            const bool inMenuCam = a_this &&
+            const bool inMenuCam = a_this && driving &&
                 ((s_settings.dialogueCam && InDialogue()) || (s_settings.raceMenuCam && InRaceMenu()));
             if (!inMenuCam) s_dlgSeeded = false;
 
@@ -397,8 +464,8 @@ namespace FreeCam {
             // menu is up, OR (dialogue free-cam) while we're driving the camera during
             // dialogue, so the menu-close restore sees no movement and never yanks us
             // back to where the camera was before dialogue opened.
-            if (a_this && (!AnyMenuOpen() || (s_settings.dialogueCam && InDialogue())
-                                          || (s_settings.raceMenuCam && InRaceMenu()))) {
+            if (a_this && driving && (!AnyMenuOpen() || (s_settings.dialogueCam && InDialogue())
+                                                     || (s_settings.raceMenuCam && InRaceMenu()))) {
                 auto base = reinterpret_cast<std::uintptr_t>(a_this);
                 s_menuSaveTrans = *reinterpret_cast<RE::NiPoint3*>(base + kOff_translation);
                 float* rot = reinterpret_cast<float*>(base + kOff_rotation);
@@ -417,15 +484,27 @@ namespace FreeCam {
         static void thunk(RE::TESCameraState* a_this) {
             func(a_this);
             auto* cam = RE::PlayerCamera::GetSingleton();
-            if (cam) s_baseFOV = cam->worldFOV;
             s_rollAngle = 0.0f;
             // Start the menu-restore anchor fresh — never restore a previous session's
             // (or zero) position on entry. The first Update frame captures the real spot.
             s_menuSaveValid = false;
             s_menuRestorePending = false;
-            HUDHider::OnFreeCamEnter();
 
-            SKSE::log::info("FreeCam entered, FOV={:.1f}", s_baseFOV);
+            // 0.7.7: FCFW (SLCC) enters this same FreeCameraState for its timelines. Only a session
+            // nobody else owns is TFCam's: base FOV for the exit write-back and the HUD hide.
+            const auto timeline = FcfwBridge::ActiveTimelineID();
+            s_sessionDriven = (timeline == 0);
+            if (s_sessionDriven) {
+                s_baseFOV = cam ? cam->worldFOV : 0.0f;
+                HUDHider::OnFreeCamEnter();
+                SKSE::log::info("FreeCam entered, FOV={:.1f}", s_baseFOV);
+            } else {
+                s_baseFOV = 0.0f;
+                s_entryPosePending = false;
+                SKSE::log::info("FreeCam entered by FCFW timeline {} (SLCC / FCFW drives it) - TFCam camera "
+                                "features stand down, input blocks stay", timeline);
+            }
+            SlccBridge::OnFreeCamBegin(s_sessionDriven);
         }
         static inline REL::Relocation<decltype(thunk)> func;
     };
@@ -434,9 +513,15 @@ namespace FreeCam {
 
     struct FreeCamEndHook {
         static void thunk(RE::TESCameraState* a_this) {
+            // 0.7.7: s_baseFOV is only set for a TFCam-driven session. If an FCFW timeline owns the
+            // camera at exit (SLCC stopping its playback), FCFW restores its own saved FOV.
+            const bool fcfwOwned   = FcfwBridge::FcfwOwnsCamera();
+            const bool wasTFCam    = s_sessionDriven;
             float savedFOV = s_baseFOV;
             s_rollAngle = 0.0f;
             s_baseFOV   = 0.0f;
+            s_sessionDriven    = false;
+            s_entryPosePending = false;
 
             // Restore alt-slow speed before exiting
             if (s_altSlow) {
@@ -444,18 +529,22 @@ namespace FreeCam {
                 s_altSlow = false;
             }
 
-            // Turn off camera light and restore HUD before exiting free cam
+            // Turn off camera light and restore HUD before exiting free cam.
+            // (HUDHider only restores what it hid, so this is safe for FCFW sessions too.)
             CameraLight::Cleanup();
             HUDHider::OnFreeCamExit();
 
             func(a_this);
 
-            if (savedFOV > 0.0f) {
+            if (savedFOV > 0.0f && !fcfwOwned) {
                 if (auto* cam = RE::PlayerCamera::GetSingleton()) {
                     cam->worldFOV = savedFOV;
                     cam->firstPersonFOV = savedFOV;
                     SKSE::log::info("FreeCam: FOV restored to {:.1f}", savedFOV);
                 }
+            } else if (savedFOV > 0.0f) {
+                SKSE::log::info("FreeCam: FOV write-back skipped - FCFW timeline {} owns the camera at exit",
+                    FcfwBridge::ActiveTimelineID());
             }
 
             // Note: the engine re-enables gameplay controls on a normal free-cam exit
@@ -487,7 +576,9 @@ namespace FreeCam {
                 });
             }
 
-            SKSE::log::info("FreeCam exited");
+            SKSE::log::info("FreeCam exited ({} session{})", wasTFCam ? "TFCam" : "FCFW",
+                fcfwOwned ? ", FCFW timeline active at exit" : "");
+            SlccBridge::OnFreeCamEnd(fcfwOwned);
         }
         static inline REL::Relocation<decltype(thunk)> func;
     };
@@ -517,7 +608,8 @@ namespace FreeCam {
                             RE::UI_MESSAGE_TYPE::kForceHide, nullptr);
                     }
                 }
-            } else {
+            } else if (TFCamDriving()) {
+                // 0.7.7: never re-assert a transform over an FCFW (SLCC) camera.
                 s_menuRestorePending = true;
             }
             return RE::BSEventNotifyControl::kContinue;
@@ -637,7 +729,15 @@ namespace FreeCam {
             if (!a_events)
                 return RE::BSEventNotifyControl::kContinue;
 
+            // 0.7.7: our own injected SLCC Director key press - not user input.
+            if (SlccBridge::IsInjecting())
+                return RE::BSEventNotifyControl::kContinue;
+            SlccBridge::Pump();
+
             bool active = IsActive();
+            // 0.7.7: camera-writing hotkeys (FOV wheel, roll, reset, FOV/reset remaps) key on this;
+            // the input blocks (attack / jump / activate / shift / Tab / roll-key eat) stay on `active`.
+            bool driving = active && !FcfwBridge::FcfwOwnsCamera();
             if (active) UpdateFrameTimer();
 
             for (auto* evt = *a_events; evt; evt = evt->next) {
@@ -682,11 +782,11 @@ namespace FreeCam {
                                     || (s_settings.raceMenuCam && InRaceMenu()))) {
                     int flyKey = FreeCamMenu::GetFreeFlyKey();
                     if (flyKey > 0 && code == static_cast<std::uint32_t>(flyKey)) {
-                        auto* cam = RE::PlayerCamera::GetSingleton();
-                        if (cam) {
-                            cam->ToggleFreeCameraMode(false);
-                        }
-                        active = IsActive();
+                        // 0.7.7: plain toggle as before, unless an FCFW timeline (SLCC) owns the
+                        // camera - then SLCC's director is paused first (SlccBridge).
+                        SlccBridge::RequestToggle("free-fly key");
+                        active  = IsActive();
+                        driving = active && !FcfwBridge::FcfwOwnsCamera();
                         ConsumeButton(btn);
                         continue;
                     }
@@ -748,8 +848,8 @@ namespace FreeCam {
                     // while held, so skip them here.
                     if (btn->IsDown() &&
                         (action > kNone && action < kMoveForward))
-                        ExecuteMouseAction(action);
-                    ZeroFreeCamVertical();
+                        ExecuteMouseAction(action, driving);
+                    if (driving) ZeroFreeCamVertical();
                     ConsumeButton(btn);
                     continue;
                 }
@@ -784,11 +884,12 @@ namespace FreeCam {
                         }
                     }
 
+                    // 0.7.7: plain wheel = FOV only while TFCam drives; under SLCC the wheel is SLCC's zoom.
                     if (code == RE::BSWin32MouseDevice::Key::kWheelUp) {
                         bool shiftHeld = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
                         if (shiftHeld) {
                             CameraLight::ScrollUp();
-                        } else {
+                        } else if (driving) {
                             auto* cam = RE::PlayerCamera::GetSingleton();
                             if (cam) {
                                 cam->worldFOV = std::clamp(
@@ -801,7 +902,7 @@ namespace FreeCam {
                         bool shiftHeld = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
                         if (shiftHeld) {
                             CameraLight::ScrollDown();
-                        } else {
+                        } else if (driving) {
                             auto* cam = RE::PlayerCamera::GetSingleton();
                             if (cam) {
                                 cam->worldFOV = std::clamp(
@@ -818,7 +919,8 @@ namespace FreeCam {
                 if (device == RE::INPUT_DEVICE::kKeyboard) {
                     bool consumed = false;
 
-                    if (!AnyMenuOpen() && btn->IsPressed()) {
+                    // 0.7.7: roll only while TFCam drives (the roll keys are still eaten below).
+                    if (driving && !AnyMenuOpen() && btn->IsPressed()) {
                         if (code == s_settings.rollCCWKey) {
                             s_rollAngle -= s_settings.rollSpeed * s_frameDt;
                             consumed = true;
@@ -839,7 +941,7 @@ namespace FreeCam {
                     }
 
                     if (!AnyMenuOpen() && btn->IsDown()) {
-                        if (code == s_settings.resetKey) {
+                        if (driving && code == s_settings.resetKey) {
                             ResetAll();
                             consumed = true;
                         }
