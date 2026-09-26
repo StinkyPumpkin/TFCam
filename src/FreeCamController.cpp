@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <format>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -183,11 +184,67 @@ namespace FreeCam {
     void NoteScriptTfcOpenedSession() { s_scriptTfcSession = true; }
     bool SessionOpenedByScriptTfc() { return s_scriptTfcSession.load(); }
 
+    // ---- 0.7.10: the Begin/End hooks' engine work runs on the main thread -------------------------------------
+    // Begin/End also run on Papyrus VM threads (SexLab P+ / Prism via PapyrusUtil's MiscUtil.ToggleFreeCamera,
+    // Poser Hotkeys Plus' scripted tfc). Only cheap bookkeeping stays on the calling thread. Everything that touches
+    // the engine - Scaleform (HUDHider, and the HideAll / RestoreAll broadcast other plugins handle on the sender's
+    // thread), the camera light (scene graph + ShadowSceneNode), FOV and speed writes, FreezeTime, and the SLCC
+    // bridge callbacks (DebugNotification, its main-thread-only state) - goes through ONE FIFO of one-shot SKSE tasks.
+    // On the main thread with nothing queued it runs inline, exactly as before. While a batch is queued, even a
+    // main-thread hook queues behind it, so a fast exit -> enter across threads applies in order. No task re-queues
+    // itself; SKSE drains the queue, so a batch queued from inside a batch runs in the same drain, after it.
+    static std::atomic<int>  s_hookBatchesPending{ 0 };
+    static std::atomic<bool> s_beginOffMainLogged{ false };
+    static std::atomic<bool> s_endOffMainLogged{ false };
+
+    static bool OnMainThread() {
+        const auto main = s_mainThreadId.load();
+        return main != 0 && static_cast<std::uint32_t>(::GetCurrentThreadId()) == main;
+    }
+
+    static bool HookWorkRunsInline() {
+        return OnMainThread() && s_hookBatchesPending.load() == 0;
+    }
+
+    static void QueueHookWork(std::function<void()> a_work) {
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) {  // never expected in game; better late-thread work than none
+            a_work();
+            return;
+        }
+        ++s_hookBatchesPending;
+        tasks->AddTask([work = std::move(a_work)] {
+            work();
+            --s_hookBatchesPending;
+        });
+    }
+
+    // Returns true when the work ran inline.
+    static bool RunHookWork(std::function<void()> a_work) {
+        if (HookWorkRunsInline()) {
+            a_work();
+            return true;
+        }
+        QueueHookWork(std::move(a_work));
+        return false;
+    }
+
+    // Once per game session per hook, so the log shows the first off-main-thread call and what happens to it.
+    static void NoteOffMainThread(const char* a_hook, std::atomic<bool>& a_logged) {
+        if (!OnMainThread() && !a_logged.exchange(true)) {
+            SKSE::log::info("FreeCameraState::{} ran off the main thread for the first time this session [{}] - its "
+                            "engine work (HUD, camera light, FOV, speed, FreezeTime, SLCC bridge) is queued to the main "
+                            "thread from now on", a_hook, ThreadTag());
+        }
+    }
+
     // Poser Hotkeys Plus' DisableFreeCam runs MiscUtil.SetFreeCameraSpeed(10) right before its tfc; when that tfc is
-    // refused, put TFCam's own speed back.
+    // refused (a Papyrus VM thread), put TFCam's own speed back - on the main thread, in order.
     void ReapplyCameraSpeed() {
-        const float speed = FreeCamMenu::GetCameraSpeed();
-        SetCameraSpeed(s_altSlow ? speed / 5.0f : speed);
+        RunHookWork([] {
+            const float speed = FreeCamMenu::GetCameraSpeed();
+            SetCameraSpeed(s_altSlow ? speed / 5.0f : speed);
+        });
     }
 
     static LARGE_INTEGER s_qpcFreq = {};
@@ -649,7 +706,8 @@ namespace FreeCam {
         static void thunk(RE::TESCameraState* a_this) {
             const std::string chain = CallerChain(24);  // 0.7.9 diagnostic: who turned free cam on
             func(a_this);
-            auto* cam = RE::PlayerCamera::GetSingleton();
+
+            // 0.7.10: cheap bookkeeping stays on the calling thread (it may be a Papyrus VM thread).
             s_rollAngle = 0.0f;
             // Start the menu-restore anchor fresh — never restore a previous session's
             // (or zero) position on entry. The first Update frame captures the real spot.
@@ -659,19 +717,32 @@ namespace FreeCam {
             // 0.7.7: FCFW (SLCC) enters this same FreeCameraState for its timelines. Only a session
             // nobody else owns is TFCam's: base FOV for the exit write-back and the HUD hide.
             const auto timeline = FcfwBridge::ActiveTimelineID();
-            s_sessionDriven = (timeline == 0);
-            if (s_sessionDriven) {
-                s_baseFOV = cam ? cam->worldFOV : 0.0f;
-                HUDHider::OnFreeCamEnter();
-                SKSE::log::info("FreeCam entered, FOV={:.1f} [{}]", s_baseFOV, ThreadTag());
-            } else {
-                s_baseFOV = 0.0f;
+            const bool driven   = (timeline == 0);
+            s_sessionDriven     = driven;
+            if (!driven) {
                 s_entryPosePending = false;
-                SKSE::log::info("FreeCam entered by FCFW timeline {} (SLCC / FCFW drives it) - TFCam camera "
-                                "features stand down except roll, input blocks stay [{}]", timeline, ThreadTag());
             }
-            SKSE::log::info("FreeCam enter: called from {}", chain);
-            SlccBridge::OnFreeCamBegin(s_sessionDriven);
+            const bool selfToggle = SlccBridge::IsSelfToggle();  // read now: a queued callback runs after the toggle
+
+            NoteOffMainThread("Begin", s_beginOffMainLogged);
+            const std::string thread = ThreadTag();
+
+            // 0.7.10: FOV capture, HUD hide and the SLCC bridge on the main thread (inline when already there).
+            const bool ranInline = RunHookWork([driven, timeline, selfToggle, thread] {
+                if (driven) {
+                    auto* cam = RE::PlayerCamera::GetSingleton();
+                    s_baseFOV = cam ? cam->worldFOV : 0.0f;
+                    HUDHider::OnFreeCamEnter();
+                    SKSE::log::info("FreeCam entered, FOV={:.1f} [{}]", s_baseFOV, thread);
+                } else {
+                    s_baseFOV = 0.0f;
+                    SKSE::log::info("FreeCam entered by FCFW timeline {} (SLCC / FCFW drives it) - TFCam camera "
+                                    "features stand down except roll, input blocks stay [{}]", timeline, thread);
+                }
+                SlccBridge::OnFreeCamBegin(driven, selfToggle);
+            });
+            SKSE::log::info("FreeCam enter: called from {}{}", chain,
+                ranInline ? "" : " (engine work queued to the main thread)");
         }
         static inline REL::Relocation<decltype(thunk)> func;
     };
@@ -686,16 +757,49 @@ namespace FreeCam {
             const std::string chain = CallerChain(24);
             const bool        scriptSession = s_scriptTfcSession.exchange(false);
 
+            // 0.7.10: cheap bookkeeping stays on the calling thread (it may be a Papyrus VM thread).
             // 0.7.7: s_baseFOV is only set for a TFCam-driven session. If an FCFW timeline owns the
             // camera at exit (SLCC stopping its playback), FCFW restores its own saved FOV.
-            const bool fcfwOwned   = FcfwBridge::FcfwOwnsCamera();
-            const bool wasTFCam    = s_sessionDriven;
-            float savedFOV = s_baseFOV;
-            s_rollAngle = 0.0f;
-            s_baseFOV   = 0.0f;
-            s_sessionDriven    = false;
-            s_entryPosePending = false;
+            const bool fcfwOwned  = FcfwBridge::FcfwOwnsCamera();
+            const bool wasTFCam   = s_sessionDriven;
+            const bool selfToggle = SlccBridge::IsSelfToggle();  // read now: a queued callback runs after the toggle
+            s_rollAngle          = 0.0f;
+            s_sessionDriven      = false;
+            s_entryPosePending   = false;
+            s_menuSaveValid      = false;  // invalidate menu-restore anchor on exit
+            s_menuRestorePending = false;
 
+            NoteOffMainThread("End", s_endOffMainLogged);
+            const bool runInline = HookWorkRunsInline();  // decided once: the pre-exit part runs before vanilla End
+
+            if (runInline) {
+                ExitWorkBeforeVanilla();
+            }
+
+            func(a_this);
+
+            SKSE::log::info("FreeCam exited ({} session{}{}) [{}]{}", wasTFCam ? "TFCam" : "FCFW",
+                fcfwOwned ? ", FCFW timeline active at exit" : "",
+                scriptSession ? ", opened by a script's console tfc" : "", ThreadTag(),
+                runInline ? "" : " - engine work queued to the main thread");
+            SKSE::log::info("FreeCam exit: called from {}", chain);
+            SKSE::log::info("FreeCam exit: last key/button press TFCam saw: {}", DescribeLastPress());
+
+            if (runInline) {
+                ExitWorkAfterVanilla(fcfwOwned, selfToggle);
+            } else {
+                // Same two parts, same order, one batch on the main thread.
+                QueueHookWork([fcfwOwned, selfToggle] {
+                    ExitWorkBeforeVanilla();
+                    ExitWorkAfterVanilla(fcfwOwned, selfToggle);
+                });
+            }
+        }
+        static inline REL::Relocation<decltype(thunk)> func;
+
+    private:
+        // Main thread only. Before 0.7.10 this ran ahead of the vanilla End on whatever thread called it.
+        static void ExitWorkBeforeVanilla() {
             // Restore alt-slow speed before exiting
             if (s_altSlow) {
                 SetCameraSpeed(FreeCamMenu::GetCameraSpeed());
@@ -706,10 +810,14 @@ namespace FreeCam {
             // (HUDHider only restores what it hid, so this is safe for FCFW sessions too.)
             CameraLight::Cleanup();
             HUDHider::OnFreeCamExit();
+        }
 
-            func(a_this);
-
-            if (savedFOV > 0.0f && !fcfwOwned) {
+        // Main thread only. s_baseFOV is main-thread state since 0.7.10 (the Begin batch sets it, this reads it), so a
+        // queued exit -> enter pair restores the old session's FOV before the new session captures its own.
+        static void ExitWorkAfterVanilla(bool a_fcfwOwned, bool a_selfToggle) {
+            const float savedFOV = s_baseFOV;
+            s_baseFOV            = 0.0f;
+            if (savedFOV > 0.0f && !a_fcfwOwned) {
                 if (auto* cam = RE::PlayerCamera::GetSingleton()) {
                     cam->worldFOV = savedFOV;
                     cam->firstPersonFOV = savedFOV;
@@ -726,8 +834,6 @@ namespace FreeCam {
             // corrupts the input-handler table and crashes on the next input poll.
 
             FreezeTime::Restore();
-            s_menuSaveValid = false;   // invalidate menu-restore anchor on exit
-            s_menuRestorePending = false;
 
             // --Claude 2026-07-24 (user report: "exiting tfcam, player turning was locked
             // to the mouse"): a free-cam exit can strand ThirdPersonState with
@@ -749,14 +855,8 @@ namespace FreeCam {
                 });
             }
 
-            SKSE::log::info("FreeCam exited ({} session{}{}) [{}]", wasTFCam ? "TFCam" : "FCFW",
-                fcfwOwned ? ", FCFW timeline active at exit" : "",
-                scriptSession ? ", opened by a script's console tfc" : "", ThreadTag());
-            SKSE::log::info("FreeCam exit: called from {}", chain);
-            SKSE::log::info("FreeCam exit: last key/button press TFCam saw: {}", DescribeLastPress());
-            SlccBridge::OnFreeCamEnd(fcfwOwned);
+            SlccBridge::OnFreeCamEnd(a_fcfwOwned, a_selfToggle);
         }
-        static inline REL::Relocation<decltype(thunk)> func;
     };
 
     // Zero a button event in place so the free camera's internal input reader

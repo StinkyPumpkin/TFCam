@@ -35,8 +35,11 @@ namespace SlccBridge {
     void Install();                           // kDataLoaded: wrap console tfc, arm the bridge
     void RequestToggle(const char* a_source); // 'TFCF' (TFCam free-fly <-> SLCC)
     void RequestCycle(const char* a_source);  // 0.7.8: TFCam free-fly key (cycle in a scene, plain toggle outside)
-    void OnFreeCamBegin(bool a_tfcamDriving); // FreeCameraState::Begin hook, after vanilla
-    void OnFreeCamEnd(bool a_fcfwOwnedAtEnd); // FreeCameraState::End hook
+    // FreeCameraState Begin / End. Main thread: since 0.7.10 the hooks queue these there (in order) when the camera
+    // was toggled from a Papyrus VM thread, so a_selfToggle is IsSelfToggle() as read inside the hook.
+    void OnFreeCamBegin(bool a_tfcamDriving, bool a_selfToggle);
+    void OnFreeCamEnd(bool a_fcfwOwnedAtEnd, bool a_selfToggle);
+    bool IsSelfToggle();                      // TFCam's own ToggleFreeCameraMode call is running right now
     void OnGameLoaded(const char* a_why);     // kPostLoadGame / kNewGame
     void Pump();                              // cheap per-frame backup kick (input sink / free-cam Update)
     bool IsInjecting();                       // our injected ButtonEvent is being dispatched right now

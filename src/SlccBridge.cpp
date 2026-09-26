@@ -121,7 +121,7 @@ namespace SlccBridge {
         bool   s_resumeForeignFcfw  = false;  // kResume*: an FCFW timeline that is not SLCC's is running
         bool   s_announceSlcc       = false;  // kResume*: user-initiated TFCam -> SLCC, show "Camera: SLCC"
         bool   s_restoreAfterEnter  = false;  // the player's scene ended while our Director-OFF press was in flight
-        bool   s_selfToggle         = false;  // our own ToggleFreeCameraMode call is running
+        std::atomic<bool> s_selfToggle{ false };  // our own ToggleFreeCameraMode call is running (hooks read it anywhere)
         std::uint32_t s_pplusKey     = 0;      // SexLab P+ iToggleFreeCamera (DIK code), 0 = none / not keyboard
         double s_pplusPressAt       = -1000.0;  // last physical press of that key with no menu open
         bool   s_pplusPressInCycle  = false;    // ...made during a scene / SLCC camera / hand-over (expiry is logged)
@@ -1252,8 +1252,10 @@ namespace SlccBridge {
         CycleStep(a_source);
     }
 
-    void OnFreeCamBegin(bool a_tfcamDriving) {
-        if (!s_installed || s_selfToggle) return;  // our own toggles: the caller sets the state
+    bool IsSelfToggle() { return s_selfToggle.load(); }
+
+    void OnFreeCamBegin(bool a_tfcamDriving, bool a_selfToggle) {
+        if (!s_installed || a_selfToggle) return;  // our own toggles: the caller sets the state
         const double now = Now();
 
         if (!a_tfcamDriving) {
@@ -1344,7 +1346,7 @@ namespace SlccBridge {
         }
     }
 
-    void OnFreeCamEnd(bool a_fcfwOwnedAtEnd) {
+    void OnFreeCamEnd(bool a_fcfwOwnedAtEnd, bool a_selfToggle) {
         const double now   = Now();
         s_lastEndFcfwOwned = a_fcfwOwnedAtEnd;
         s_lastEndAt        = now;
@@ -1355,12 +1357,12 @@ namespace SlccBridge {
             // P+ / Prism turning free cam off at scene end is not announced: there is no scene left to film.
             // Late window: a P+ toggle that took seconds through the Papyrus VM still counts as the press.
             // (Unmatched, the step still happens: BeginResume records SLCC for any in-scene resume.)
-            const bool pplus = !s_selfToggle && PplusPressWithinLate(now);
+            const bool pplus = !a_selfToggle && PplusPressWithinLate(now);
             if (pplus) {
                 LogPplusMatch(now, "the exit from TFCam free-fly");
                 ConsumePplusPress();
             }
-            const bool user = s_selfToggle || pplus || ConsoleOpen();
+            const bool user = a_selfToggle || pplus || ConsoleOpen();
             BeginResume(false, user,
                 pplus ? "SexLab P+'s free camera key left TFCam free-fly - SLCC's director goes back on once gameplay input is open"
                 : user ? "TFCam free-fly ended - SLCC's director goes back on once gameplay input is open"
@@ -1368,7 +1370,7 @@ namespace SlccBridge {
             return;
         }
 
-        if (s_state == State::kIdle && !a_fcfwOwnedAtEnd && !s_selfToggle && PplusPressFresh(now) &&
+        if (s_state == State::kIdle && !a_fcfwOwnedAtEnd && !a_selfToggle && PplusPressFresh(now) &&
             SceneTracker::PlayerSceneActive()) {
             ConsumePplusPress();
             if (PrismHoldsFreeCam()) {
