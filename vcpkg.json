@@ -1,8 +1,12 @@
 {
     "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
-    "name": "freecamclaude",
-    "version-string": "0.1.0",
+    "name": "tfcam",
+    "version-string": "0.8.0",
     "dependencies": [
-        "commonlibsse-ng"
+        "directxmath",
+        "directxtk",
+        "fmt",
+        "rapidcsv",
+        "spdlog"
     ]
 }

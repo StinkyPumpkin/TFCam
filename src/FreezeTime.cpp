@@ -11,7 +11,9 @@ namespace FreezeTime {
         if (s_frozen) {
             Restore();
         } else {
-            s_savedTimeMult = RE::BSTimer::GetCurrentGlobalTimeMult();
+            // 0.8.0: NG 9.x reads this same global (RELOCATION_ID(511883, 388443)) as QGlobalTimeMultiplierTarget();
+            // 3.7.0 called it GetCurrentGlobalTimeMult.
+            s_savedTimeMult = RE::BSTimer::QGlobalTimeMultiplierTarget();
             // Set global time multiplier to 0 via the console command approach
             // The game global g_fGlobalTimeMultiplier is at RELOCATION_ID(511883, 388443)
             REL::Relocation<float*> timeMult{ RELOCATION_ID(511883, 388443) };

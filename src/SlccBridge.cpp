@@ -165,7 +165,7 @@ namespace SlccBridge {
         }
 
         void Notify(const char* a_text) {
-            RE::DebugNotification(a_text);
+            RE::SendHUDMessage::ShowHUDMessage(a_text);
         }
 
         void ConsolePrint(const char* a_text) {
@@ -182,7 +182,7 @@ namespace SlccBridge {
                                                         "Camera: Off";
             text += a_suffix;
             SKSE::log::info("Camera cycle: {} ({})", text, a_why);
-            RE::DebugNotification(text.c_str());
+            RE::SendHUDMessage::ShowHUDMessage(text.c_str());
         }
 
         // SexLab P+ Prism (SLP_PrismController) owns "free camera on" for every player scene it tracks:
@@ -448,13 +448,16 @@ namespace SlccBridge {
                 evt = RE::ButtonEvent::Create(a_device, "", a_code, a_value, a_held);
                 if (!evt) return;
             }
-            evt->device       = a_device;
-            evt->eventType    = RE::INPUT_EVENT_TYPE::kButton;
-            evt->next         = nullptr;
-            evt->userEvent    = "";
-            evt->idCode       = a_code;
-            evt->value        = a_value;
-            evt->heldDownSecs = a_held;
+            // 0.8.0: idCode / userEvent / value / heldDownSecs through NG's ButtonEvent accessors (IDEvent and
+            // runtime data sit at per-runtime offsets; ButtonEvent::Create allocates the per-runtime size).
+            evt->device    = a_device;
+            evt->eventType = RE::INPUT_EVENT_TYPE::kButton;
+            evt->next      = nullptr;
+            evt->SetUserEvent("");
+            evt->SetIDCode(a_code);
+            auto& data        = evt->GetRuntimeData();
+            data.value        = a_value;
+            data.heldDownSecs = a_held;
 
             RE::InputEvent* head = evt;
             s_injecting          = true;

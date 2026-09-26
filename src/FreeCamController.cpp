@@ -28,11 +28,25 @@ namespace FreeCam {
     static float    s_baseFOV   = 0.0f;
     static bool     s_altSlow   = false;  // Alt slow-mode active
     static bool     s_slowHeld  = false;  // configurable slow key currently held (fed by the input sink)
-    // FreeCameraState field offsets (capture + freeze the transform).
-    static constexpr std::ptrdiff_t kOff_translation       = 0x30; // NiPoint3
-    static constexpr std::ptrdiff_t kOff_rotation          = 0x3C; // float[2] x=pitch,y=yaw
-    static constexpr std::ptrdiff_t kOff_zUpDown           = 0x44;
-    static constexpr std::ptrdiff_t kOff_verticalDirection = 0x4C;
+    // FreeCameraState fields (capture + freeze the transform). 0.8.0: read through CommonLibSSE-NG's typed
+    // RE::FreeCameraState instead of raw offsets. NG keeps one layout for SE 1.5.97, AE 1.6.x and 1.7.x (no 1.7
+    // change modelled for this class); the asserts pin it to the offsets 0.7.x hard-coded, so the fields read and
+    // written are byte-for-byte the same as before.
+    //   translation (NiPoint3) 0x30, rotation (x = pitch, y = yaw) 0x3C, zUpDown 0x44, verticalDirection 0x4C
+    static_assert(offsetof(RE::FreeCameraState, translation) == 0x30);
+    static_assert(offsetof(RE::FreeCameraState, rotation) == 0x3C);
+    static_assert(offsetof(RE::FreeCameraState, zUpDown) == 0x44);
+    static_assert(offsetof(RE::FreeCameraState, verticalDirection) == 0x4C);
+
+    // Only ever called on the free camera's own state (the FreeCameraState vtable hooks, or currentState while
+    // IsInFreeCameraMode()). TESCameraState is FreeCameraState's first base, at offset 0.
+    static RE::FreeCameraState* AsFreeCam(RE::TESCameraState* a_state) {
+        return static_cast<RE::FreeCameraState*>(a_state);
+    }
+
+    // 0.8.0: PlayerCamera's FOVs sit in NG's RUNTIME_DATA2 block (0x13C on SE/AE incl. 1.7, 0x158 on VR).
+    static float& WorldFOV(RE::PlayerCamera* a_cam) { return a_cam->GetRuntimeData2().worldFOV; }
+    static float& FirstPersonFOV(RE::PlayerCamera* a_cam) { return a_cam->GetRuntimeData2().firstPersonFOV; }
 
     // Menu-exit camera restore: other mods (e.g. Show-Player-In-Inventory) reposition
     // the camera on menu open and RESET it on menu close — which yanks the free cam
@@ -283,11 +297,10 @@ namespace FreeCam {
         if (!cam || !cam->IsInFreeCameraMode()) return false;
         auto* state = cam->currentState.get();
         if (!state) return false;
-        const auto base = reinterpret_cast<std::uintptr_t>(state);
-        a_pos = *reinterpret_cast<RE::NiPoint3*>(base + kOff_translation);
-        const float* rot = reinterpret_cast<float*>(base + kOff_rotation);
-        a_pitch = rot[0];
-        a_yaw   = rot[1];
+        const auto* fcs = AsFreeCam(state);
+        a_pos   = fcs->translation;
+        a_pitch = fcs->rotation.x;
+        a_yaw   = fcs->rotation.y;
         const bool ok = std::isfinite(a_pos.x) && std::isfinite(a_pos.y) && std::isfinite(a_pos.z) &&
                         std::isfinite(a_pitch) && std::isfinite(a_yaw) &&
                         (a_pos.x != 0.0f || a_pos.y != 0.0f || a_pos.z != 0.0f);
@@ -314,7 +327,7 @@ namespace FreeCam {
     static void ResetCamera() {
         if (s_baseFOV > 0.0f) {
             if (auto* cam = RE::PlayerCamera::GetSingleton())
-                cam->worldFOV = s_baseFOV;
+                WorldFOV(cam) = s_baseFOV;
         }
         s_rollAngle = 0.0f;
     }
@@ -392,11 +405,11 @@ namespace FreeCam {
                 CameraLight::Toggle();
                 break;
             case kFovIn:
-                if (cam) cam->worldFOV = std::clamp(cam->worldFOV - s_settings.fovStep,
+                if (cam) WorldFOV(cam) = std::clamp(WorldFOV(cam) - s_settings.fovStep,
                                                     s_settings.fovMin, s_settings.fovMax);
                 break;
             case kFovOut:
-                if (cam) cam->worldFOV = std::clamp(cam->worldFOV + s_settings.fovStep,
+                if (cam) WorldFOV(cam) = std::clamp(WorldFOV(cam) + s_settings.fovStep,
                                                     s_settings.fovMin, s_settings.fovMax);
                 break;
             case kResetCam:
@@ -459,7 +472,7 @@ namespace FreeCam {
     // Vertical = verticalDirection → zUpDown → translation.z, all inside Update.
     // Zeroing verticalDirection BEFORE the original Update means no vertical input
     // is ever processed → nothing accumulates internally → no snap on release.
-    // (Offsets kOff_translation/rotation/zUpDown/verticalDirection are defined up top.)
+    // (0.8.0: these are RE::FreeCameraState's typed members; see AsFreeCam up top.)
 
     // Zero the free cam's vertical input on the CURRENT state (used from the input
     // sink too, to catch very fast clicks the per-frame Update check can miss).
@@ -468,10 +481,10 @@ namespace FreeCam {
         if (!cam || !cam->IsInFreeCameraMode()) return;
         auto* state = cam->currentState.get();
         if (!state) return;
-        auto base = reinterpret_cast<std::uintptr_t>(state);
-        *reinterpret_cast<std::int16_t*>(base + kOff_verticalDirection) = 0;
-        reinterpret_cast<float*>(base + kOff_zUpDown)[0] = 0.0f;
-        reinterpret_cast<float*>(base + kOff_zUpDown)[1] = 0.0f;
+        auto* fcs              = AsFreeCam(state);
+        fcs->verticalDirection = 0;
+        fcs->zUpDown.x         = 0.0f;
+        fcs->zUpDown.y         = 0.0f;
     }
 
     // NOTE on attack blocking: we previously disabled the Fighting control group via
@@ -510,11 +523,10 @@ namespace FreeCam {
             // before the vanilla Update, the same way as the menu-exit restore below.
             if (s_entryPosePending && a_this && driving) {
                 s_entryPosePending = false;
-                auto base = reinterpret_cast<std::uintptr_t>(a_this);
-                *reinterpret_cast<RE::NiPoint3*>(base + kOff_translation) = s_entryPos;
-                float* rot = reinterpret_cast<float*>(base + kOff_rotation);
-                rot[0] = s_entryPitch;
-                rot[1] = s_entryYaw;
+                auto* fcs          = AsFreeCam(a_this);
+                fcs->translation   = s_entryPos;
+                fcs->rotation.x    = s_entryPitch;
+                fcs->rotation.y    = s_entryYaw;
                 SKSE::log::info("FreeCam: started from SLCC's last camera pose ({:.1f}, {:.1f}, {:.1f})",
                     s_entryPos.x, s_entryPos.y, s_entryPos.z);
             }
@@ -528,18 +540,17 @@ namespace FreeCam {
             if (s_menuRestorePending && a_this) {
                 s_menuRestorePending = false;
                 if (s_menuSaveValid && driving) {
-                    auto base = reinterpret_cast<std::uintptr_t>(a_this);
-                    auto* cur = reinterpret_cast<RE::NiPoint3*>(base + kOff_translation);
+                    auto* fcs = AsFreeCam(a_this);
+                    auto* cur = &fcs->translation;
                     float dx = cur->x - s_menuSaveTrans.x;
                     float dy = cur->y - s_menuSaveTrans.y;
                     float dz = cur->z - s_menuSaveTrans.z;
                     if (dx * dx + dy * dy + dz * dz > 2500.0f) {  // > ~50 units → was reset
                         *cur = s_menuSaveTrans;
-                        float* rot = reinterpret_cast<float*>(base + kOff_rotation);
-                        rot[0] = s_menuSaveRot[0];
-                        rot[1] = s_menuSaveRot[1];
+                        fcs->rotation.x = s_menuSaveRot[0];
+                        fcs->rotation.y = s_menuSaveRot[1];
                         if (auto* cam = RE::PlayerCamera::GetSingleton(); cam && s_menuSaveFOV > 0.0f) {
-                            cam->worldFOV = s_menuSaveFOV;
+                            WorldFOV(cam) = s_menuSaveFOV;
                         }
                     }
                 }
@@ -549,10 +560,10 @@ namespace FreeCam {
             // LMB/RMB are always remapped — vanilla up/down is replaced by
             // the remap system (user can assign Move Up/Down if desired).
             if (driving && !AnyMenuOpen() && (lmb || rmb) && a_this) {
-                auto base = reinterpret_cast<std::uintptr_t>(a_this);
-                *reinterpret_cast<std::int16_t*>(base + kOff_verticalDirection) = 0;
-                reinterpret_cast<float*>(base + kOff_zUpDown)[0] = 0.0f;
-                reinterpret_cast<float*>(base + kOff_zUpDown)[1] = 0.0f;
+                auto* fcs              = AsFreeCam(a_this);
+                fcs->verticalDirection = 0;
+                fcs->zUpDown.x         = 0.0f;
+                fcs->zUpDown.y         = 0.0f;
             }
 
             func(a_this, a_next);  // vanilla Update
@@ -563,8 +574,8 @@ namespace FreeCam {
                 auto applyMove = [&](int action, bool held) {
                     if (!held) return;
 
-                    auto base = reinterpret_cast<std::uintptr_t>(a_this);
-                    float* trans = reinterpret_cast<float*>(base + kOff_translation);
+                    auto*  fcs   = AsFreeCam(a_this);
+                    float* trans = &fcs->translation.x;  // x, y, z
 
                     float speed = 10.0f;
                     if (auto* ini = RE::INISettingCollection::GetSingleton()) {
@@ -575,7 +586,7 @@ namespace FreeCam {
 
                     if (action == kMoveForward || action == kMoveBackward) {
                         float dir = (action == kMoveForward) ? 1.0f : -1.0f;
-                        float* rot = reinterpret_cast<float*>(base + kOff_rotation);
+                        float* rot = &fcs->rotation.x;  // pitch, yaw
                         float pitch = rot[0], yaw = rot[1];
                         float cp = std::cos(pitch), sp = std::sin(pitch);
                         trans[0] += std::sin(yaw) * cp * dir * amt;
@@ -611,9 +622,9 @@ namespace FreeCam {
             if (!inMenuCam) s_dlgSeeded = false;
 
             if (inMenuCam) {
-                auto base = reinterpret_cast<std::uintptr_t>(a_this);
-                float* trans = reinterpret_cast<float*>(base + kOff_translation);
-                float* rot   = reinterpret_cast<float*>(base + kOff_rotation);
+                auto*  fcs   = AsFreeCam(a_this);
+                float* trans = &fcs->translation.x;  // x, y, z
+                float* rot   = &fcs->rotation.x;     // pitch, yaw
 
                 // The vanilla Update re-aims the free-cam rotation at the speaker every
                 // frame during dialogue, which snapped an additive look straight back.
@@ -688,12 +699,11 @@ namespace FreeCam {
             // back to where the camera was before dialogue opened.
             if (a_this && driving && (!AnyMenuOpen() || (s_settings.dialogueCam && InDialogue())
                                                      || (s_settings.raceMenuCam && InRaceMenu()))) {
-                auto base = reinterpret_cast<std::uintptr_t>(a_this);
-                s_menuSaveTrans = *reinterpret_cast<RE::NiPoint3*>(base + kOff_translation);
-                float* rot = reinterpret_cast<float*>(base + kOff_rotation);
-                s_menuSaveRot[0] = rot[0];
-                s_menuSaveRot[1] = rot[1];
-                if (auto* cam = RE::PlayerCamera::GetSingleton()) s_menuSaveFOV = cam->worldFOV;
+                const auto* fcs  = AsFreeCam(a_this);
+                s_menuSaveTrans  = fcs->translation;
+                s_menuSaveRot[0] = fcs->rotation.x;
+                s_menuSaveRot[1] = fcs->rotation.y;
+                if (auto* cam = RE::PlayerCamera::GetSingleton()) s_menuSaveFOV = WorldFOV(cam);
                 s_menuSaveValid = true;  // we now have a real position to restore to
             }
         }
@@ -731,7 +741,7 @@ namespace FreeCam {
             const bool ranInline = RunHookWork([driven, timeline, selfToggle, thread] {
                 if (driven) {
                     auto* cam = RE::PlayerCamera::GetSingleton();
-                    s_baseFOV = cam ? cam->worldFOV : 0.0f;
+                    s_baseFOV = cam ? WorldFOV(cam) : 0.0f;
                     HUDHider::OnFreeCamEnter();
                     SKSE::log::info("FreeCam entered, FOV={:.1f} [{}]", s_baseFOV, thread);
                 } else {
@@ -819,8 +829,8 @@ namespace FreeCam {
             s_baseFOV            = 0.0f;
             if (savedFOV > 0.0f && !a_fcfwOwned) {
                 if (auto* cam = RE::PlayerCamera::GetSingleton()) {
-                    cam->worldFOV = savedFOV;
-                    cam->firstPersonFOV = savedFOV;
+                    WorldFOV(cam) = savedFOV;
+                    FirstPersonFOV(cam) = savedFOV;
                     SKSE::log::info("FreeCam: FOV restored to {:.1f}", savedFOV);
                 }
             } else if (savedFOV > 0.0f) {
@@ -844,7 +854,11 @@ namespace FreeCam {
                 tasks->AddTask([]() {
                     auto* cam = RE::PlayerCamera::GetSingleton();
                     if (!cam) return;
-                    auto& third = cam->cameraStates[RE::CameraState::kThirdPerson];
+                    // 0.8.0: cameraStates sits in NG's RUNTIME_DATA (per-runtime offset). SE/AE (1.5.97, 1.6.x,
+                    // 1.7.x) only: in VR the camera-state enum and ThirdPersonState's layout both shift (NG types
+                    // freeRotationEnabled at its SE/AE offset 0xDC), so the fix-up is not attempted there.
+                    if (REL::Module::IsVR()) return;
+                    auto& third = cam->GetRuntimeData().cameraStates[RE::CameraState::kThirdPerson];
                     if (third && cam->currentState.get() == third.get()) {
                         auto* tps = static_cast<RE::ThirdPersonState*>(third.get());
                         if (!tps->freeRotationEnabled) {
@@ -862,9 +876,11 @@ namespace FreeCam {
     // Zero a button event in place so the free camera's internal input reader
     // sees it as not-pressed. `continue` alone only skips OUR handling — the
     // camera still reads the intact event and applies its up/down movement.
+    // 0.8.0: value / heldDownSecs through NG's ButtonEvent runtime-data accessor (0x28 SE/AE incl. 1.7, 0x30 VR).
     static void ConsumeButton(RE::ButtonEvent* btn) {
-        btn->value = 0.0f;
-        btn->heldDownSecs = 0.0f;
+        auto& data        = btn->GetRuntimeData();
+        data.value        = 0.0f;
+        data.heldDownSecs = 0.0f;
     }
 
     // --- Menu open/close watcher (menu-exit camera restore + FavoritesMenu kill) ---
@@ -1127,7 +1143,7 @@ namespace FreeCam {
                     auto* ue = RE::UserEvents::GetSingleton();
                     if (ue && btn->QUserEvent() == ue->activate) {
                         ConsumeButton(btn);
-                        btn->userEvent = "";
+                        btn->SetUserEvent("");
                         continue;
                     }
                 }
@@ -1192,8 +1208,8 @@ namespace FreeCam {
                         } else if (driving) {
                             auto* cam = RE::PlayerCamera::GetSingleton();
                             if (cam) {
-                                cam->worldFOV = std::clamp(
-                                    cam->worldFOV - s_settings.fovStep,
+                                WorldFOV(cam) = std::clamp(
+                                    WorldFOV(cam) - s_settings.fovStep,
                                     s_settings.fovMin, s_settings.fovMax);
                             }
                         }
@@ -1205,8 +1221,8 @@ namespace FreeCam {
                         } else if (driving) {
                             auto* cam = RE::PlayerCamera::GetSingleton();
                             if (cam) {
-                                cam->worldFOV = std::clamp(
-                                    cam->worldFOV + s_settings.fovStep,
+                                WorldFOV(cam) = std::clamp(
+                                    WorldFOV(cam) + s_settings.fovStep,
                                     s_settings.fovMin, s_settings.fovMax);
                             }
                         }
@@ -1267,7 +1283,7 @@ namespace FreeCam {
 
                     if (consumed) {
                         ConsumeButton(btn);
-                        btn->userEvent = "";
+                        btn->SetUserEvent("");
                         continue;
                     }
                 }
@@ -1291,7 +1307,7 @@ namespace FreeCam {
                     if ((s_settings.disableShift && isShift) ||
                         (s_settings.disableSpace && (isSpace || isJump) && !SceneTracker::PlayerSceneActive())) {
                         ConsumeButton(btn);
-                        btn->userEvent = "";
+                        btn->SetUserEvent("");
                     }
                 }
             }
@@ -1308,6 +1324,17 @@ namespace FreeCam {
     void Install() {
         QueryPerformanceFrequency(&s_qpcFreq);
 
+        // 0.8.0: vtable slots per runtime, from CommonLibSSE-NG's declarations.
+        //  - TESCameraState: Begin 1 / End 2 everywhere; Update 3 and GetRotation 4 on SE/AE (1.6 and 1.7), 4 and 5
+        //    on VR (VR inserts Unk_03).
+        //  - PlayerInputHandler::ProcessButton: 4 on SE, AE 1.6 and VR; 6 on AE 1.7.99+, where the engine added
+        //    ProcessMotionGesture / ProcessSixaxis at slots 2-3 (NG: kAE1799AddedVFuncCount). A slot-4 write on 1.7
+        //    would hook ProcessThumbstick instead.
+        const std::size_t kUpdateSlot      = REL::Relocate<std::size_t>(0x3, 0x3, 0x4);
+        const std::size_t kGetRotationSlot = REL::Relocate<std::size_t>(0x4, 0x4, 0x5);
+        const std::size_t kProcessButtonSlot =
+            REL::VersionShift(0x4, RE::PlayerInputHandler::kAE1799AddedVFuncCount, SKSE::RUNTIME_SSE_1_7_99);
+
         REL::Relocation<std::uintptr_t> fcsVtable(RE::VTABLE_FreeCameraState[0]);
 
         FreeCamBeginHook::func = fcsVtable.write_vfunc(0x1, FreeCamBeginHook::thunk);
@@ -1316,39 +1343,40 @@ namespace FreeCam {
         FreeCamEndHook::func = fcsVtable.write_vfunc(0x2, FreeCamEndHook::thunk);
         SKSE::log::info("FreeCameraState::End hooked (vtable[2])");
 
-        FreeCamUpdateHook::func = fcsVtable.write_vfunc(0x3, FreeCamUpdateHook::thunk);
-        SKSE::log::info("FreeCameraState::Update hooked (vtable[3])");
+        FreeCamUpdateHook::func = fcsVtable.write_vfunc(kUpdateSlot, FreeCamUpdateHook::thunk);
+        SKSE::log::info("FreeCameraState::Update hooked (vtable[{}])", kUpdateSlot);
 
-        GetRotationHook::func = fcsVtable.write_vfunc(0x4, GetRotationHook::thunk);
-        SKSE::log::info("FreeCameraState::GetRotation hooked (vtable[4])");
+        GetRotationHook::func = fcsVtable.write_vfunc(kGetRotationSlot, GetRotationHook::thunk);
+        SKSE::log::info("FreeCameraState::GetRotation hooked (vtable[{}])", kGetRotationSlot);
 
-        // Surgical attack block: hook AttackBlockHandler::ProcessButton (vtable[4]).
+        // Surgical attack block: hook AttackBlockHandler::ProcessButton.
         REL::Relocation<std::uintptr_t> abhVtable(RE::VTABLE_AttackBlockHandler[0]);
-        AttackBlockHook::func = abhVtable.write_vfunc(0x4, AttackBlockHook::thunk);
-        SKSE::log::info("AttackBlockHandler::ProcessButton hooked (vtable[4])");
+        AttackBlockHook::func = abhVtable.write_vfunc(kProcessButtonSlot, AttackBlockHook::thunk);
+        SKSE::log::info("AttackBlockHandler::ProcessButton hooked (vtable[{}])", kProcessButtonSlot);
 
         REL::Relocation<std::uintptr_t> jumpVtable(RE::VTABLE_JumpHandler[0]);
-        JumpBlockHook::func = jumpVtable.write_vfunc(0x4, JumpBlockHook::thunk);
-        SKSE::log::info("JumpHandler::ProcessButton hooked (vtable[4])");
+        JumpBlockHook::func = jumpVtable.write_vfunc(kProcessButtonSlot, JumpBlockHook::thunk);
+        SKSE::log::info("JumpHandler::ProcessButton hooked (vtable[{}])", kProcessButtonSlot);
 
-        // 0.7.6: Disable Shift - every handler Shift can drive while flying, ProcessButton = [4].
+        // 0.7.6: Disable Shift - every handler Shift can drive while flying, ProcessButton.
         REL::Relocation<std::uintptr_t> sprintVtable(RE::VTABLE_SprintHandler[0]);
         ShiftBlockHook<RE::SprintHandler>::func =
-            sprintVtable.write_vfunc(0x4, ShiftBlockHook<RE::SprintHandler>::thunk);
+            sprintVtable.write_vfunc(kProcessButtonSlot, ShiftBlockHook<RE::SprintHandler>::thunk);
         REL::Relocation<std::uintptr_t> runVtable(RE::VTABLE_RunHandler[0]);
         ShiftBlockHook<RE::RunHandler>::func =
-            runVtable.write_vfunc(0x4, ShiftBlockHook<RE::RunHandler>::thunk);
+            runVtable.write_vfunc(kProcessButtonSlot, ShiftBlockHook<RE::RunHandler>::thunk);
         // ToggleRun also swallows a press made while Shift is held (Shift+key combo binding).
         REL::Relocation<std::uintptr_t> toggleRunVtable(RE::VTABLE_ToggleRunHandler[0]);
         ShiftBlockHook<RE::ToggleRunHandler, true>::func =
-            toggleRunVtable.write_vfunc(0x4, ShiftBlockHook<RE::ToggleRunHandler, true>::thunk);
+            toggleRunVtable.write_vfunc(kProcessButtonSlot, ShiftBlockHook<RE::ToggleRunHandler, true>::thunk);
         // The free camera's own input handler (second vtable, the PlayerInputHandler base). It
         // carries a run-speed flag (FreeCameraState::useRunSpeed, +0x4E); what sets it was not
         // verified (SkyrimSE.exe .text is encrypted on disk), so this only matters if it is Shift.
         REL::Relocation<std::uintptr_t> fcsInputVtable(RE::VTABLE_FreeCameraState[1]);
         ShiftBlockHook<RE::PlayerInputHandler>::func =
-            fcsInputVtable.write_vfunc(0x4, ShiftBlockHook<RE::PlayerInputHandler>::thunk);
-        SKSE::log::info("Sprint/Run/ToggleRun/FreeCameraState ProcessButton hooked (vtable[4]) for Disable Shift");
+            fcsInputVtable.write_vfunc(kProcessButtonSlot, ShiftBlockHook<RE::PlayerInputHandler>::thunk);
+        SKSE::log::info("Sprint/Run/ToggleRun/FreeCameraState ProcessButton hooked (vtable[{}]) for Disable Shift",
+            kProcessButtonSlot);
 
         // Menu open/close watcher (menu-exit camera restore).
         if (auto* ui = RE::UI::GetSingleton()) {

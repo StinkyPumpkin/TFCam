@@ -48,8 +48,10 @@ namespace {
     // plainly — the game keeps running without TFCam.
     std::string AddressLibraryFile() {
         const auto ver = REL::Module::get().version();
-        // Same file CommonLib's IDDatabase::load() opens: VR reads a .csv, AE a versionlib .bin,
+        // Same file CommonLib's IDDB::load() opens: VR reads a .csv, AE a versionlib .bin,
         // SE a version .bin. (0.7.0 looked for a .bin on VR, so VR users got the "missing" popup.)
+        // 0.8.0 (CommonLibSSE-NG 9.x): NG classifies minor >= 6 as AE, so 1.7.x is AE here too and the file is
+        // versionlib-1-7-104-0.bin - the Address Library v5 database (format 5), which NG 9.x parses.
         if (REL::Module::IsVR()) {
             return std::format("Data/SKSE/Plugins/version-{}.csv", ver.string());
         }
@@ -121,10 +123,13 @@ namespace {
 }
 
 SKSEPluginLoad(const SKSE::LoadInterface* skse) {
-    SKSE::Init(skse);
+    // 0.8.0: CommonLibSSE-NG 9.x's Init opens its own <plugin>.log by default; TFCam keeps its own logger (same
+    // file, same format as 0.7.x), so NG's is switched off.
+    SKSE::Init(skse, { .log = false });
     InitializeLogging();
 
-    SKSE::log::info("TFCam v{} loaded", "0.7.10");
+    SKSE::log::info("TFCam v{} loaded", TFCAM_VERSION);
+    SKSE::log::info("built on CommonLibSSE-NG {}", TFCAM_COMMONLIB_VERSION);
 
     // 0.7.9: SKSEPluginLoad runs on the game's main thread (kDataLoaded runs on the data-loading thread), so this
     // is where the diagnostics learn which thread is "main".
