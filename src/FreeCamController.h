@@ -5,10 +5,10 @@ namespace FreeCam {
     void Install();
 
     struct Settings {
-        float fovStep      = 2.0f;
+        float fovStep      = 5.0f;   // 0.7.9: code defaults = the values the no-longer-shipped TFCam.ini gave
         float fovMin       = 10.0f;
         float fovMax       = 150.0f;
-        float rollSpeed    = 1.5f;
+        float rollSpeed    = 1.6f;
         std::uint32_t rollCCWKey      = 0x10; // Q
         std::uint32_t rollCWKey       = 0x12; // E
         std::uint32_t resetKey        = 0x13; // R
@@ -57,4 +57,16 @@ namespace FreeCam {
     bool  CaptureFreeCamPose(RE::NiPoint3& a_pos, float& a_pitch, float& a_yaw);
     void  SetEntryPose(const RE::NiPoint3& a_pos, float a_pitch, float a_yaw);
     void  ClearEntryPose();
+
+    // 0.7.9 diagnostics. SKSEPluginLoad runs on the game's main thread (kDataLoaded does NOT: it runs on the
+    // data-loading thread), so that is where the main thread id is recorded.
+    void        NoteMainThread();
+    std::string ThreadTag();  // "thread N (main)" / "thread N (NOT the main thread ...)"
+
+    // 0.7.9 scripted-tfc guard (SlccBridge's console tfc wrapper). Poser Hotkeys Plus closes ANY free camera on
+    // the Jump key with ConsoleUtil.ExecuteCommand("tfc"); these tell the wrapper what happened just before.
+    bool  JumpPressedWithin(double a_seconds, double& a_msAgo);  // last physical Jump press seen by TFCam's input sink
+    void  ReapplyCameraSpeed();          // TFCam's free-fly speed (1/5 while the slow key is held)
+    void  NoteScriptTfcOpenedSession();  // a script's console tfc turned free cam ON (e.g. Poser's pose camera)
+    bool  SessionOpenedByScriptTfc();    // ...and this free cam session is that one
 }

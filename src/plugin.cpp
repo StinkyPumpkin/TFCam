@@ -124,7 +124,12 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     SKSE::Init(skse);
     InitializeLogging();
 
-    SKSE::log::info("TFCam v{} loaded", "0.7.8");
+    SKSE::log::info("TFCam v{} loaded", "0.7.9");
+
+    // 0.7.9: SKSEPluginLoad runs on the game's main thread (kDataLoaded runs on the data-loading thread), so this
+    // is where the diagnostics learn which thread is "main".
+    FreeCam::NoteMainThread();
+    SKSE::log::info("Main thread: {}", FreeCam::ThreadTag());
 
     FreeCamMenu::LoadSettings();
 

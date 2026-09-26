@@ -1,6 +1,6 @@
 ﻿cmake_minimum_required(VERSION 3.21)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "")
-project(TFCam VERSION 0.7.8 LANGUAGES CXX)
+project(TFCam VERSION 0.7.9 LANGUAGES CXX)
 
 if(DEFINED ENV{SKYRIM_MODS_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_MODS_FOLDER}")
     set(OUTPUT_FOLDER "$ENV{SKYRIM_MODS_FOLDER}/FreeCam--Claude")
@@ -27,6 +27,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 if(DEFINED OUTPUT_FOLDER)
+    # Copies TFCam.dll (and the PDB in Debug) only. TFCam.ini is the user's settings file: TFCam creates it on first
+    # run and no build, deploy or release zip ever ships or copies it (0.7.9).
     set(DLL_FOLDER "${OUTPUT_FOLDER}/SKSE/Plugins")
 
     message(STATUS "SKSE plugin output: ${DLL_FOLDER}")

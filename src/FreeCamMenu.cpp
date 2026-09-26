@@ -10,20 +10,26 @@
 
 #include <Windows.h>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <format>
+#include <fstream>
 
 namespace FreeCamMenu {
 
+    // 0.7.9: TFCam.ini is no longer shipped (user rule 2026-09-26: a settings file in the download resets the user's
+    // settings on every update). These code defaults now carry the values the shipped TFCam.ini used to give a fresh
+    // install (fStep 5, roll 1.6, speed 14.5, Hide HUD on, light 215/233/255), so new installs behave as before.
     static int   s_freeFlyKey    = 0;
     static int   s_rollCCWKey    = 0x10;   // Q
     static int   s_rollCWKey     = 0x12;   // E
     static int   s_resetKey      = 0x13;   // R
     static int   s_freezeTimeKey = 0;
     static int   s_screenshotKey = 0;
-    static float s_rollSpeed     = 1.5f;
-    static float s_fovStep       = 2.0f;
-    static float s_cameraSpeed   = 10.0f;  // game default fFreeCameraTranslationSpeed
-    static bool  s_hideHUD       = false;
+    static float s_rollSpeed     = 1.6f;
+    static float s_fovStep       = 5.0f;
+    static float s_cameraSpeed   = 14.5f;  // game default fFreeCameraTranslationSpeed is 10
+    static bool  s_hideHUD       = true;
     static bool  s_blockAttacks  = true;
     static int   s_lmbAction     = 0;
     static int   s_rmbAction     = 0;
@@ -39,9 +45,11 @@ namespace FreeCamMenu {
     static bool  s_lightScrollRadius     = true;
     static float s_lightRadius    = 1000.0f;
     static float s_lightFade      = 1.7f;
-    static int   s_lightColorR    = 255;
-    static int   s_lightColorG    = 255;
+    static int   s_lightColorR    = 215;
+    static int   s_lightColorG    = 233;
     static int   s_lightColorB    = 255;
+    static float s_fovMin         = 10.0f;
+    static float s_fovMax         = 150.0f;
 
     int   GetFreeFlyKey()   { return s_freeFlyKey; }
     float GetCameraSpeed()  { return s_cameraSpeed; }
@@ -124,19 +132,63 @@ namespace FreeCamMenu {
         }
     }
 
+    // 0.7.9: every write is checked. The live TFCam.ini (mods\TFCam 0.7.2) was last written 2026-09-22 although the
+    // user changed checkboxes on 09-24 and 09-26, and even a same-value WritePrivateProfileString bumps the file time
+    // - so either those saves failed or never ran. SaveINI now says which, in TFCam.log.
+    static bool  s_saveWriteOk  = true;
+    static DWORD s_saveWriteErr = 0;
+
+    static void WriteINIString(const char* section, const char* key, const char* val) {
+        if (!WritePrivateProfileStringA(section, key, val, GetINIPath()) && s_saveWriteOk) {
+            s_saveWriteOk  = false;
+            s_saveWriteErr = GetLastError();
+        }
+    }
+
     static void WriteINIFloat(const char* section, const char* key, float val) {
         char buf[32];
         snprintf(buf, sizeof(buf), "%.4f", val);
-        WritePrivateProfileStringA(section, key, buf, GetINIPath());
+        WriteINIString(section, key, buf);
     }
 
     static void WriteINIInt(const char* section, const char* key, int val) {
         char buf[16];
         snprintf(buf, sizeof(buf), "%d", val);
-        WritePrivateProfileStringA(section, key, buf, GetINIPath());
+        WriteINIString(section, key, buf);
     }
 
+    static void SaveINIValues();
+
+    // Called on every settings change (every frame while a slider is dragged), so the log is rate-limited.
     static void SaveINI() {
+        s_saveWriteOk  = true;
+        s_saveWriteErr = 0;
+        SaveINIValues();
+
+        // Read one value back through the same path (MO2's virtual file system included).
+        const int  back     = static_cast<int>(GetPrivateProfileIntA("Camera", "bDisableSpace", -1, GetINIPath()));
+        const bool verified = back == (s_disableSpace ? 1 : 0);
+
+        using clock = std::chrono::steady_clock;
+        static clock::time_point s_lastOkLog{};
+        static clock::time_point s_lastFailLog{};
+        const auto now = clock::now();
+        if (!s_saveWriteOk || !verified) {
+            if (now - s_lastFailLog > std::chrono::seconds(3)) {
+                s_lastFailLog = now;
+                SKSE::log::error("FreeCamMenu: saving settings to {} FAILED (writes ok={}, Windows error {}, read back "
+                                 "bDisableSpace={} expected {}) - this change only lasts until the game closes",
+                    GetINIPath(), s_saveWriteOk, s_saveWriteErr, back, s_disableSpace ? 1 : 0);
+            }
+        } else if (now - s_lastOkLog > std::chrono::seconds(3)) {
+            s_lastOkLog = now;
+            SKSE::log::info("FreeCamMenu: settings saved to {} (read back OK) - Disable Space={} Disable Shift={} "
+                            "Disable Activate={} Block attacks={} Hide HUD={} speed={:.1f}",
+                GetINIPath(), s_disableSpace, s_disableShift, s_disableActivate, s_blockAttacks, s_hideHUD, s_cameraSpeed);
+        }
+    }
+
+    static void SaveINIValues() {
         WriteINIInt("Hotkeys", "iFreeFlyKey", s_freeFlyKey);
         WriteINIInt("Hotkeys", "iResetKey", s_resetKey);
         WriteINIInt("Hotkeys", "iFreezeTimeKey", s_freezeTimeKey);
@@ -270,7 +322,9 @@ namespace FreeCamMenu {
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
             "Ticked, while flying: Shift no longer drives sprint / run / run toggle (a Shift+key run "
             "toggle too), and Jump is blocked on any key or gamepad. Mods that read a key directly "
-            "may still see it. Unticked: the key works as it does without TFCam.");
+            "may still see it. Unticked: the key works as it does without TFCam. Either way, in a "
+            "SexLab scene Space still reaches SexLab (Advance), and a mod that closes the free camera "
+            "on Jump (Poser Hotkeys Plus) cannot close one it did not open.");
         if (ImGuiMCP::Checkbox("Disable Activate in free cam##noactivate", &s_disableActivate)) {
             ApplyToController();
             SaveINI();
@@ -460,8 +514,53 @@ namespace FreeCamMenu {
         }
     }
 
+    // 0.7.9: first run with no TFCam.ini - write one from the code defaults (MO2 puts a new file in overwrite\).
+    // Afterwards only the in-game page writes it; no update or deploy ever ships or copies it.
+    static void CreateDefaultINI(const char* a_path) {
+        std::ofstream f(a_path, std::ios::out | std::ios::trunc);
+        if (!f) {
+            SKSE::log::error("FreeCamMenu: could not create {} - defaults apply, the first setting change retries", a_path);
+            return;
+        }
+        auto fl = [](float v) { return std::format("{:.4f}", v); };
+        f << "; TFCam settings. TFCam created this file on first launch; it is not part of the download, so updating\n"
+             "; TFCam never resets it. Delete it to return to the defaults. The in-game page (SKSE Menu Framework >\n"
+             "; FreeCam > Settings) saves every change here immediately.\n\n";
+        f << "[FOV]\n; Degrees per mouse wheel tick\nfStep=" << fl(s_fovStep) << "\n"
+          << "; FOV range limits\nfMin=" << fl(s_fovMin) << "\nfMax=" << fl(s_fovMax) << "\n\n";
+        f << "[Roll]\n; Radians per second while key held\nfSpeed=" << fl(s_rollSpeed) << "\n"
+          << "; Q = roll counter-clockwise (0x10 = 16)\niKeyCCW=" << s_rollCCWKey << "\n"
+          << "; E = roll clockwise (0x12 = 18)\niKeyCW=" << s_rollCWKey << "\n\n";
+        f << "[Hotkeys]\n; DX scancode for free fly toggle (0 = unmapped)\niFreeFlyKey=" << s_freeFlyKey << "\n"
+          << "; R = reset FOV + roll (0x13 = 19)\niResetKey=" << s_resetKey << "\n"
+          << "; Keyboard shortcuts for freeze time / screenshot (0 = unmapped: Shift+Middle Click / Middle Click)\n"
+          << "iFreezeTimeKey=" << s_freezeTimeKey << "\niScreenshotKey=" << s_screenshotKey << "\n"
+          << "; Hold to fly at 1/5 speed. DX scancode, 0x38 = Left Alt (56). 0 = off\niSlowKey=" << s_slowKey << "\n\n";
+        f << "[Camera]\nfSpeed=" << fl(s_cameraSpeed) << "\nbHideHUD=" << (s_hideHUD ? 1 : 0)
+          << "\nbBlockAttacks=" << (s_blockAttacks ? 1 : 0) << "\niLMBAction=" << s_lmbAction
+          << "\niRMBAction=" << s_rmbAction << "\n"
+          << "; 1 = in free cam Shift no longer drives sprint / run / run toggle (incl. a Shift+key run toggle). "
+             "0 = works as without TFCam\nbDisableShift=" << (s_disableShift ? 1 : 0) << "\n"
+          << "; 1 = Space / Jump does nothing in free cam (no jumping under the camera, any key or gamepad). "
+             "0 = works as without TFCam\nbDisableSpace=" << (s_disableSpace ? 1 : 0) << "\n"
+          << "; 1 = eat the Activate key (E / gamepad A) while in free cam: no sitting on furniture or using a door "
+             "the camera points at\nbDisableActivate=" << (s_disableActivate ? 1 : 0) << "\n\n";
+        f << "[Light]\nbScrollBrightness=" << (s_lightScrollBrightness ? 1 : 0)
+          << "\nbScrollRadius=" << (s_lightScrollRadius ? 1 : 0) << "\nfRadius=" << fl(s_lightRadius)
+          << "\nfFade=" << fl(s_lightFade) << "\niColorR=" << s_lightColorR << "\niColorG=" << s_lightColorG
+          << "\niColorB=" << s_lightColorB << "\n";
+        f.flush();
+        if (!f) {
+            SKSE::log::error("FreeCamMenu: writing the new {} failed part-way", a_path);
+            return;
+        }
+        SKSE::log::info("FreeCamMenu: first run - created {} from the code defaults", a_path);
+    }
+
     void LoadSettings() {
         const char* ini = GetINIPath();
+        // Through MO2's virtual file system too (the same open GetPrivateProfileString does).
+        const bool exists = std::ifstream(ini).good();
 
         char buf[64], defBuf[64];
         auto readFloat = [&](const char* section, const char* key, float def) -> float {
@@ -480,14 +579,16 @@ namespace FreeCamMenu {
 
         s_rollCCWKey = readInt("Roll", "iKeyCCW", 0x10);
         s_rollCWKey  = readInt("Roll", "iKeyCW",  0x12);
-        s_rollSpeed  = readFloat("Roll", "fSpeed", 1.5f);
+        s_rollSpeed  = readFloat("Roll", "fSpeed", 1.6f);
 
-        s_fovStep = readFloat("FOV", "fStep", 2.0f);
-        float fovMin = readFloat("FOV", "fMin", 10.0f);
-        float fovMax = readFloat("FOV", "fMax", 150.0f);
+        s_fovStep = readFloat("FOV", "fStep", 5.0f);
+        s_fovMin  = readFloat("FOV", "fMin", 10.0f);
+        s_fovMax  = readFloat("FOV", "fMax", 150.0f);
+        float fovMin = s_fovMin;
+        float fovMax = s_fovMax;
 
-        s_cameraSpeed = readFloat("Camera", "fSpeed", 10.0f);
-        s_hideHUD     = readInt("Camera", "bHideHUD", 0) != 0;
+        s_cameraSpeed = readFloat("Camera", "fSpeed", 14.5f);
+        s_hideHUD     = readInt("Camera", "bHideHUD", 1) != 0;
         s_blockAttacks = readInt("Camera", "bBlockAttacks", 1) != 0;
         s_dialogueCam  = false; // SHELVED 2026-09-17: forced off regardless of ini (drive not working properly yet)
         s_slowKey      = readInt("Hotkeys", "iSlowKey", 0x38);
@@ -504,8 +605,8 @@ namespace FreeCamMenu {
         s_lightScrollRadius     = readInt("Light", "bScrollRadius", 1) != 0;
         s_lightRadius    = readFloat("Light", "fRadius", 1000.0f);
         s_lightFade      = readFloat("Light", "fFade", 1.7f);
-        s_lightColorR    = readInt("Light", "iColorR", 255);
-        s_lightColorG    = readInt("Light", "iColorG", 255);
+        s_lightColorR    = readInt("Light", "iColorR", 215);
+        s_lightColorG    = readInt("Light", "iColorG", 233);
         s_lightColorB    = readInt("Light", "iColorB", 255);
 
         CameraLight::SetScrollBrightness(s_lightScrollBrightness);
@@ -534,8 +635,13 @@ namespace FreeCamMenu {
         settings.disableSpace  = s_disableSpace;
         settings.raceMenuCam   = s_raceMenuCam;
 
-        SKSE::log::info("FreeCamMenu: loaded — freeFlyKey=0x{:X} resetKey=0x{:X}",
-            s_freeFlyKey, s_resetKey);
+        if (!exists) {
+            CreateDefaultINI(ini);
+        }
+        SKSE::log::info("FreeCamMenu: settings {} {} - freeFlyKey=0x{:X} resetKey=0x{:X} Disable Space={} Disable Shift={} "
+                        "Disable Activate={} Block attacks={} Hide HUD={} speed={:.1f}",
+            exists ? "loaded from" : "(defaults) for new file", ini, s_freeFlyKey, s_resetKey, s_disableSpace,
+            s_disableShift, s_disableActivate, s_blockAttacks, s_hideHUD, s_cameraSpeed);
     }
 
     static bool __stdcall OnSMFInput(RE::InputEvent* a_event) {

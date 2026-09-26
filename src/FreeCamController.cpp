@@ -5,12 +5,19 @@
 #include "HUDHider.h"
 #include "FcfwBridge.h"
 #include "SlccBridge.h"
+#include "SceneTracker.h"
 
 #include <RE/I/INISettingCollection.h>
 #include <RE/A/AttackBlockHandler.h>
 #include <RE/M/MouseMoveEvent.h>
 
+#include <atomic>
 #include <cmath>
+#include <cstdio>
+#include <format>
+#include <mutex>
+#include <string>
+#include <string_view>
 #include <Windows.h>
 
 namespace FreeCam {
@@ -52,6 +59,135 @@ namespace FreeCam {
         if (setting) {
             setting->data.f = speed;
         }
+    }
+
+    // ---- 0.7.9 diagnostics + scripted-tfc guard state ---------------------------------------------------------
+    // The Begin/End hooks do NOT always run on the main thread: PapyrusUtil's MiscUtil.ToggleFreeCamera (SexLab P+,
+    // Prism) and ConsoleUtil.ExecuteCommand("tfc") (Poser Hotkeys Plus) call into the camera from Papyrus VM threads
+    // (proven 2026-09-26: SKSEMenuFramework.log shows TFCam's HUD RestoreAll on threads 7528/19496/25188, main = 7960).
+    // Everything below is safe to touch from any thread.
+    static std::atomic<std::uint32_t> s_mainThreadId{ 0 };
+
+    // Last key-down TFCam's input sink saw on the keyboard / gamepad (written on the main thread by the sink).
+    struct LastPress {
+        std::uint32_t code      = 0;
+        int           device    = -1;
+        char          event[32] = {};
+        std::int64_t  qpc       = 0;
+    };
+    static std::mutex                s_lastPressLock;
+    static LastPress                 s_lastPress;
+    static std::atomic<std::int64_t> s_lastJumpQpc{ 0 };       // last press of the Jump key (user event or mapped key)
+    static std::atomic<bool>         s_scriptTfcSession{ false };  // this free cam was opened by a script's console tfc
+
+    static std::int64_t QpcNow() {
+        LARGE_INTEGER t;
+        ::QueryPerformanceCounter(&t);
+        return t.QuadPart;
+    }
+
+    static double MsSince(std::int64_t a_qpc) {
+        static const double freq = [] {
+            LARGE_INTEGER f;
+            ::QueryPerformanceFrequency(&f);
+            return static_cast<double>(f.QuadPart);
+        }();
+        return static_cast<double>(QpcNow() - a_qpc) * 1000.0 / freq;
+    }
+
+    void NoteMainThread() {
+        s_mainThreadId = static_cast<std::uint32_t>(::GetCurrentThreadId());
+    }
+
+    std::string ThreadTag() {
+        const auto id   = static_cast<std::uint32_t>(::GetCurrentThreadId());
+        const auto main = s_mainThreadId.load();
+        if (main == 0) return std::format("thread {}", id);
+        return id == main ? std::format("thread {} (main)", id)
+                          : std::format("thread {} (NOT the main thread: a Papyrus VM thread or another worker)", id);
+    }
+
+    // Who called into the camera, as module+offset return addresses (SkyrimSE.exe offsets map to Address Library
+    // IDs offline). A few microseconds per free cam toggle; never used per frame. The first entry is TFCam's own hook.
+    __declspec(noinline) static std::string CallerChain(unsigned long a_frames) {
+        void*       frames[32] = {};
+        const auto  count      = ::CaptureStackBackTrace(1, (std::min)(a_frames, 32ul), frames, nullptr);
+        std::string out;
+        for (unsigned short i = 0; i < count; ++i) {
+            const auto  addr = reinterpret_cast<std::uintptr_t>(frames[i]);
+            HMODULE     mod  = nullptr;
+            std::string entry;
+            if (::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    reinterpret_cast<LPCWSTR>(frames[i]), &mod) && mod) {
+                wchar_t           path[MAX_PATH] = {};
+                const DWORD       len            = ::GetModuleFileNameW(mod, path, MAX_PATH);
+                std::wstring_view full(path, len);
+                const auto        slash = full.find_last_of(L"\\/");
+                const auto        base  = slash == std::wstring_view::npos ? full : full.substr(slash + 1);
+                for (const wchar_t c : base) entry.push_back(c < 0x80 ? static_cast<char>(c) : '?');
+                entry += std::format("+0x{:X}", addr - reinterpret_cast<std::uintptr_t>(mod));
+            } else {
+                entry = std::format("0x{:X}", addr);
+            }
+            if (!out.empty()) out += " < ";
+            out += entry;
+        }
+        return out.empty() ? std::string("(no frames)") : out;
+    }
+
+    static std::string DescribeLastPress() {
+        LastPress p;
+        {
+            std::lock_guard lock(s_lastPressLock);
+            p = s_lastPress;
+        }
+        if (p.qpc == 0) return "none seen yet";
+        const char* dev = p.device == static_cast<int>(RE::INPUT_DEVICE::kKeyboard) ? "keyboard" :
+                          p.device == static_cast<int>(RE::INPUT_DEVICE::kGamepad)  ? "gamepad" : "device";
+        return std::format("{} 0x{:X} '{}' {:.0f} ms ago", dev, p.code, static_cast<const char*>(p.event), MsSince(p.qpc));
+    }
+
+    // Input sink, main thread, before any eat below can clear the user event.
+    static void RecordPress(RE::ButtonEvent* a_btn, RE::INPUT_DEVICE a_device, std::uint32_t a_code) {
+        const auto  now = QpcNow();
+        const auto& ue  = a_btn->QUserEvent();
+        {
+            std::lock_guard lock(s_lastPressLock);
+            s_lastPress.code   = a_code;
+            s_lastPress.device = static_cast<int>(a_device);
+            std::snprintf(s_lastPress.event, sizeof(s_lastPress.event), "%s", ue.c_str() ? ue.c_str() : "");
+            s_lastPress.qpc = now;
+        }
+        auto* events = RE::UserEvents::GetSingleton();
+        bool  jump   = events && ue == events->jump;
+        if (!jump && a_device == RE::INPUT_DEVICE::kKeyboard) {
+            // Poser Hotkeys Plus tests the raw key against Input.GetMappedKey("Jump"), whatever the context maps it to.
+            if (auto* map = RE::ControlMap::GetSingleton()) {
+                const auto mapped = map->GetMappedKey("Jump"sv, RE::INPUT_DEVICE::kKeyboard);
+                jump              = mapped != 0xFF && a_code == mapped;
+            }
+        }
+        if (jump) s_lastJumpQpc = now;
+    }
+
+    bool JumpPressedWithin(double a_seconds, double& a_msAgo) {
+        const auto t = s_lastJumpQpc.load();
+        if (t == 0) {
+            a_msAgo = -1.0;
+            return false;
+        }
+        a_msAgo = MsSince(t);
+        return a_msAgo >= 0.0 && a_msAgo <= a_seconds * 1000.0;
+    }
+
+    void NoteScriptTfcOpenedSession() { s_scriptTfcSession = true; }
+    bool SessionOpenedByScriptTfc() { return s_scriptTfcSession.load(); }
+
+    // Poser Hotkeys Plus' DisableFreeCam runs MiscUtil.SetFreeCameraSpeed(10) right before its tfc; when that tfc is
+    // refused, put TFCam's own speed back.
+    void ReapplyCameraSpeed() {
+        const float speed = FreeCamMenu::GetCameraSpeed();
+        SetCameraSpeed(s_altSlow ? speed / 5.0f : speed);
     }
 
     static LARGE_INTEGER s_qpcFreq = {};
@@ -131,14 +267,26 @@ namespace FreeCam {
         ResetCamera();
     }
 
+    // 0.7.9: reset while an FCFW timeline (SLCC) drives the camera - roll only, the FOV stays SLCC's.
+    static void ResetRoll() {
+        SKSE::log::info("FreeCam: roll reset ({:.2f} rad) - FCFW timeline {} keeps its FOV", s_rollAngle,
+            FcfwBridge::ActiveTimelineID());
+        s_rollAngle = 0.0f;
+    }
+
     // --- FreeCameraState::GetRotation hook ---
 
     struct GetRotationHook {
         static void thunk(RE::TESCameraState* a_this, RE::NiQuaternion& a_rotation) {
             func(a_this, a_rotation);
 
-            // 0.7.7: never roll a camera an FCFW timeline (SLCC) is driving - it has its own roll.
-            if (s_rollAngle != 0.0f && !FcfwBridge::FcfwOwnsCamera()) {
+            // 0.7.9: the roll also applies on top of an FCFW (SLCC) camera. Checked in FCFW's source (8b4df64):
+            // TimelineManager::Update rewrites the state's translation + pitch/yaw and its roll (a write_call on
+            // FromEulerAnglesZXY INSIDE this vanilla GetRotation, 49814/50744+0x1B) from the timeline every frame, and
+            // only ever reads back the state's pitch/yaw fields and its own roll variable. SLCC hooks the same call
+            // site and keeps its own post-layer rotation (its log: baseRot/finalRot + roll). This multiply touches
+            // only the returned quaternion, after all of them, so nothing feeds back and nothing is fought over.
+            if (s_rollAngle != 0.0f) {
                 float halfAngle = s_rollAngle * 0.5f;
                 float cH = std::cos(halfAngle);
                 float sH = std::sin(halfAngle);
@@ -165,9 +313,14 @@ namespace FreeCam {
 
     // Run a remapped mouse-button action (LMB/RMB → one of our functions).
     // 0.7.7: the camera-writing actions (FOV, reset) only while TFCam drives the camera.
+    // 0.7.9: under an FCFW (SLCC) camera, Reset still clears TFCam's roll (the FOV stays SLCC's).
     static void ExecuteMouseAction(int action, bool a_driving) {
         auto* cam = RE::PlayerCamera::GetSingleton();
-        if (!a_driving && (action == kFovIn || action == kFovOut || action == kResetCam)) {
+        if (!a_driving && action == kResetCam) {
+            ResetRoll();
+            return;
+        }
+        if (!a_driving && (action == kFovIn || action == kFovOut)) {
             return;
         }
         switch (action) {
@@ -283,6 +436,18 @@ namespace FreeCam {
             // (SLCC) drives. Every camera write below is TFCam's only while no timeline owns it.
             const bool driving = !FcfwBridge::FcfwOwnsCamera();
             SlccBridge::Pump();
+
+            // 0.7.9: TFCam's roll also rides on an FCFW camera now. If an FCFW session starts or ends while the free
+            // cam stays on (no Begin/End in between), the roll belonged to the other camera: clear it.
+            static bool s_prevDriving = true;
+            if (driving != s_prevDriving) {
+                if (s_rollAngle != 0.0f) {
+                    SKSE::log::info("FreeCam: roll cleared - an FCFW timeline {} the camera without a free cam exit",
+                        driving ? "released" : "took");
+                    s_rollAngle = 0.0f;
+                }
+                s_prevDriving = driving;
+            }
 
             // 0.7.7 SLCC hand-over: start where SLCC's camera was, not behind the player. Written
             // before the vanilla Update, the same way as the menu-exit restore below.
@@ -482,6 +647,7 @@ namespace FreeCam {
 
     struct FreeCamBeginHook {
         static void thunk(RE::TESCameraState* a_this) {
+            const std::string chain = CallerChain(24);  // 0.7.9 diagnostic: who turned free cam on
             func(a_this);
             auto* cam = RE::PlayerCamera::GetSingleton();
             s_rollAngle = 0.0f;
@@ -497,13 +663,14 @@ namespace FreeCam {
             if (s_sessionDriven) {
                 s_baseFOV = cam ? cam->worldFOV : 0.0f;
                 HUDHider::OnFreeCamEnter();
-                SKSE::log::info("FreeCam entered, FOV={:.1f}", s_baseFOV);
+                SKSE::log::info("FreeCam entered, FOV={:.1f} [{}]", s_baseFOV, ThreadTag());
             } else {
                 s_baseFOV = 0.0f;
                 s_entryPosePending = false;
                 SKSE::log::info("FreeCam entered by FCFW timeline {} (SLCC / FCFW drives it) - TFCam camera "
-                                "features stand down, input blocks stay", timeline);
+                                "features stand down except roll, input blocks stay [{}]", timeline, ThreadTag());
             }
+            SKSE::log::info("FreeCam enter: called from {}", chain);
             SlccBridge::OnFreeCamBegin(s_sessionDriven);
         }
         static inline REL::Relocation<decltype(thunk)> func;
@@ -513,6 +680,12 @@ namespace FreeCam {
 
     struct FreeCamEndHook {
         static void thunk(RE::TESCameraState* a_this) {
+            // 0.7.9 diagnostic (permanent, cheap): the caller chain names the DLL that ended free cam, and the last
+            // key TFCam's input sink saw names the key behind it. 2026-09-26: exits with no TFCam cause ran on Papyrus
+            // VM threads - Poser Hotkeys Plus' Jump handler running ConsoleUtil.ExecuteCommand("tfc").
+            const std::string chain = CallerChain(24);
+            const bool        scriptSession = s_scriptTfcSession.exchange(false);
+
             // 0.7.7: s_baseFOV is only set for a TFCam-driven session. If an FCFW timeline owns the
             // camera at exit (SLCC stopping its playback), FCFW restores its own saved FOV.
             const bool fcfwOwned   = FcfwBridge::FcfwOwnsCamera();
@@ -576,8 +749,11 @@ namespace FreeCam {
                 });
             }
 
-            SKSE::log::info("FreeCam exited ({} session{})", wasTFCam ? "TFCam" : "FCFW",
-                fcfwOwned ? ", FCFW timeline active at exit" : "");
+            SKSE::log::info("FreeCam exited ({} session{}{}) [{}]", wasTFCam ? "TFCam" : "FCFW",
+                fcfwOwned ? ", FCFW timeline active at exit" : "",
+                scriptSession ? ", opened by a script's console tfc" : "", ThreadTag());
+            SKSE::log::info("FreeCam exit: called from {}", chain);
+            SKSE::log::info("FreeCam exit: last key/button press TFCam saw: {}", DescribeLastPress());
             SlccBridge::OnFreeCamEnd(fcfwOwned);
         }
         static inline REL::Relocation<decltype(thunk)> func;
@@ -759,6 +935,13 @@ namespace FreeCam {
                 auto device = btn->GetDevice();
                 auto code   = btn->GetIDCode();
 
+                // 0.7.9: remember the last key-down (free cam exit diagnostic + scripted-tfc guard), before any
+                // eat below zeroes the event or clears its user event.
+                if (btn->IsDown() &&
+                    (device == RE::INPUT_DEVICE::kKeyboard || device == RE::INPUT_DEVICE::kGamepad)) {
+                    RecordPress(btn, device, code);
+                }
+
                 // -------------------------------------------------------
                 // Key capture for press-to-bind (eats all input while active)
                 // -------------------------------------------------------
@@ -937,7 +1120,9 @@ namespace FreeCam {
                     bool consumed = false;
 
                     // 0.7.7: roll only while TFCam drives (the roll keys are still eaten below).
-                    if (driving && !AnyMenuOpen() && btn->IsPressed()) {
+                    // 0.7.9: roll also on top of an FCFW (SLCC) camera - see GetRotationHook. FOV and position
+                    // stay SLCC's.
+                    if (active && !AnyMenuOpen() && btn->IsPressed()) {
                         if (code == s_settings.rollCCWKey) {
                             s_rollAngle -= s_settings.rollSpeed * s_frameDt;
                             consumed = true;
@@ -958,8 +1143,13 @@ namespace FreeCam {
                     }
 
                     if (!AnyMenuOpen() && btn->IsDown()) {
-                        if (driving && code == s_settings.resetKey) {
-                            ResetAll();
+                        if (code == s_settings.resetKey) {
+                            // 0.7.9: under an FCFW (SLCC) camera the reset key clears TFCam's roll only.
+                            if (driving) {
+                                ResetAll();
+                            } else {
+                                ResetRoll();
+                            }
                             consumed = true;
                         }
                         if (s_settings.freezeTimeKey > 0 && code == s_settings.freezeTimeKey) {
@@ -988,6 +1178,10 @@ namespace FreeCam {
                 // handlers (JumpBlockHook / ShiftBlockHook) - this sink runs after PlayerControls,
                 // so it is too late for that. Last in the loop so a TFCam hotkey bound to one of
                 // these keys has already been handled above. Unticked = the event passes untouched.
+                //
+                // 0.7.9: not Space / Jump during a player SexLab scene. Space is SexLab P+'s Advance hotkey there
+                // (a Papyrus key registration, i.e. SKSE's own input sink), and the player cannot jump in a scene
+                // anyway - so whatever order the sinks run in, P+ always gets the key.
                 if (!AnyMenuOpen()) {
                     const bool isKeyboard = device == RE::INPUT_DEVICE::kKeyboard;
                     const bool isShift = isKeyboard && (code == 0x2A || code == 0x36);
@@ -995,7 +1189,7 @@ namespace FreeCam {
                     auto* ue = RE::UserEvents::GetSingleton();
                     const bool isJump = ue && btn->QUserEvent() == ue->jump;
                     if ((s_settings.disableShift && isShift) ||
-                        (s_settings.disableSpace && (isSpace || isJump))) {
+                        (s_settings.disableSpace && (isSpace || isJump) && !SceneTracker::PlayerSceneActive())) {
                         ConsumeButton(btn);
                         btn->userEvent = "";
                     }

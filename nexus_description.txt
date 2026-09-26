@@ -41,7 +41,7 @@ Middle Mouse Button triggers a screenshot (sends PrintScreen) while in free came
 Bind any key to toggle free camera on/off from the menu. Press-to-bind — just click the button and press your key.
 
 **All Settings Persist**
-Every setting saves to TFCam.ini automatically. Your configuration is remembered between sessions.
+Every setting saves to TFCam.ini automatically. TFCam creates that file on first launch and it is not in the download, so updating never resets your settings (MO2: it appears in overwrite).
 
 
 Requirements

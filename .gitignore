@@ -7,6 +7,12 @@ analyze_ffc*.py
 # Build logs
 build_err.txt
 build_out.txt
+build_*.log
+
+# User settings (0.7.9): TFCam creates TFCam.ini on first run. It is never committed, deployed or put in a
+# release zip, so an update can never reset someone's settings. FreeCamClaude.ini is the pre-0.5 name.
+TFCam.ini
+FreeCamClaude.ini
 
 # IDE
 .vs/

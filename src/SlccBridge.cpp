@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <optional>
 #include <string>
@@ -1045,14 +1046,89 @@ namespace SlccBridge {
             }
         }
 
+        // 0.7.9: a script's `tfc` (ConsoleUtil.ExecuteCommand and friends: the console is closed, and it runs on a
+        // Papyrus VM thread) that would close a free camera it did not open, this soon after the Jump key, is refused.
+        //
+        // Found 2026-09-26: Poser Hotkeys Plus (mzinPoserHotKeysMainQuest) registers the Jump key and, with its
+        // "Free Camera" option on, runs DisableFreeCam() on EVERY Jump press - posing or not - which is
+        // `if Game.GetCameraState() == 3: MiscUtil.SetFreeCameraSpeed(10); ConsoleUtil.ExecuteCommand("tfc")`.
+        // So Space closed any free camera (TFCam, SexLab P+ / Prism, SLCC's FCFW camera), and during an SLCC scene
+        // the same `tfc` read as the user's console tfc and started a TFCam <-> SLCC hand-over on each Space press.
+        // Papyrus latency: SexLab P+'s own key toggles landed 44-65 ms after the press in the same session; 5 s
+        // leaves room for a busy VM and is logged, so a miss shows up in TFCam.log.
+        constexpr double kScriptTfcJumpWindowSec = 5.0;
+
         bool TfcExecute(const RE::SCRIPT_PARAMETER* a_paramInfo, RE::SCRIPT_FUNCTION::ScriptData* a_scriptData,
             RE::TESObjectREFR* a_thisObj, RE::TESObjectREFR* a_containingObj, RE::Script* a_scriptObj,
             RE::ScriptLocals* a_locals, double& a_result, std::uint32_t& a_opcodeOffsetPtr) {
+            if (!ConsoleOpen()) {
+                auto*      cam   = RE::PlayerCamera::GetSingleton();
+                const bool wasOn = cam && cam->IsInFreeCameraMode();
+                double     msAgo = -1.0;
+                const bool jump  = FreeCam::JumpPressedWithin(kScriptTfcJumpWindowSec, msAgo);
+                const std::string jumpText = msAgo < 0.0 ? std::string("never") : std::format("{:.0f} ms ago", msAgo);
+                if (wasOn && jump && !FreeCam::SessionOpenedByScriptTfc()) {
+                    FreeCam::ReapplyCameraSpeed();  // Poser set the free camera speed to 10 just before this tfc
+                    SKSE::log::info("Scripted tfc REFUSED: a script tried to close a free camera it did not open, {} after the "
+                                    "Jump key (Poser Hotkeys Plus closes any free camera on Jump) - free cam stays [FCFW "
+                                    "timeline {} | {}]", jumpText, FcfwBridge::ActiveTimelineID(), FreeCam::ThreadTag());
+                    return true;
+                }
+                SKSE::log::info("Scripted tfc (console closed) - free cam {} [last Jump press {}{} | FCFW timeline {} | {}]",
+                    wasOn ? "on, this turns it off" : "off, this turns it on", jumpText,
+                    wasOn && jump ? ", but this free cam was opened by a script's tfc" : "",
+                    FcfwBridge::ActiveTimelineID(), FreeCam::ThreadTag());
+                const bool result = s_origTfc(a_paramInfo, a_scriptData, a_thisObj, a_containingObj, a_scriptObj,
+                    a_locals, a_result, a_opcodeOffsetPtr);
+                if (!wasOn && cam && cam->IsInFreeCameraMode()) {
+                    FreeCam::NoteScriptTfcOpenedSession();  // e.g. Poser's pose camera: its own Jump exit stays allowed
+                }
+                return result;
+            }
+            // Typed in the console: 0.7.7's SLCC hand-over (a scripted tfc never starts one any more).
             if (s_installed && OnConsoleTfc(a_scriptData ? a_scriptData->numParams : 0)) {
                 return true;
             }
             return s_origTfc(a_paramInfo, a_scriptData, a_thisObj, a_containingObj, a_scriptObj, a_locals,
                 a_result, a_opcodeOffsetPtr);
+        }
+
+        // The vanilla command is "ToggleFlyCam" / "tfc" (strings checked in SkyrimSE.exe 1.6.1170:
+        // "ToggleFlyCam\0...tfc\0...Toggles the Free Fly camera"). Fall back to the short name.
+        // Data write to the command table (the execute pointer), not a code patch.
+        void WrapConsoleTfc() {
+            auto* cmd = RE::SCRIPT_FUNCTION::LocateConsoleCommand("ToggleFlyCam");
+            if (!cmd) {
+                if (auto* first = RE::SCRIPT_FUNCTION::GetFirstConsoleCommand()) {
+                    for (std::uint16_t i = 0; i < RE::SCRIPT_FUNCTION::Commands::kConsoleCommandsEnd; ++i) {
+                        if (first[i].shortName && _stricmp(first[i].shortName, "tfc") == 0) {
+                            cmd = &first[i];
+                            break;
+                        }
+                    }
+                }
+            }
+            if (cmd && cmd->executeFunction) {
+                s_origTfc = cmd->executeFunction;
+                RE::SCRIPT_FUNCTION::Execute_t* const wrapped = &TfcExecute;
+                REL::safe_write(reinterpret_cast<std::uintptr_t>(&cmd->executeFunction), &wrapped, sizeof(wrapped));
+                s_tfcHooked = true;
+                SKSE::log::info("Console {} ({}) wrapped (scripted-tfc guard; SLCC hand-over when SLCC is armed)",
+                    cmd->functionName ? cmd->functionName : "?", cmd->shortName ? cmd->shortName : "?");
+            } else {
+                SKSE::log::warn("Console ToggleFlyCam (tfc) not found - no scripted-tfc guard, and the End/Begin re-entry "
+                                "detector stands in for tfc during SLCC scenes");
+            }
+        }
+
+        // CommonLib-NG 3.7.0's LookupLoadedLightModByName counts light plugins in a uint8_t, so with more than 255
+        // light plugins it only searches the first (count % 256): SexLabPPrism.esp (ESL-flagged) read as "not active"
+        // on 2026-09-26 while Prism's quest scripts were running. LookupModByName walks every known file instead;
+        // compileIndex 0xFF = not loaded (0xFE = loaded light plugin).
+        bool PluginLoaded(std::string_view a_name) {
+            auto*       dh   = RE::TESDataHandler::GetSingleton();
+            const auto* file = dh ? dh->LookupModByName(a_name) : nullptr;
+            return file && file->GetCompileIndex() != 0xFF;
         }
 
         void OnSkseMessage(SKSE::MessagingInterface::Message* a_msg) {
@@ -1081,48 +1157,25 @@ namespace SlccBridge {
 
     void Install() {
         s_ready = true;
-        // TFCam ships to users without SLCC: without FCFW + SLCCNative.dll nothing is wrapped and every
-        // request stays the plain pre-0.7.7 toggle.
+        // 0.7.9: the console tfc wrapper is installed for everyone - it carries the scripted-tfc guard (Poser
+        // Hotkeys Plus closing free cam on Jump). Its SLCC hand-over part only runs once the bridge is armed below.
+        WrapConsoleTfc();
+
+        // TFCam ships to users without SLCC: without FCFW + SLCCNative.dll every request stays the plain
+        // pre-0.7.7 toggle.
         if (!FcfwBridge::Available() || !SlccLoaded()) {
             SKSE::log::info("SLCC bridge: inactive (FCFW API {}, SLCCNative.dll {}) - plain free cam toggles",
                 FcfwBridge::Available() ? "present" : "missing", SlccLoaded() ? "loaded" : "not loaded");
             return;
         }
         s_installed = true;
-
-        // The vanilla command is "ToggleFlyCam" / "tfc" (strings checked in SkyrimSE.exe 1.6.1170:
-        // "ToggleFlyCam\0...tfc\0...Toggles the Free Fly camera"). Fall back to the short name.
-        auto* cmd = RE::SCRIPT_FUNCTION::LocateConsoleCommand("ToggleFlyCam");
-        if (!cmd) {
-            if (auto* first = RE::SCRIPT_FUNCTION::GetFirstConsoleCommand()) {
-                for (std::uint16_t i = 0; i < RE::SCRIPT_FUNCTION::Commands::kConsoleCommandsEnd; ++i) {
-                    if (first[i].shortName && _stricmp(first[i].shortName, "tfc") == 0) {
-                        cmd = &first[i];
-                        break;
-                    }
-                }
-            }
-        }
-        if (cmd && cmd->executeFunction) {
-            s_origTfc = cmd->executeFunction;
-            RE::SCRIPT_FUNCTION::Execute_t* const wrapped = &TfcExecute;
-            REL::safe_write(reinterpret_cast<std::uintptr_t>(&cmd->executeFunction), &wrapped, sizeof(wrapped));
-            s_tfcHooked = true;
-            SKSE::log::info("SLCC bridge: console {} ({}) wrapped", cmd->functionName ? cmd->functionName : "?",
-                cmd->shortName ? cmd->shortName : "?");
-        } else {
-            SKSE::log::warn("SLCC bridge: console ToggleFlyCam (tfc) not found - falling back to the End/Begin "
-                            "re-entry detector for tfc during SLCC scenes");
-        }
         SKSE::log::info("SLCC bridge: armed (FCFW API present, SLCCNative.dll loaded)");
         RefreshPplusKey("data loaded");
 
         // SexLab P+ Prism: its Papyrus controller (SexLabPPrism.esp) keeps free cam on during player scenes.
         {
-            auto*      dh     = RE::TESDataHandler::GetSingleton();
             const bool dll    = ::GetModuleHandleA("SexLabPPrism.dll") != nullptr;
-            const bool plugin = dh && (dh->LookupLoadedModByName("SexLabPPrism.esp") ||
-                                       dh->LookupLoadedLightModByName("SexLabPPrism.esp"));
+            const bool plugin = PluginLoaded("SexLabPPrism.esp");
             s_prismPresent = dll && plugin;
             SKSE::log::info("SLCC bridge: SexLab P+ Prism {} (SexLabPPrism.dll {}, SexLabPPrism.esp {}){}",
                 s_prismPresent ? "present" : "not present", dll ? "loaded" : "not loaded",

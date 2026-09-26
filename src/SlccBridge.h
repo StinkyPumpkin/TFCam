@@ -12,6 +12,11 @@
 // Requests: the TFCam free-fly key, console `tfc` (the ToggleFreeCamera command is wrapped), and the
 // SKSE message 'TFCF' from SLUI. Everything runs on the main thread, stepped once per frame.
 //
+// 0.7.9: the console tfc wrapper is installed for every user. A tfc typed in the console drives the SLCC
+// hand-over as before; a tfc run by a script (console closed - ConsoleUtil.ExecuteCommand) never does, and one
+// that would close a free camera the script did not open within 5 s of the Jump key is refused (Poser Hotkeys
+// Plus closes any free camera on Jump).
+//
 // 0.7.8: camera cycle TFCam -> SLCC -> Off -> TFCam during a player SexLab scene with SLCC loaded.
 // Driven by TFCam's free-fly key, and by SexLab P+'s own "Toggle Free Camera" hotkey: P+ toggles the
 // free cam through PapyrusUtil's MiscUtil.ToggleFreeCamera, a direct PlayerCamera::ToggleFreeCameraMode
