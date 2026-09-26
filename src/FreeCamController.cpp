@@ -780,15 +780,32 @@ namespace FreeCam {
                 if (device == RE::INPUT_DEVICE::kKeyboard && btn->IsDown() &&
                     (!AnyMenuOpen() || (s_settings.dialogueCam && InDialogue())
                                     || (s_settings.raceMenuCam && InRaceMenu()))) {
+                    // 0.7.8: SexLab P+'s "Toggle Free Camera" key is watched (never eaten): P+ toggles
+                    // free cam itself through PapyrusUtil, and SlccBridge follows that toggle.
+                    if (!AnyMenuOpen()) SlccBridge::NoteKeyDown(code);
+
                     int flyKey = FreeCamMenu::GetFreeFlyKey();
                     if (flyKey > 0 && code == static_cast<std::uint32_t>(flyKey)) {
-                        // 0.7.7: plain toggle as before, unless an FCFW timeline (SLCC) owns the
-                        // camera - then SLCC's director is paused first (SlccBridge).
-                        SlccBridge::RequestToggle("free-fly key");
-                        active  = IsActive();
-                        driving = active && !FcfwBridge::FcfwOwnsCamera();
-                        ConsumeButton(btn);
-                        continue;
+                        if (SlccBridge::IsPplusFreeCamKey(code)) {
+                            // Same key as SexLab P+'s free camera hotkey: P+ already toggles free cam on
+                            // it (sslSystemConfig.OnKeyDown, through SKSE's key registration, which sees
+                            // the key before this sink), so a second toggle here would undo P+'s. TFCam
+                            // follows P+'s toggle instead (SlccBridge Begin/End).
+                            static bool s_warned = false;
+                            if (!s_warned) {
+                                SKSE::log::warn("Free-fly key 0x{:X} is also SexLab P+'s Toggle Free Camera key - "
+                                                "TFCam follows P+'s toggle instead of toggling itself", code);
+                                s_warned = true;
+                            }
+                        } else {
+                            // 0.7.7: plain toggle as before, unless an FCFW timeline (SLCC) owns the camera.
+                            // 0.7.8: during a player SexLab scene with SLCC, the TFCam -> SLCC -> Off cycle.
+                            SlccBridge::RequestCycle("free-fly key");
+                            active  = IsActive();
+                            driving = active && !FcfwBridge::FcfwOwnsCamera();
+                            ConsumeButton(btn);
+                            continue;
+                        }
                     }
 
                 }

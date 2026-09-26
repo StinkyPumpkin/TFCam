@@ -2,6 +2,7 @@
 #include "FreeCamMenu.h"
 #include "FcfwBridge.h"
 #include "SlccBridge.h"
+#include "SceneTracker.h"
 
 #include <spdlog/sinks/basic_file_sink.h>
 #include <ShlObj.h>
@@ -101,13 +102,16 @@ namespace {
             }
             FreeCam::Install();
             SlccBridge::Install();
+            SceneTracker::Register();  // 0.7.8: player SexLab scenes for the SLCC camera cycle
             FreeCamMenu::Register();
             FreeCamMenu::ApplyGameSettings();
             break;
         case SKSE::MessagingInterface::kPostLoadGame:
+            SceneTracker::Reset("save loaded");
             SlccBridge::OnGameLoaded("save loaded");
             break;
         case SKSE::MessagingInterface::kNewGame:
+            SceneTracker::Reset("new game");
             SlccBridge::OnGameLoaded("new game");
             break;
         default:
@@ -120,7 +124,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     SKSE::Init(skse);
     InitializeLogging();
 
-    SKSE::log::info("TFCam v{} loaded", "0.7.7");
+    SKSE::log::info("TFCam v{} loaded", "0.7.8");
 
     FreeCamMenu::LoadSettings();
 
