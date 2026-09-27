@@ -27,7 +27,8 @@ namespace CellEntryCam {
         }
 
         constexpr double kPendingTimeout = 8.0;   // armed but never got a third-person frame to start in
-        constexpr double kStallTimeout   = 0.5;   // no Update for this long mid-orbit = state left / paused
+        constexpr double kStallTimeout   = 0.5;   // no Update for this long = third person left / paused
+        constexpr double kFirstFrameWait = 1.5;   // first third-person frame after arming must come this soon
         constexpr float  kMaxFrameDt     = 0.1f;
 
         // ---- state. Main thread only (menu sink, input sink and the camera Update all run there), except
@@ -38,6 +39,7 @@ namespace CellEntryCam {
         bool   s_pending     = false;     // armed, waiting for the start delay
         double s_pendingAt   = 0.0;       // Now() when armed
         float  s_readyFor    = 0.0f;      // seconds of startable third-person frames so far
+        int    s_pendingFrames = 0;       // third-person frames seen since arming
         std::atomic<bool> s_testRequested{ false };
 
         bool   s_active      = false;     // orbiting
@@ -78,6 +80,7 @@ namespace CellEntryCam {
         void Disarm() {
             s_pending = false;
             s_readyFor = 0.0f;
+            s_pendingFrames = 0;
         }
 
         void Stop(const char* a_why) {
@@ -88,10 +91,18 @@ namespace CellEntryCam {
         }
 
         void Arm(const char* a_why) {
+            // Third person only: the move is driven by the third-person camera's own update, and a
+            // first-person arrival must not fire later when the player switches views.
+            auto* cam = RE::PlayerCamera::GetSingleton();
+            if (cam && cam->IsInFirstPerson()) {
+                SetLast("skipped - %s, but in first person", a_why);
+                return;
+            }
             s_active = false;
             s_pending = true;
             s_pendingAt = Now();
             s_readyFor = 0.0f;
+            s_pendingFrames = 0;
             SetLast("armed - %s", a_why);
         }
 
@@ -170,6 +181,15 @@ namespace CellEntryCam {
 
             if (!s_pending) return;
             if (now - s_pendingAt > kPendingTimeout) { Stop("no third-person gameplay within 8s"); return; }
+            // Third person from the loading screen on: the first frame must come at once, and any gap
+            // (first person, a different camera, a pause) drops it instead of firing later.
+            if (s_pendingFrames == 0) {
+                if (now - s_pendingAt > kFirstFrameWait) { Stop("not in third person after the loading screen"); return; }
+            } else if (stalled) {
+                Stop("left third person before it started");
+                return;
+            }
+            ++s_pendingFrames;
             if (BlockReason()) { s_readyFor = 0.0f; return; }
             s_readyFor += dt;
             if (s_readyFor >= s_settings.startDelay) Start(a_tps);
