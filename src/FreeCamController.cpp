@@ -6,6 +6,7 @@
 #include "FcfwBridge.h"
 #include "SlccBridge.h"
 #include "SceneTracker.h"
+#include "CellEntryCam.h"
 
 #include <RE/I/INISettingCollection.h>
 #include <RE/A/AttackBlockHandler.h>
@@ -1025,6 +1026,9 @@ namespace FreeCam {
             if (SlccBridge::IsInjecting())
                 return RE::BSEventNotifyControl::kContinue;
             SlccBridge::Pump();
+
+            // 0.9.0: mouse movement (and keys, if set) cancels the cell-entry camera move at once.
+            CellEntryCam::OnInput(a_events);
 
             bool active = IsActive();
             // 0.7.7: camera-writing hotkeys (FOV wheel, roll, reset, FOV/reset remaps) key on this;

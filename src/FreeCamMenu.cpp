@@ -3,6 +3,7 @@
 #include "FreezeTime.h"
 #include "CameraLight.h"
 #include "HUDHider.h"
+#include "CellEntryCam.h"
 
 #include <RE/I/INISettingCollection.h>
 
@@ -215,6 +216,21 @@ namespace FreeCamMenu {
         WriteINIInt("Light", "iColorR", s_lightColorR);
         WriteINIInt("Light", "iColorG", s_lightColorG);
         WriteINIInt("Light", "iColorB", s_lightColorB);
+
+        const auto& ce = CellEntryCam::GetSettings();
+        WriteINIInt("CellEntry", "bEnabled", ce.enabled ? 1 : 0);
+        WriteINIInt("CellEntry", "bInteriors", ce.onInteriors ? 1 : 0);
+        WriteINIInt("CellEntry", "bExteriors", ce.onExteriors ? 1 : 0);
+        WriteINIInt("CellEntry", "bAfterSaveLoad", ce.afterSaveLoad ? 1 : 0);
+        WriteINIInt("CellEntry", "bSkipInCombat", ce.skipInCombat ? 1 : 0);
+        WriteINIInt("CellEntry", "bChangeZoom", ce.changeZoom ? 1 : 0);
+        WriteINIFloat("CellEntry", "fZoom", ce.zoom);
+        WriteINIFloat("CellEntry", "fZoomSpeed", ce.zoomSpeed);
+        WriteINIFloat("CellEntry", "fRotation", ce.rotation);
+        WriteINIFloat("CellEntry", "fRotationSpeed", ce.rotationSpeed);
+        WriteINIInt("CellEntry", "iDirection", ce.direction);
+        WriteINIFloat("CellEntry", "fStartDelay", ce.startDelay);
+        WriteINIInt("CellEntry", "bKeysCancel", ce.keysCancel ? 1 : 0);
     }
 
     static void ApplyToController() {
@@ -514,6 +530,57 @@ namespace FreeCamMenu {
         }
     }
 
+    // 0.9.0: FreeCam > Cell Entry page.
+    static void __stdcall RenderCellEntry() {
+        auto& ce = CellEntryCam::GetSettings();
+        bool changed = false;
+
+        ImGuiMCP::SeparatorText("Cell Entry Camera");
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "After a loading screen into a new cell, the third-person camera zooms to a set distance, then orbits "
+            "round the player until it faces them. Any mouse movement stops it at once and gives the camera back.");
+
+        changed |= ImGuiMCP::Checkbox("Enabled##ceOn", &ce.enabled);
+        changed |= ImGuiMCP::Checkbox("Entering interiors##ceInt", &ce.onInteriors);
+        changed |= ImGuiMCP::Checkbox("Arriving outdoors (doors, fast travel)##ceExt", &ce.onExteriors);
+        changed |= ImGuiMCP::Checkbox("After loading a save##ceSave", &ce.afterSaveLoad);
+        changed |= ImGuiMCP::Checkbox("Skip when in combat##ceCombat", &ce.skipInCombat);
+
+        ImGuiMCP::SeparatorText("Zoom");
+        changed |= ImGuiMCP::Checkbox("Change zoom first##ceZoomOn", &ce.changeZoom);
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Zoom##ceZoom", &ce.zoom, -0.2f, 1.0f, "%.2f");
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "The game's own zoom value: -0.2 = closest, 1.0 = farthest (the mouse-wheel range).");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Zoom speed (per second)##ceZoomSpd", &ce.zoomSpeed, 0.1f, 5.0f, "%.1f");
+
+        ImGuiMCP::SeparatorText("Rotation");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Rotation (degrees)##ceRot", &ce.rotation, 0.0f, 360.0f, "%.0f");
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f }, "180 = the camera ends in front of the player, facing them.");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Rotation speed (degrees/s)##ceRotSpd", &ce.rotationSpeed, 10.0f, 360.0f, "%.0f");
+        static const char* dirNames[] = { "Round the player's left side", "Round the player's right side" };
+        ImGuiMCP::SetNextItemWidth(220.0f);
+        changed |= ImGuiMCP::Combo("Direction##ceDir", &ce.direction, dirNames, 2, 2);
+
+        ImGuiMCP::SeparatorText("Timing and cancel");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Start delay (s)##ceDelay", &ce.startDelay, 0.0f, 3.0f, "%.1f");
+        changed |= ImGuiMCP::Checkbox("Keys and buttons cancel too##ceKeys", &ce.keysCancel);
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "Mouse movement, the mouse wheel and the right stick always cancel.");
+
+        if (changed) SaveINI();
+
+        ImGuiMCP::Separator();
+        if (ImGuiMCP::Button("Test (runs when this menu closes)##ceTest")) {
+            CellEntryCam::TestOnMenuClose();
+        }
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f }, "Last: %s", CellEntryCam::LastEvent());
+    }
+
     // 0.7.9: first run with no TFCam.ini - write one from the code defaults (MO2 puts a new file in overwrite\).
     // Afterwards only the in-game page writes it; no update or deploy ever ships or copies it.
     static void CreateDefaultINI(const char* a_path) {
@@ -548,7 +615,20 @@ namespace FreeCamMenu {
         f << "[Light]\nbScrollBrightness=" << (s_lightScrollBrightness ? 1 : 0)
           << "\nbScrollRadius=" << (s_lightScrollRadius ? 1 : 0) << "\nfRadius=" << fl(s_lightRadius)
           << "\nfFade=" << fl(s_lightFade) << "\niColorR=" << s_lightColorR << "\niColorG=" << s_lightColorG
-          << "\niColorB=" << s_lightColorB << "\n";
+          << "\niColorB=" << s_lightColorB << "\n\n";
+        const auto& ce = CellEntryCam::GetSettings();
+        f << "[CellEntry]\n; After a loading screen into a new cell: zoom to fZoom, then orbit fRotation degrees round the player.\n"
+             "; Any mouse movement cancels it at once (bKeysCancel=1: keys and buttons too).\n"
+          << "bEnabled=" << (ce.enabled ? 1 : 0) << "\nbInteriors=" << (ce.onInteriors ? 1 : 0)
+          << "\nbExteriors=" << (ce.onExteriors ? 1 : 0) << "\nbAfterSaveLoad=" << (ce.afterSaveLoad ? 1 : 0)
+          << "\nbSkipInCombat=" << (ce.skipInCombat ? 1 : 0) << "\nbChangeZoom=" << (ce.changeZoom ? 1 : 0)
+          << "\n; game zoom value: -0.2 = closest, 1.0 = farthest\nfZoom=" << fl(ce.zoom)
+          << "\n; zoom units per second\nfZoomSpeed=" << fl(ce.zoomSpeed)
+          << "\n; degrees; 180 = the camera ends in front of the player, facing them\nfRotation=" << fl(ce.rotation)
+          << "\n; degrees per second\nfRotationSpeed=" << fl(ce.rotationSpeed)
+          << "\n; 0 = round the player's left side, 1 = round the right\niDirection=" << ce.direction
+          << "\n; seconds after the loading screen\nfStartDelay=" << fl(ce.startDelay)
+          << "\nbKeysCancel=" << (ce.keysCancel ? 1 : 0) << "\n";
         f.flush();
         if (!f) {
             SKSE::log::error("FreeCamMenu: writing the new {} failed part-way", a_path);
@@ -608,6 +688,25 @@ namespace FreeCamMenu {
         s_lightColorR    = readInt("Light", "iColorR", 215);
         s_lightColorG    = readInt("Light", "iColorG", 233);
         s_lightColorB    = readInt("Light", "iColorB", 255);
+
+        // 0.9.0 cell-entry camera
+        {
+            auto& ce = CellEntryCam::GetSettings();
+            const CellEntryCam::Settings def{};
+            ce.enabled       = readInt("CellEntry", "bEnabled", def.enabled ? 1 : 0) != 0;
+            ce.onInteriors   = readInt("CellEntry", "bInteriors", def.onInteriors ? 1 : 0) != 0;
+            ce.onExteriors   = readInt("CellEntry", "bExteriors", def.onExteriors ? 1 : 0) != 0;
+            ce.afterSaveLoad = readInt("CellEntry", "bAfterSaveLoad", def.afterSaveLoad ? 1 : 0) != 0;
+            ce.skipInCombat  = readInt("CellEntry", "bSkipInCombat", def.skipInCombat ? 1 : 0) != 0;
+            ce.changeZoom    = readInt("CellEntry", "bChangeZoom", def.changeZoom ? 1 : 0) != 0;
+            ce.zoom          = readFloat("CellEntry", "fZoom", def.zoom);
+            ce.zoomSpeed     = readFloat("CellEntry", "fZoomSpeed", def.zoomSpeed);
+            ce.rotation      = readFloat("CellEntry", "fRotation", def.rotation);
+            ce.rotationSpeed = readFloat("CellEntry", "fRotationSpeed", def.rotationSpeed);
+            ce.direction     = readInt("CellEntry", "iDirection", def.direction) == 1 ? 1 : 0;
+            ce.startDelay    = readFloat("CellEntry", "fStartDelay", def.startDelay);
+            ce.keysCancel    = readInt("CellEntry", "bKeysCancel", def.keysCancel ? 1 : 0) != 0;
+        }
 
         CameraLight::SetScrollBrightness(s_lightScrollBrightness);
         CameraLight::SetScrollRadius(s_lightScrollRadius);
@@ -685,6 +784,7 @@ namespace FreeCamMenu {
 
         SKSEMenuFramework::SetSection("FreeCam");
         SKSEMenuFramework::AddSectionItem("Settings", RenderSettings);
+        SKSEMenuFramework::AddSectionItem("Cell Entry", RenderCellEntry);  // 0.9.0
         SKSEMenuFramework::AddInputEvent(OnSMFInput);
 
         SKSE::log::info("FreeCamMenu: settings section registered");

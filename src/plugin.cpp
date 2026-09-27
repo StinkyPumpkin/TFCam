@@ -3,6 +3,7 @@
 #include "FcfwBridge.h"
 #include "SlccBridge.h"
 #include "SceneTracker.h"
+#include "CellEntryCam.h"
 
 #include <spdlog/sinks/basic_file_sink.h>
 #include <ShlObj.h>
@@ -103,10 +104,14 @@ namespace {
                 break;
             }
             FreeCam::Install();
+            CellEntryCam::Install();  // 0.9.0: zoom + orbit after a loading screen into a new cell
             SlccBridge::Install();
             SceneTracker::Register();  // 0.7.8: player SexLab scenes for the SLCC camera cycle
             FreeCamMenu::Register();
             FreeCamMenu::ApplyGameSettings();
+            break;
+        case SKSE::MessagingInterface::kPreLoadGame:
+            CellEntryCam::OnPreLoadGame();  // the loading screen that follows is a save load, not a door
             break;
         case SKSE::MessagingInterface::kPostLoadGame:
             SceneTracker::Reset("save loaded");
