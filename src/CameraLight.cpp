@@ -52,6 +52,11 @@ namespace CameraLight {
         initTransform(light->world);
         initTransform(light->previousWorld);
 
+        // ReLight's light-flicker prevention caches the 7 closest lights of every surface when a cell loads and
+        // blocks all other lights on non-actor surfaces, so a light made later (this one) only lit actors.
+        // fadeAmount 4 is ReLight's bypass marker - it tags its own torch and spell lights the same way.
+        light->fadeAmount = 4.0f;
+
         return light;
     }
 
