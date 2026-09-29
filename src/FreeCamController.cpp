@@ -13,6 +13,8 @@
 #include <RE/M/MouseMoveEvent.h>
 
 #include <atomic>
+
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <format>
@@ -25,6 +27,7 @@
 namespace FreeCam {
 
     static Settings s_settings;
+    static std::atomic<void (*)()> s_snapHandler{ nullptr };  // 0.9.2: photo tool owns the screenshot key
     static float    s_rollAngle = 0.0f;
     static float    s_baseFOV   = 0.0f;
     static bool     s_altSlow   = false;  // Alt slow-mode active
@@ -385,6 +388,24 @@ namespace FreeCam {
     // Run a remapped mouse-button action (LMB/RMB → one of our functions).
     // 0.7.7: the camera-writing actions (FOV, reset) only while TFCam drives the camera.
     // 0.7.9: under an FCFW (SLCC) camera, Reset still clears TFCam's roll (the FOV stays SLCC's).
+    // 0.9.2: every screenshot trigger goes through here. A photo tool (PEM / Whore Horde) that set a
+    // handler gets the shot instead of Windows' PrintScreen.
+    static void TakeScreenshot(const char* a_source) {
+        if (auto* handler = s_snapHandler.load()) {
+            SKSE::log::info("Screenshot ({}) handed to the photo tool", a_source);
+            handler();
+            return;
+        }
+        keybd_event(VK_SNAPSHOT, 0x2C, 0, 0);
+        keybd_event(VK_SNAPSHOT, 0x2C, KEYEVENTF_KEYUP, 0);
+        SKSE::log::info("Screenshot triggered ({})", a_source);
+    }
+
+    void SetSnapHandler(void (*a_handler)()) {
+        s_snapHandler.store(a_handler);
+        SKSE::log::info("Photo tool screenshot hand-off {}", a_handler ? "ON" : "off");
+    }
+
     static void ExecuteMouseAction(int action, bool a_driving) {
         auto* cam = RE::PlayerCamera::GetSingleton();
         if (!a_driving && action == kResetCam) {
@@ -396,8 +417,7 @@ namespace FreeCam {
         }
         switch (action) {
             case kScreenshot:
-                keybd_event(VK_SNAPSHOT, 0x2C, 0, 0);
-                keybd_event(VK_SNAPSHOT, 0x2C, KEYEVENTF_KEYUP, 0);
+                TakeScreenshot("remapped mouse button");
                 break;
             case kFreezeTime:
                 FreezeTime::Toggle();
@@ -1198,9 +1218,7 @@ namespace FreeCam {
                             SKSE::log::info("Freeze toggled via Shift+MMB");
                         } else if (!shiftHeld && s_settings.screenshotKey == 0) {
                             // MMB screenshot only when no keyboard key is bound
-                            keybd_event(VK_SNAPSHOT, 0x2C, 0, 0);
-                            keybd_event(VK_SNAPSHOT, 0x2C, KEYEVENTF_KEYUP, 0);
-                            SKSE::log::info("Screenshot triggered (PrintScreen)");
+                            TakeScreenshot("MMB");
                         }
                     }
 
@@ -1278,9 +1296,7 @@ namespace FreeCam {
                             consumed = true;
                         }
                         if (s_settings.screenshotKey > 0 && code == s_settings.screenshotKey) {
-                            keybd_event(VK_SNAPSHOT, 0x2C, 0, 0);
-                            keybd_event(VK_SNAPSHOT, 0x2C, KEYEVENTF_KEYUP, 0);
-                            SKSE::log::info("Screenshot triggered via keyboard key");
+                            TakeScreenshot("keyboard key");
                             consumed = true;
                         }
                     }

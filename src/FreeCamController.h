@@ -69,4 +69,8 @@ namespace FreeCam {
     void  ReapplyCameraSpeed();          // TFCam's free-fly speed (1/5 while the slow key is held)
     void  NoteScriptTfcOpenedSession();  // a script's console tfc turned free cam ON (e.g. Poser's pose camera)
     bool  SessionOpenedByScriptTfc();    // ...and this free cam session is that one
+
+    // 0.9.2 photo hand-off (TFCamAPI.h): while a handler is set, the screenshot key/button calls it
+    // instead of pressing PrintScreen (PEM / Whore Horde photo studio flights).
+    void  SetSnapHandler(void (*a_handler)());
 }
