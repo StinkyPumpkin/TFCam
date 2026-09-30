@@ -966,6 +966,23 @@ namespace FreeCam {
         static inline REL::Relocation<decltype(thunk)> func;
     };
 
+    // 0.9.3: bDisableActivate at the handler. The 0.7.2 Activate eat in InputListener never
+    // worked (same ordering problem as the 0.7.3 Jump eat: the sink runs after PlayerControls),
+    // so E - the vanilla Activate key and also roll-clockwise - used whatever the camera ray hit.
+    // A door, chair or NPC ends the free camera; during a PEM photo flight that dropped the
+    // photo camera and left the menu half-open (2026-09-30, TFCam.log: exit 277 ms after
+    // 0x12 'Activate'). Always refused while a photo tool holds the screenshot hand-off.
+    struct ActivateBlockHook {
+        static void thunk(RE::ActivateHandler* a_this, RE::ButtonEvent* a_event,
+                          RE::PlayerControlsData* a_data) {
+            if (IsActive() && (s_settings.disableActivate || s_snapHandler.load())) {
+                return;
+            }
+            func(a_this, a_event, a_data);
+        }
+        static inline REL::Relocation<decltype(thunk)> func;
+    };
+
     // 0.7.6: bDisableShift at the handlers. The 0.7.1 ConsumeButton in InputListener has the
     // same ordering problem as the Jump eat: PlayerControls has already run Sprint / Run /
     // ToggleRun (and the free camera's own input handler) by the time our sink sees the event.
@@ -1377,6 +1394,10 @@ namespace FreeCam {
         REL::Relocation<std::uintptr_t> jumpVtable(RE::VTABLE_JumpHandler[0]);
         JumpBlockHook::func = jumpVtable.write_vfunc(kProcessButtonSlot, JumpBlockHook::thunk);
         SKSE::log::info("JumpHandler::ProcessButton hooked (vtable[{}])", kProcessButtonSlot);
+
+        REL::Relocation<std::uintptr_t> activateVtable(RE::VTABLE_ActivateHandler[0]);
+        ActivateBlockHook::func = activateVtable.write_vfunc(kProcessButtonSlot, ActivateBlockHook::thunk);
+        SKSE::log::info("ActivateHandler::ProcessButton hooked (vtable[{}])", kProcessButtonSlot);
 
         // 0.7.6: Disable Shift - every handler Shift can drive while flying, ProcessButton.
         REL::Relocation<std::uintptr_t> sprintVtable(RE::VTABLE_SprintHandler[0]);
