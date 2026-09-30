@@ -1274,10 +1274,16 @@ namespace FreeCam {
                 if (device == RE::INPUT_DEVICE::kKeyboard) {
                     bool consumed = false;
 
+                    // 0.9.4 (user: SLPP Talk During Sex opens dialogue on Shift+E in a scene): in the
+                    // player's SexLab scene Shift + a roll key is not a roll and is not eaten - it
+                    // belongs to the scene's own mods. Plain Q/E still roll.
+                    const bool sceneShiftCombo = isRollKey && SceneTracker::PlayerSceneActive() &&
+                        (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+
                     // 0.7.7: roll only while TFCam drives (the roll keys are still eaten below).
                     // 0.7.9: roll also on top of an FCFW (SLCC) camera - see GetRotationHook. FOV and position
                     // stay SLCC's.
-                    if (active && !AnyMenuOpen() && btn->IsPressed()) {
+                    if (active && !AnyMenuOpen() && btn->IsPressed() && !sceneShiftCombo) {
                         if (code == s_settings.rollCCWKey) {
                             s_rollAngle -= s_settings.rollSpeed * s_frameDt;
                             consumed = true;
@@ -1293,7 +1299,7 @@ namespace FreeCam {
                     }
 
                     // Block roll keys from reaching engine (prevents FavoritesMenu)
-                    if (code == s_settings.rollCCWKey || code == s_settings.rollCWKey) {
+                    if ((code == s_settings.rollCCWKey || code == s_settings.rollCWKey) && !sceneShiftCombo) {
                         consumed = true;
                     }
 
