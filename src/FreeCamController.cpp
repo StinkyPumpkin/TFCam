@@ -292,8 +292,24 @@ namespace FreeCam {
         return cam && cam->IsInFreeCameraMode();
     }
 
+    // 0.9.5: an FCFW timeline plays, or SLCC's director owns the player's scene camera without one (its re-entry
+    // deferred after a menu, 10-01). Either way the vanilla free cam is not TFCam's to move.
+    static bool CameraOwnedElsewhere() {
+        return FcfwBridge::FcfwOwnsCamera() || SlccBridge::SlccOwnsCamera();
+    }
+
     bool TFCamDriving() {
-        return IsActive() && !FcfwBridge::FcfwOwnsCamera();
+        return IsActive() && !CameraOwnedElsewhere();
+    }
+
+    void AdoptSession(std::string_view a_why) {
+        auto* cam = RE::PlayerCamera::GetSingleton();
+        if (!cam || !cam->IsInFreeCameraMode() || s_sessionDriven || CameraOwnedElsewhere()) return;
+        s_sessionDriven = true;
+        s_baseFOV       = WorldFOV(cam);
+        HUDHider::OnFreeCamEnter();
+        SKSE::log::info("FreeCam: TFCam takes over the running free cam ({}), FOV={:.1f} [{}]", a_why, s_baseFOV,
+            ThreadTag());
     }
 
     bool CaptureFreeCamPose(RE::NiPoint3& a_pos, float& a_pitch, float& a_yaw) {
@@ -525,7 +541,8 @@ namespace FreeCam {
 
             // 0.7.7: this Update runs for EVERY FreeCameraState, including the one an FCFW timeline
             // (SLCC) drives. Every camera write below is TFCam's only while no timeline owns it.
-            const bool driving = !FcfwBridge::FcfwOwnsCamera();
+            // 0.9.5: ...and while SLCC's director does not own the scene camera without one.
+            const bool driving = !CameraOwnedElsewhere();
             SlccBridge::Pump();
 
             // 0.7.9: TFCam's roll also rides on an FCFW camera now. If an FCFW session starts or ends while the free
@@ -533,7 +550,7 @@ namespace FreeCam {
             static bool s_prevDriving = true;
             if (driving != s_prevDriving) {
                 if (s_rollAngle != 0.0f) {
-                    SKSE::log::info("FreeCam: roll cleared - an FCFW timeline {} the camera without a free cam exit",
+                    SKSE::log::info("FreeCam: roll cleared - an FCFW timeline / SLCC {} the camera without a free cam exit",
                         driving ? "released" : "took");
                     s_rollAngle = 0.0f;
                 }
@@ -748,8 +765,11 @@ namespace FreeCam {
             // 0.7.7: FCFW (SLCC) enters this same FreeCameraState for its timelines. Only a session
             // nobody else owns is TFCam's: base FOV for the exit write-back and the HUD hide.
             const auto timeline = FcfwBridge::ActiveTimelineID();
-            const bool driven   = (timeline == 0);
-            s_sessionDriven     = driven;
+            // 0.9.5: SLCC's director can own the player's scene camera with no timeline playing yet (10-01: its
+            // re-entry after the Tween menu was deferred and this Begin arrived 180 ms later with none). Not TFCam's.
+            const bool slccOwned = timeline == 0 && SlccBridge::SlccOwnsCamera();
+            const bool driven    = timeline == 0 && !slccOwned;
+            s_sessionDriven      = driven;
             if (!driven) {
                 s_entryPosePending = false;
             }
@@ -759,12 +779,17 @@ namespace FreeCam {
             const std::string thread = ThreadTag();
 
             // 0.7.10: FOV capture, HUD hide and the SLCC bridge on the main thread (inline when already there).
-            const bool ranInline = RunHookWork([driven, timeline, selfToggle, thread] {
+            const bool ranInline = RunHookWork([driven, slccOwned, timeline, selfToggle, thread] {
                 if (driven) {
                     auto* cam = RE::PlayerCamera::GetSingleton();
                     s_baseFOV = cam ? WorldFOV(cam) : 0.0f;
                     HUDHider::OnFreeCamEnter();
                     SKSE::log::info("FreeCam entered, FOV={:.1f} [{}]", s_baseFOV, thread);
+                } else if (slccOwned) {
+                    s_baseFOV = 0.0f;
+                    SKSE::log::info("FreeCam entered while SLCC's director owns the player's scene camera (no FCFW "
+                                    "timeline playing) - TFCam camera features stand down except roll, input blocks "
+                                    "stay [{}]", thread);
                 } else {
                     s_baseFOV = 0.0f;
                     SKSE::log::info("FreeCam entered by FCFW timeline {} (SLCC / FCFW drives it) - TFCam camera "
@@ -1070,7 +1095,7 @@ namespace FreeCam {
             bool active = IsActive();
             // 0.7.7: camera-writing hotkeys (FOV wheel, roll, reset, FOV/reset remaps) key on this;
             // the input blocks (attack / jump / activate / shift / Tab / roll-key eat) stay on `active`.
-            bool driving = active && !FcfwBridge::FcfwOwnsCamera();
+            bool driving = active && !CameraOwnedElsewhere();
             if (active) UpdateFrameTimer();
 
             for (auto* evt = *a_events; evt; evt = evt->next) {
@@ -1142,7 +1167,7 @@ namespace FreeCam {
                             // 0.7.8: during a player SexLab scene with SLCC, the TFCam -> SLCC -> Off cycle.
                             SlccBridge::RequestCycle("free-fly key");
                             active  = IsActive();
-                            driving = active && !FcfwBridge::FcfwOwnsCamera();
+                            driving = active && !CameraOwnedElsewhere();
                             ConsumeButton(btn);
                             continue;
                         }

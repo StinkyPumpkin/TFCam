@@ -40,6 +40,11 @@ namespace SlccBridge {
     void OnFreeCamBegin(bool a_tfcamDriving, bool a_selfToggle);
     void OnFreeCamEnd(bool a_fcfwOwnedAtEnd, bool a_selfToggle);
     bool IsSelfToggle();                      // TFCam's own ToggleFreeCameraMode call is running right now
+    // 0.9.5: SLCC's director is on for the player's scene and TFCam did not pause it. SLCC then owns the camera even
+    // while FreeCamera Framework reports no timeline (10-01: after the Tween menu, SLCC's re-entry sat in
+    // FCFW_DEFERRED_REENTRY and moved the vanilla free cam itself while TFCam drove it too). TFCam's camera writes
+    // stand down, like under a timeline. Any thread.
+    bool SlccOwnsCamera();
     void OnGameLoaded(const char* a_why);     // kPostLoadGame / kNewGame
     void Pump();                              // cheap per-frame backup kick (input sink / free-cam Update)
     bool IsInjecting();                       // our injected ButtonEvent is being dispatched right now

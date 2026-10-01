@@ -52,6 +52,10 @@ namespace FreeCam {
     // key on this, evaluated at call time.
     bool  TFCamDriving();
 
+    // 0.9.5: a free cam that began while SLCC / FCFW owned it becomes a TFCam session (base FOV, HUD hide) once
+    // they let go and TFCam takes it over without a fresh Begin. Main thread. No-op if it already is one.
+    void  AdoptSession(std::string_view a_why);
+
     // 0.7.7 SLCC hand-over: read the live free-cam transform (FCFW's, just before SLCC lets go) and
     // start the next TFCam-driven free-cam session from it instead of from the third-person camera.
     bool  CaptureFreeCamPose(RE::NiPoint3& a_pos, float& a_pitch, float& a_yaw);
