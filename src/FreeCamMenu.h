@@ -15,4 +15,7 @@ namespace FreeCamMenu {
     // True while the SKSE Menu Framework overlay (our config window) is open, so the
     // controller can suspend mouse handling and let the user interact with the menu.
     bool IsOverlayOpen();
+
+    // 0.10.0: writes TFCam.ini [SceneCam] only (Scene Camera changes made outside the page: SLUI, the orbit wheel).
+    void SaveSceneCamSettings();
 }

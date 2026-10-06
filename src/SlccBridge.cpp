@@ -1292,6 +1292,60 @@ namespace SlccBridge {
         CycleStep(a_source);
     }
 
+    void RequestEnterFreeFly(const char* a_source) {
+        auto* cam = RE::PlayerCamera::GetSingleton();
+        if (!cam) return;
+        const bool inFree = cam->IsInFreeCameraMode();
+        if (inFree && !FcfwBridge::FcfwOwnsCamera() && !SlccOwnsCamera()) return;  // TFCam drives it already
+
+        if (!s_installed) {
+            if (inFree) {
+                SKSE::log::info("SLCC bridge: {} - the free cam belongs to an FCFW timeline; not taking it", a_source);
+                return;
+            }
+            SKSE::log::info("SLCC bridge: {} - entering TFCam free-fly", a_source);
+            ToggleFreeCam(cam);
+            return;
+        }
+
+        switch (s_state) {
+        case State::kIdle:
+            if ((FcfwBridge::FcfwOwnsCamera() && SlccHandlingApplies()) || SlccOwnsCamera()) {
+                BeginEnter(Mode::kTFCam, std::string(a_source) + ": SLCC -> TFCam, pausing SLCC's director");
+                return;
+            }
+            if (inFree) {
+                SKSE::log::info("SLCC bridge: {} - the free cam belongs to an FCFW timeline; not taking it", a_source);
+                return;
+            }
+            SKSE::log::info("SLCC bridge: {} - entering TFCam free-fly", a_source);
+            ToggleFreeCam(cam);
+            if (cam->IsInFreeCameraMode() && CycleContext()) Announce(Mode::kTFCam, a_source);
+            return;
+
+        case State::kSuspendedOff:
+        case State::kResumeWaitGate:
+        case State::kSuspendedFlying:
+            if (s_state == State::kResumeWaitGate && s_resumeKeepFreeCam) {
+                // SLCC's director is being restored after the scene: just fly, the restore carries on.
+                if (!inFree) ToggleFreeCam(cam);
+                return;
+            }
+            if (EnterFreeCam(false)) {
+                s_announceSlcc = false;
+                if (s_state != State::kSuspendedFlying) {
+                    SetState(State::kSuspendedFlying, std::string(a_source) + " - TFCam free-fly, SLCC's director stays paused");
+                }
+                Announce(Mode::kTFCam, a_source);
+            }
+            return;
+
+        default:
+            SKSE::log::info("SLCC bridge: {} - hand-over already in progress [{}]", a_source, Name(s_state));
+            return;
+        }
+    }
+
     bool IsSelfToggle() { return s_selfToggle.load(); }
 
     bool SlccOwnsCamera() { return s_installed && s_slccOwns.load(); }

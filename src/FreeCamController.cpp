@@ -7,6 +7,7 @@
 #include "SlccBridge.h"
 #include "SceneTracker.h"
 #include "CellEntryCam.h"
+#include "SceneCam.h"
 
 #include <RE/I/INISettingCollection.h>
 #include <RE/A/AttackBlockHandler.h>
@@ -344,6 +345,12 @@ namespace FreeCam {
         return s_rollAngle * (180.0f / 3.14159265f);
     }
 
+    float GetRollRadians() { return s_rollAngle; }
+
+    void SetRollRadians(float a_roll) {
+        if (std::isfinite(a_roll)) s_rollAngle = a_roll;
+    }
+
     static void ResetCamera() {
         if (s_baseFOV > 0.0f) {
             if (auto* cam = RE::PlayerCamera::GetSingleton())
@@ -577,7 +584,8 @@ namespace FreeCam {
             //    closes / HUD toggles don't cause a 1-frame hitch).
             if (s_menuRestorePending && a_this) {
                 s_menuRestorePending = false;
-                if (s_menuSaveValid && driving) {
+                // 0.10.0: never over the Scene Camera's orbit / eye view / blend (it moved the camera on purpose).
+                if (s_menuSaveValid && driving && !SceneCam::OwnsMotion()) {
                     auto* fcs = AsFreeCam(a_this);
                     auto* cur = &fcs->translation;
                     float dx = cur->x - s_menuSaveTrans.x;
@@ -604,11 +612,20 @@ namespace FreeCam {
                 fcs->zUpDown.y         = 0.0f;
             }
 
+            // 0.10.0: the rotation going into the vanilla Update - the Scene Camera's eye view reads what the vanilla
+            // Update turned (the user's mouse look) from the difference.
+            const float prePitch = a_this ? AsFreeCam(a_this)->rotation.x : 0.0f;
+            const float preYaw   = a_this ? AsFreeCam(a_this)->rotation.y : 0.0f;
+
             func(a_this, a_next);  // vanilla Update
+
+            // 0.10.0: while the Scene Camera orbits / looks through a partner's eyes / blends to a shot, it writes the
+            // whole camera below; the mouse-button moves and the dialogue / RaceMenu drive stand down.
+            const bool sceneCamOwns = SceneCam::OwnsMotion();
 
             // Continuous move actions (LMB/RMB remapped) — applied AFTER Update
             // by adding to translation. Only when blockAttacks is on (remap active).
-            if (driving && s_settings.blockAttacks && !AnyMenuOpen() && a_this) {
+            if (driving && s_settings.blockAttacks && !AnyMenuOpen() && a_this && !sceneCamOwns) {
                 auto applyMove = [&](int action, bool held) {
                     if (!held) return;
 
@@ -655,7 +672,7 @@ namespace FreeCam {
             // --Claude: the same manual-drive path serves BOTH menus that suppress free-cam
             // input — the Dialogue Menu and RaceMenu (RaceSex Menu). Writing our own absolute
             // yaw/pitch/translation each frame is harmless even where vanilla doesn't re-aim.
-            const bool inMenuCam = a_this && driving &&
+            const bool inMenuCam = a_this && driving && !sceneCamOwns &&
                 ((s_settings.dialogueCam && InDialogue()) || (s_settings.raceMenuCam && InRaceMenu()));
             if (!inMenuCam) s_dlgSeeded = false;
 
@@ -731,12 +748,21 @@ namespace FreeCam {
                 if (down(VK_CONTROL)) trans[2] -= amt;
             }
 
+            // 0.10.0 Scene Camera: orbit / eye view / shot blends, written after everything above. Not gated on
+            // AnyMenuOpen(): it keeps driving under a non-pausing overlay (SLUI's docked editor, a PrismaUI view); its
+            // own clock stops while the game is paused.
+            if (a_this) {
+                SceneCam::Drive(AsFreeCam(a_this), prePitch, preYaw, driving);
+            }
+
             // Save the live free-cam transform as the menu-restore anchor — while no
             // menu is up, OR (dialogue free-cam) while we're driving the camera during
             // dialogue, so the menu-close restore sees no movement and never yanks us
             // back to where the camera was before dialogue opened.
+            // 0.10.0: and while the Scene Camera moves it, menu or not.
             if (a_this && driving && (!AnyMenuOpen() || (s_settings.dialogueCam && InDialogue())
-                                                     || (s_settings.raceMenuCam && InRaceMenu()))) {
+                                                     || (s_settings.raceMenuCam && InRaceMenu())
+                                                     || SceneCam::OwnsMotion())) {
                 const auto* fcs  = AsFreeCam(a_this);
                 s_menuSaveTrans  = fcs->translation;
                 s_menuSaveRot[0] = fcs->rotation.x;
@@ -866,6 +892,10 @@ namespace FreeCam {
             // (HUDHider only restores what it hid, so this is safe for FCFW sessions too.)
             CameraLight::Cleanup();
             HUDHider::OnFreeCamExit();
+
+            // 0.10.0: Scene Camera back to Free - partner's head shown, near clip restored, orbit / eye FOV undone
+            // (ExitWorkAfterVanilla then puts the session's base FOV back as before).
+            SceneCam::OnFreeCamEnd();
         }
 
         // Main thread only. s_baseFOV is main-thread state since 0.7.10 (the Begin batch sets it, this reads it), so a
@@ -946,8 +976,9 @@ namespace FreeCam {
                             RE::UI_MESSAGE_TYPE::kForceHide, nullptr);
                     }
                 }
-            } else if (TFCamDriving()) {
+            } else if (TFCamDriving() && !SceneCam::OwnsMotion()) {
                 // 0.7.7: never re-assert a transform over an FCFW (SLCC) camera.
+                // 0.10.0: nor over the Scene Camera's orbit / eye view / blend - it keeps moving behind menus.
                 s_menuRestorePending = true;
             }
             return RE::BSEventNotifyControl::kContinue;
@@ -1173,6 +1204,16 @@ namespace FreeCam {
                         }
                     }
 
+                    // 0.10.0: Scene Camera keys (all unset by default). Only the key-down of a key bound here is
+                    // eaten, and the `continue` sits below every other global hotkey, so it cannot hide one (the 0.7.4
+                    // trap); a key also bound to reset does the Scene Camera job on its press instead.
+                    if (!AnyMenuOpen() && SceneCam::OnHotkey(code)) {
+                        active  = IsActive();
+                        driving = active && !CameraOwnedElsewhere();
+                        ConsumeButton(btn);
+                        btn->SetUserEvent("");
+                        continue;
+                    }
                 }
 
                 // Slow-key state is tracked globally so a release outside free cam never leaves
@@ -1265,10 +1306,14 @@ namespace FreeCam {
                     }
 
                     // 0.7.7: plain wheel = FOV only while TFCam drives; under SLCC the wheel is SLCC's zoom.
+                    // 0.10.0: while the Scene Camera orbits, the wheel is the orbit radius (8% a notch); in eye view
+                    // it is the eye-view FOV (the drive writes that FOV every frame).
                     if (code == RE::BSWin32MouseDevice::Key::kWheelUp) {
                         bool shiftHeld = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
                         if (shiftHeld) {
                             CameraLight::ScrollUp();
+                        } else if (driving && SceneCam::OnWheel(-1)) {
+                            // orbit radius / eye FOV
                         } else if (driving) {
                             auto* cam = RE::PlayerCamera::GetSingleton();
                             if (cam) {
@@ -1282,6 +1327,8 @@ namespace FreeCam {
                         bool shiftHeld = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
                         if (shiftHeld) {
                             CameraLight::ScrollDown();
+                        } else if (driving && SceneCam::OnWheel(1)) {
+                            // orbit radius / eye FOV
                         } else if (driving) {
                             auto* cam = RE::PlayerCamera::GetSingleton();
                             if (cam) {

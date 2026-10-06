@@ -4,6 +4,8 @@
 #include "CameraLight.h"
 #include "HUDHider.h"
 #include "CellEntryCam.h"
+#include "SceneCam.h"
+#include "SceneShots.h"
 
 #include <RE/I/INISettingCollection.h>
 
@@ -159,6 +161,7 @@ namespace FreeCamMenu {
     }
 
     static void SaveINIValues();
+    static void WriteSceneCamValues();
 
     // Called on every settings change (every frame while a slider is dragged), so the log is rate-limited.
     static void SaveINI() {
@@ -231,6 +234,44 @@ namespace FreeCamMenu {
         WriteINIInt("CellEntry", "iDirection", ce.direction);
         WriteINIFloat("CellEntry", "fStartDelay", ce.startDelay);
         WriteINIInt("CellEntry", "bKeysCancel", ce.keysCancel ? 1 : 0);
+
+        WriteSceneCamValues();
+    }
+
+    // 0.10.0 Scene Camera, TFCam.ini [SceneCam].
+    static void WriteSceneCamValues() {
+        const auto& sc = SceneCam::GetConfig();
+        WriteINIInt("SceneCam", "iSceneOrbitKey", sc.orbitKey);
+        WriteINIInt("SceneCam", "iSceneEyeKey", sc.eyeKey);
+        WriteINIInt("SceneCam", "iSceneEyeNextKey", sc.eyeNextKey);
+        WriteINIInt("SceneCam", "iSceneShotSaveKey", sc.shotSaveKey);
+        WriteINIInt("SceneCam", "iSceneShotRecallKey", sc.shotRecallKey);
+        WriteINIInt("SceneCam", "iSceneShotDeleteKey", sc.shotDeleteKey);
+        WriteINIFloat("SceneCam", "fOrbitRadius", sc.orbitRadius);
+        WriteINIFloat("SceneCam", "fOrbitHeight", sc.orbitHeight);
+        WriteINIFloat("SceneCam", "fOrbitSpeed", sc.orbitSpeed);
+        WriteINIFloat("SceneCam", "fOrbitFOV", sc.orbitFOV);
+        WriteINIFloat("SceneCam", "fEyeFOV", sc.eyeFOV);
+        WriteINIFloat("SceneCam", "fEyeNearClip", sc.eyeNearClip);
+        WriteINIFloat("SceneCam", "fEyeForward", sc.eyeForward);
+        WriteINIInt("SceneCam", "bEyeHideHead", sc.eyeHideHead ? 1 : 0);
+        WriteINIInt("SceneCam", "bAutoStageShots", sc.autoStageShots ? 1 : 0);
+        WriteINIInt("SceneCam", "bAutoPoseShots", sc.autoPoseShots ? 1 : 0);
+        WriteINIFloat("SceneCam", "fShotBlend", sc.shotBlend);
+    }
+
+    void SaveSceneCamSettings() {
+        s_saveWriteOk  = true;
+        s_saveWriteErr = 0;
+        WriteSceneCamValues();
+        const auto& sc = SceneCam::GetConfig();
+        if (s_saveWriteOk) {
+            SKSE::log::info("FreeCamMenu: Scene Camera settings saved - radius {:.0f}, height {:.0f}, speed {:.0f}, orbit FOV "
+                            "{:.0f}, eye FOV {:.0f}", sc.orbitRadius, sc.orbitHeight, sc.orbitSpeed, sc.orbitFOV, sc.eyeFOV);
+        } else {
+            SKSE::log::error("FreeCamMenu: saving the Scene Camera settings to {} FAILED (Windows error {}) - they only last "
+                             "until the game closes", GetINIPath(), s_saveWriteErr);
+        }
     }
 
     static void ApplyToController() {
@@ -581,6 +622,94 @@ namespace FreeCamMenu {
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f }, "Last: %s", CellEntryCam::LastEvent());
     }
 
+    // 0.10.0: FreeCam > Scene Camera page.
+    static void __stdcall RenderSceneCam() {
+        auto& sc      = SceneCam::GetConfig();
+        bool  changed = false;
+
+        ImGuiMCP::SeparatorText("Scene Camera");
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "Orbit round your SexLab scene's actors (or a posed actor, or you), look through a partner's eyes, and save a "
+            "camera shot per scene stage or per pose. TFCam's free camera does the work: these turn it on when needed.");
+
+        // Status (a snapshot the game updates every frame while something is going on).
+        const auto  ms = SceneCam::GetMenuStatus();
+        const auto& st = ms.status;
+        static const char* modeNames[] = { "Off (TFCam is not driving a free camera)", "Free-fly", "Orbit", "Eye view" };
+        ImGuiMCP::Text("Mode: %s", modeNames[st.mode <= 3 ? st.mode : 0]);
+        if (st.inPlayerScene) {
+            ImGuiMCP::Text("In your SexLab scene: yes, %u partner(s)", st.partnerCount);
+            if (st.stageKnown) {
+                ImGuiMCP::Text("Scene %s   stage %s   your slot %d", st.sceneId, st.stageId, st.playerSlot);
+                ImGuiMCP::Text("Shot for this stage: %s   (%d saved for this scene)", st.hasStageShot ? "saved" : "none",
+                    ms.sceneShots);
+            } else {
+                ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f }, "Scene and stage: not read yet");
+            }
+        } else {
+            ImGuiMCP::Text("In your SexLab scene: no");
+        }
+        if (st.poseActive) {
+            ImGuiMCP::Text("Pose: %s   shot %s", st.poseKey, st.hasPoseShot ? "saved" : "none");
+        }
+        if (ms.lastEvent[0]) {
+            ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f }, "Last: %s", ms.lastEvent);
+        }
+        ImGuiMCP::BeginDisabled(st.sceneId[0] == '\0');
+        if (ImGuiMCP::Button("Delete all shots for this scene##scDelScene")) {
+            SceneCam::RequestDeleteSceneShots();
+        }
+        ImGuiMCP::EndDisabled();
+
+        ImGuiMCP::SeparatorText("Hotkeys");
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "All unset until you bind them. Orbit and the shot keys work anywhere; eye view only in your SexLab scene.");
+        changed |= KeyBindField("scOrbit", "Orbit on / off", &sc.orbitKey);
+        changed |= KeyBindField("scEye", "Eye view on / off", &sc.eyeKey);
+        changed |= KeyBindField("scEyeNext", "Eye view: next partner", &sc.eyeNextKey);
+        changed |= KeyBindField("scSave", "Save camera shot", &sc.shotSaveKey);
+        changed |= KeyBindField("scRecall", "Go to saved shot", &sc.shotRecallKey);
+        changed |= KeyBindField("scDelete", "Delete saved shot", &sc.shotDeleteKey);
+
+        ImGuiMCP::SeparatorText("Orbit");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Radius##scRadius", &sc.orbitRadius, 30.0f, 500.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Height (degrees)##scHeight", &sc.orbitHeight, -20.0f, 75.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Speed (degrees/s)##scSpeed", &sc.orbitSpeed, -90.0f, 90.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("FOV##scOrbitFov", &sc.orbitFOV, 20.0f, 120.0f, "%.0f");
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "A negative speed orbits the other way. Mouse wheel while orbiting: radius. WASD and the mouse do nothing.");
+
+        ImGuiMCP::SeparatorText("Eye view");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("FOV##scEyeFov", &sc.eyeFOV, 30.0f, 130.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Near clip##scNear", &sc.eyeNearClip, 1.0f, 10.0f, "%.1f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Camera in front of the eyes##scFwd", &sc.eyeForward, -5.0f, 10.0f, "%.1f");
+        changed |= ImGuiMCP::Checkbox("Hide the partner's head##scHideHead", &sc.eyeHideHead);
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "The mouse looks around (up to 85 degrees each way). Mouse wheel: eye-view FOV.");
+
+        ImGuiMCP::SeparatorText("Saved shots");
+        changed |= ImGuiMCP::Checkbox("Go to a stage's shot at scene start / stage change##scAutoStage", &sc.autoStageShots);
+        changed |= ImGuiMCP::Checkbox("Go to a pose's shot when the pose starts##scAutoPose", &sc.autoPoseShots);
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Blend time (s)##scBlend", &sc.shotBlend, 0.0f, 3.0f, "%.1f");
+        static const std::string s_shotFile = SceneShots::FilePath();
+        ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+            "Automatic moves only happen in free-fly (not in orbit or eye view) and never turn the free camera on. "
+            "Shots are kept per stage and your position slot. File: %s", s_shotFile.c_str());
+
+        if (changed) {
+            SceneCam::OnConfigChanged();
+            SaveINI();
+        }
+    }
+
     // 0.7.9: first run with no TFCam.ini - write one from the code defaults (MO2 puts a new file in overwrite\).
     // Afterwards only the in-game page writes it; no update or deploy ever ships or copies it.
     static void CreateDefaultINI(const char* a_path) {
@@ -628,7 +757,23 @@ namespace FreeCamMenu {
           << "\n; degrees per second\nfRotationSpeed=" << fl(ce.rotationSpeed)
           << "\n; 0 = round the player's left side, 1 = round the right\niDirection=" << ce.direction
           << "\n; seconds after the loading screen\nfStartDelay=" << fl(ce.startDelay)
-          << "\nbKeysCancel=" << (ce.keysCancel ? 1 : 0) << "\n";
+          << "\nbKeysCancel=" << (ce.keysCancel ? 1 : 0) << "\n\n";
+        const auto& sc = SceneCam::GetConfig();
+        f << "[SceneCam]\n; 0.10.0 Scene Camera (SKSE Menu Framework > FreeCam > Scene Camera). DX scan codes, 0 = unset.\n"
+          << "; Orbit on/off works anywhere; eye view and next partner only in your SexLab scene.\n"
+          << "iSceneOrbitKey=" << sc.orbitKey << "\niSceneEyeKey=" << sc.eyeKey << "\niSceneEyeNextKey=" << sc.eyeNextKey
+          << "\n; Saved shots: per scene stage (in your scene) or per pose (a pose SLUI started)\n"
+          << "iSceneShotSaveKey=" << sc.shotSaveKey << "\niSceneShotRecallKey=" << sc.shotRecallKey
+          << "\niSceneShotDeleteKey=" << sc.shotDeleteKey
+          << "\n; Orbit: radius 30..500 units, height -20..75 degrees, speed -90..90 degrees/s (sign = direction), FOV 20..120\n"
+          << "fOrbitRadius=" << fl(sc.orbitRadius) << "\nfOrbitHeight=" << fl(sc.orbitHeight)
+          << "\nfOrbitSpeed=" << fl(sc.orbitSpeed) << "\nfOrbitFOV=" << fl(sc.orbitFOV)
+          << "\n; Eye view: FOV 30..130, near clip 1..10, camera in front of the eyes -5..10, 1 = hide the partner's head\n"
+          << "fEyeFOV=" << fl(sc.eyeFOV) << "\nfEyeNearClip=" << fl(sc.eyeNearClip) << "\nfEyeForward=" << fl(sc.eyeForward)
+          << "\nbEyeHideHead=" << (sc.eyeHideHead ? 1 : 0)
+          << "\n; 1 = blend to a saved shot at scene start / stage change, and when a pose starts (free-fly only)\n"
+          << "bAutoStageShots=" << (sc.autoStageShots ? 1 : 0) << "\nbAutoPoseShots=" << (sc.autoPoseShots ? 1 : 0)
+          << "\n; seconds, 0..3\nfShotBlend=" << fl(sc.shotBlend) << "\n";
         f.flush();
         if (!f) {
             SKSE::log::error("FreeCamMenu: writing the new {} failed part-way", a_path);
@@ -708,6 +853,30 @@ namespace FreeCamMenu {
             ce.keysCancel    = readInt("CellEntry", "bKeysCancel", def.keysCancel ? 1 : 0) != 0;
         }
 
+        // 0.10.0 Scene Camera. An existing TFCam.ini without [SceneCam] gets the code defaults (the file is not rewritten).
+        {
+            auto&                  sc = SceneCam::GetConfig();
+            const SceneCam::Config def{};
+            sc.orbitKey       = readInt("SceneCam", "iSceneOrbitKey", def.orbitKey);
+            sc.eyeKey         = readInt("SceneCam", "iSceneEyeKey", def.eyeKey);
+            sc.eyeNextKey     = readInt("SceneCam", "iSceneEyeNextKey", def.eyeNextKey);
+            sc.shotSaveKey    = readInt("SceneCam", "iSceneShotSaveKey", def.shotSaveKey);
+            sc.shotRecallKey  = readInt("SceneCam", "iSceneShotRecallKey", def.shotRecallKey);
+            sc.shotDeleteKey  = readInt("SceneCam", "iSceneShotDeleteKey", def.shotDeleteKey);
+            sc.orbitRadius    = readFloat("SceneCam", "fOrbitRadius", def.orbitRadius);
+            sc.orbitHeight    = readFloat("SceneCam", "fOrbitHeight", def.orbitHeight);
+            sc.orbitSpeed     = readFloat("SceneCam", "fOrbitSpeed", def.orbitSpeed);
+            sc.orbitFOV       = readFloat("SceneCam", "fOrbitFOV", def.orbitFOV);
+            sc.eyeFOV         = readFloat("SceneCam", "fEyeFOV", def.eyeFOV);
+            sc.eyeNearClip    = readFloat("SceneCam", "fEyeNearClip", def.eyeNearClip);
+            sc.eyeForward     = readFloat("SceneCam", "fEyeForward", def.eyeForward);
+            sc.eyeHideHead    = readInt("SceneCam", "bEyeHideHead", def.eyeHideHead ? 1 : 0) != 0;
+            sc.autoStageShots = readInt("SceneCam", "bAutoStageShots", def.autoStageShots ? 1 : 0) != 0;
+            sc.autoPoseShots  = readInt("SceneCam", "bAutoPoseShots", def.autoPoseShots ? 1 : 0) != 0;
+            sc.shotBlend      = readFloat("SceneCam", "fShotBlend", def.shotBlend);
+            SceneCam::ClampConfig();
+        }
+
         CameraLight::SetScrollBrightness(s_lightScrollBrightness);
         CameraLight::SetScrollRadius(s_lightScrollRadius);
         CameraLight::SetRadius(s_lightRadius);
@@ -785,6 +954,7 @@ namespace FreeCamMenu {
         SKSEMenuFramework::SetSection("FreeCam");
         SKSEMenuFramework::AddSectionItem("Settings", RenderSettings);
         SKSEMenuFramework::AddSectionItem("Cell Entry", RenderCellEntry);  // 0.9.0
+        SKSEMenuFramework::AddSectionItem("Scene Camera", RenderSceneCam);  // 0.10.0
         SKSEMenuFramework::AddInputEvent(OnSMFInput);
 
         SKSE::log::info("FreeCamMenu: settings section registered");

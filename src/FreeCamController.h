@@ -44,6 +44,8 @@ namespace FreeCam {
     Settings& GetSettings();
 
     float GetRollDegrees();
+    float GetRollRadians();          // 0.10.0: Scene Camera reads / blends the roll (saved shots carry it)
+    void  SetRollRadians(float a_roll);
     void  ResetAll();
     bool  IsActive();       // vanilla free camera is on - whoever drives it (input blocks key on this)
 
