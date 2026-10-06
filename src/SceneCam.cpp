@@ -663,6 +663,31 @@ namespace SceneCam {
             return true;
         }
 
+        bool HasEyeFrame(RE::Actor* a_actor) {
+            EyeFrame fr;
+            return ComputeEyeFrame(a_actor, fr);
+        }
+
+        // The player's scene partners with 3D, in position order: the eye view candidates.
+        std::vector<ActorPtr> LoadedPartners() {
+            auto partners = SceneActors(true);
+            std::erase_if(partners, [](const ActorPtr& a) { return !a->Get3D(false); });
+            return partners;
+        }
+
+        // Index of the first partner from a_start on (wrapping round the list) whose skeleton gives an eye frame, -1 when
+        // none does. A creature without NPC Head [Head] / eye nodes is skipped, so it never blocks a partner with a head.
+        int FirstWithHead(const std::vector<ActorPtr>& a_partners, int a_start) {
+            const int n = static_cast<int>(a_partners.size());
+            for (int k = 0; k < n; ++k) {
+                const int i = ((a_start + k) % n + n) % n;
+                if (HasEyeFrame(a_partners[i].get())) return i;
+                SKSE::log::info("SceneCam: eye view skips {} ({:08X}) - no NPC Head [Head] / eye nodes",
+                    a_partners[i]->GetName(), a_partners[i]->GetFormID());
+            }
+            return -1;
+        }
+
         // ---- orbit target ----------------------------------------------------------------------------------------------
         // The player's scene actors; else the posed actor; else the player. Centre of their torso points.
         bool OrbitTargetRaw(RE::NiPoint3& a_out, std::string* a_what) {
@@ -823,17 +848,17 @@ namespace SceneCam {
         }
 
         bool EnterEye(RE::FreeCameraState* a_fcs, std::string_view a_source) {
-            auto partners = SceneActors(true);
-            std::erase_if(partners, [](const ActorPtr& a) { return !a->Get3D(false); });
+            auto partners = LoadedPartners();
             if (partners.empty()) {
                 Refuse("Eye view needs a partner in your SexLab scene", "eye view: no loaded partner in the player's scene");
                 return false;
             }
-            const int idx = s_eye.preferred % static_cast<int>(partners.size());
-            if (Pose check; !EyePose(partners[idx].get(), check, false)) {  // e.g. a creature without NPC Head [Head]
-                Refuse("Eye view: no head found on the partner's skeleton",
-                    std::format("eye view: {} ({:08X}) has no NPC Head [Head] / eye nodes", partners[idx]->GetName(),
-                        partners[idx]->GetFormID()));
+            // The preferred partner, else the next one with a head (a creature without NPC Head [Head] is skipped).
+            const int idx = FirstWithHead(partners, s_eye.preferred);
+            if (idx < 0) {
+                Refuse(partners.size() == 1 ? "Eye view: no head found on the partner's skeleton"
+                                            : "Eye view: no head found on any partner's skeleton",
+                    std::format("eye view: none of the {} loaded partner(s) has NPC Head [Head] / eye nodes", partners.size()));
                 return false;
             }
             // From orbit: blend from the orbit's pose and FOV; leaving eye view later returns to the pre-orbit FOV.
@@ -910,8 +935,7 @@ namespace SceneCam {
                 Refuse("Eye view is not on", std::format("next partner ({}): eye view is not on", a_source));
                 return false;
             }
-            auto partners = SceneActors(true);
-            std::erase_if(partners, [](const ActorPtr& a) { return !a->Get3D(false); });
+            auto partners = LoadedPartners();
             if (partners.empty()) {
                 LeaveEye("no loaded partner left", true);
                 return false;
@@ -920,7 +944,13 @@ namespace SceneCam {
             for (std::size_t i = 0; i < partners.size(); ++i) {
                 if (partners[i]->GetFormID() == s_eye.targetID) cur = static_cast<int>(i);
             }
-            const int next = (cur + 1) % static_cast<int>(partners.size());
+            // Partners without a head are skipped; when only the current one has a head this lands back on it.
+            const int next = FirstWithHead(partners, cur + 1);
+            if (next < 0) {
+                Refuse("Eye view: no partner with a head to switch to",
+                    std::format("next partner ({}): no loaded partner has NPC Head [Head] / eye nodes", a_source));
+                return false;
+            }
             RetargetEye(partners[next].get(), next, std::format("next partner, {}", a_source));
             return true;
         }
@@ -1172,17 +1202,28 @@ namespace SceneCam {
             CopyStr(st.stageId, sizeof(st.stageId), scene.stageId);
 
             std::uint32_t partners = 0;
-            bool          eyeOk    = false;
             for (std::size_t i = 0; i < scene.actorIDs.size() && i < scene.actors.size(); ++i) {
                 if (scene.actorIDs[i] == 0 || scene.actorIDs[i] == 0x14) continue;
                 ++partners;
-                if (!eyeOk) {
+            }
+            // Eye view needs a loaded partner whose skeleton gives an eye frame (a creature without a head does not
+            // count). This runs every frame while flying: the node lookups are redone when the actor list changes and
+            // otherwise at most every 0.25 s.
+            static std::vector<RE::FormID> s_eIDs;
+            static double                  s_eAt = -1.0;
+            static bool                    s_eOk = false;
+            if (const double now = Now(); scene.actorIDs != s_eIDs || now - s_eAt >= 0.25 || now < s_eAt) {
+                s_eIDs = scene.actorIDs;
+                s_eAt  = now;
+                s_eOk  = false;
+                for (std::size_t i = 0; i < scene.actorIDs.size() && i < scene.actors.size() && !s_eOk; ++i) {
+                    if (scene.actorIDs[i] == 0 || scene.actorIDs[i] == 0x14) continue;
                     auto actor = scene.actors[i].get();
-                    eyeOk      = actor && actor->Get3D(false);
+                    s_eOk      = actor && actor->Get3D(false) && HasEyeFrame(actor.get());
                 }
             }
             st.partnerCount = partners;
-            st.eyeAvailable = scene.inScene && eyeOk;
+            st.eyeAvailable = scene.inScene && s_eOk;
             st.eyeTarget    = s_mode == TFCAM_API::kModeEye ? s_eye.targetID : 0;
             st.poseActive   = s_pose.id != 0;
             CopyStr(st.poseKey, sizeof(st.poseKey), s_pose.key);
@@ -1402,14 +1443,17 @@ namespace SceneCam {
 
     void OnSceneChanged(bool a_keyChanged) {
         if (s_mode == TFCAM_API::kModeEye) {
-            auto partners = SceneActors(true);
-            std::erase_if(partners, [](const ActorPtr& a) { return !a->Get3D(false); });
+            auto       partners   = LoadedPartners();
             const bool stillThere = std::ranges::any_of(partners, [](const ActorPtr& a) { return a->GetFormID() == s_eye.targetID; });
             if (!stillThere) {
-                if (partners.empty()) {
+                const int idx = FirstWithHead(partners, 0);
+                if (idx >= 0) {
+                    RetargetEye(partners[idx].get(), idx, "the previous partner left the scene");
+                } else if (partners.empty()) {
                     LeaveEye("the partner left the scene", true);
                 } else {
-                    RetargetEye(partners[0].get(), 0, "the previous partner left the scene");
+                    Notify("Eye view ended: no partner left with a head");
+                    LeaveEye("the partner left the scene and no partner left has NPC Head [Head] / eye nodes", true);
                 }
             }
         }
