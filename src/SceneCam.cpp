@@ -272,10 +272,6 @@ namespace SceneCam {
             bool            blending  = false;
             Pose            blendFrom;
             float           blendT    = 0.0f;
-            // No eye nodes: head bone axis, chosen once per target (the one best aligned with the actor's heading).
-            bool            axisChosen = false;
-            int             axis       = 1;
-            float           axisSign   = 1.0f;
             // Hidden head (FaceGen node) - the exact previous AppCulled bit is put back.
             RE::NiPointer<RE::NiAVObject> culled;
             bool                          culledPrev = false;
@@ -322,6 +318,11 @@ namespace SceneCam {
 
         std::atomic<bool> s_tickQueued{ false };
         bool              s_inTick = false;
+
+        // Set by OnFreeCamEnd, cleared by the next Drive (the Update hook runs only on a live free camera). The End's
+        // inline path calls OnFreeCamEnd before the vanilla End, while IsInFreeCameraMode() still says yes, and outside a
+        // scene / pose nothing republishes afterwards: without this the status kept reporting Free with no camera.
+        bool s_freeCamEnded = false;
 
         void Event(std::string a_text) {
             SKSE::log::info("SceneCam: {}", a_text);
@@ -402,16 +403,29 @@ namespace SceneCam {
             return s;
         }
 
+        // The shots file is plain text people may edit: SceneShots only reads finite numbers, and the values are kept
+        // in a sane range here (offset within kMaxShotOffset of the anchor, FOV inside TFCam's own FOV limits).
+        constexpr float kMaxShotOffset = 5000.0f;
+
         Pose ShotToPose(const SceneShots::Shot& a_s, const ShotContext& a_c) {
             const RE::NiPoint3 fwd{ std::sin(a_c.heading), std::cos(a_c.heading), 0.0f };
             const RE::NiPoint3 right{ std::cos(a_c.heading), -std::sin(a_c.heading), 0.0f };
+            RE::NiPoint3       local{ a_s.x, a_s.y, a_s.z };
+            if (const float len = Length(local); !std::isfinite(len)) {  // finite parts whose squares overflow
+                local = {};
+            } else if (len > kMaxShotOffset) {
+                local = local * (kMaxShotOffset / len);
+            }
             Pose p;
-            p.pos   = { a_c.anchor.x + right.x * a_s.x + fwd.x * a_s.y, a_c.anchor.y + right.y * a_s.x + fwd.y * a_s.y,
-                  a_c.anchor.z + a_s.z };
+            p.pos   = { a_c.anchor.x + right.x * local.x + fwd.x * local.y, a_c.anchor.y + right.y * local.x + fwd.y * local.y,
+                  a_c.anchor.z + local.z };
             p.yaw   = WrapPi(a_c.heading + a_s.yawRel * kDegToRad);
             p.pitch = std::clamp(a_s.pitch * kDegToRad, -kPitchLimit, kPitchLimit);
-            p.roll  = a_s.roll * kDegToRad;
-            p.fov   = a_s.fov > 1.0f ? a_s.fov : GetFOV();
+            p.roll  = WrapPi(a_s.roll * kDegToRad);
+            const auto& fs   = FreeCam::GetSettings();
+            const float fLo  = std::clamp(fs.fovMin, 1.0f, 170.0f);
+            const float fHi  = std::clamp(fs.fovMax, fLo, 170.0f);
+            p.fov            = a_s.fov > 1.0f ? std::clamp(a_s.fov, fLo, fHi) : GetFOV();
             return p;
         }
 
@@ -541,7 +555,8 @@ namespace SceneCam {
 
         // Head frame without bone axis conventions when the eyes exist: right = R eye - L eye, up = head - neck
         // (made square to right), forward = up x right (z up, right-handed: an actor standing facing +Y gives right +X,
-        // up +Z, forward +Y). No eyes: the head bone's axis that pointed along the actor's heading when first seen.
+        // up +Z, forward +Y). No eye pair (the normal case: XPMSSE has only NPCEyeBone): NPC Head [Head]'s own fixed
+        // local axes, never chosen from the current pose (a lying / all-fours partner picked the spine axis that way).
         bool ComputeEyeFrame(RE::Actor* a_actor, EyeFrame& a_out) {
             auto* root = a_actor->Get3D(false);
             if (!root) return false;
@@ -573,43 +588,56 @@ namespace SceneCam {
             }
 
             if (!head) return false;
-            const auto& m = head->world.rotate;
-            if (!s_eye.axisChosen) {
-                const float        h = a_actor->GetAngleZ();
-                const RE::NiPoint3 heading{ std::sin(h), std::cos(h), 0.0f };
-                float              best = -2.0f;
-                for (int k = 0; k < 3; ++k) {
-                    for (const float sign : { 1.0f, -1.0f }) {
-                        const RE::NiPoint3 col{ m.entry[0][k] * sign, m.entry[1][k] * sign, m.entry[2][k] * sign };
-                        const float        d = Dot(col, heading);
-                        if (d > best) {
-                            best           = d;
-                            s_eye.axis     = k;
-                            s_eye.axisSign = sign;
-                        }
-                    }
-                }
-                s_eye.axisChosen = true;
-                SKSE::log::info("SceneCam: {} ({:08X}) has no eye nodes - eye view uses NPC Head [Head]'s world rotation, "
-                                "forward = its {}{} axis (dot with the actor's heading {:.2f} when chosen)",
-                    a_actor->GetName(), a_actor->GetFormID(), s_eye.axisSign > 0.0f ? "+" : "-", "XYZ"[s_eye.axis], best);
-            }
-            RE::NiPoint3 f{ m.entry[0][s_eye.axis] * s_eye.axisSign, m.entry[1][s_eye.axis] * s_eye.axisSign,
-                m.entry[2][s_eye.axis] * s_eye.axisSign };
-            f = f - up * Dot(f, up);
+            // NPC Head [Head]'s local axes: +X right, +Y out of the face, +Z out of the top of the head. Read from the
+            // installed skeletons (XPMSSE male / GT SOFTBODY female, and the werewolf, draugr, troll and giant ones):
+            // the eye bones sit at head-local (~0, +8..+22, +4..+9), and the human bind pose has the head at identity
+            // rotation facing +Y. world.rotate's column k is local axis k in world space (CommonLib NiMatrix3: v' = M v).
+            const auto&  m = head->world.rotate;
+            RE::NiPoint3 f{ m.entry[0][1], m.entry[1][1], m.entry[2][1] };
+            RE::NiPoint3 u{ m.entry[0][2], m.entry[1][2], m.entry[2][2] };
             if (!Normalize(f)) return false;
+            u = u - f * Dot(u, f);
+            if (!Normalize(u)) return false;
             a_out.fwd = f;
-            a_out.up  = up;
+            a_out.up  = u;
             for (const auto& name : n.eyeCentre) {
                 if (auto* centre = Node(root, name)) {
                     a_out.eye    = centre->world.translate;
-                    a_out.source = std::format("eye centre bone '{}' + head axis", name.c_str());
+                    a_out.source = std::format("eye centre bone '{}' + NPC Head [Head] axes", name.c_str());
                     return true;
                 }
             }
-            a_out.eye    = head->world.translate + f * 7.0f + up * 2.0f;
+            a_out.eye    = head->world.translate + f * 7.0f + u * 2.0f;
             a_out.source = "NPC Head [Head] + 7 forward + 2 up";
             return true;
+        }
+
+        // Yaw / pitch (no roll) looking along the face. atan2(fwd.x, fwd.y) has no stable value when the face points
+        // nearly straight up or down (partner on their back / face down): a small head bob would swing the yaw and spin
+        // the picture. Near there the heading comes from the head's up axis instead - looking up, the yaw points away
+        // from the top of the head, looking down, along it - so the top of the head stays at the top of the picture.
+        // That equals the head's horizontal right axis turned 90 degrees (slcc map fact 10). It is blended in only for
+        // a steep face (|fwd.z| 0.88..0.98, about 62..79 degrees up / down): for an upright head both point the same way
+        // so the yaw is unchanged, and a head rolled sideways (lying on the side) keeps its exact view below that.
+        void EyeAngles(const RE::NiPoint3& a_fwd, const RE::NiPoint3& a_up, float& a_yaw, float& a_pitch) {
+            const float w  = SmoothStep((std::fabs(a_fwd.z) - 0.88f) / 0.1f);
+            float       hx = a_fwd.x - a_up.x * a_fwd.z * w;
+            float       hy = a_fwd.y - a_up.y * a_fwd.z * w;
+            float       hl = std::hypot(hx, hy);
+            if (!std::isfinite(hl) || hl < 1e-4f) {  // only where an upside-down head flips over: plain face direction
+                hx = a_fwd.x;
+                hy = a_fwd.y;
+                hl = std::hypot(hx, hy);
+            }
+            if (!std::isfinite(hl) || hl < 1e-6f) {
+                a_yaw   = 0.0f;
+                a_pitch = a_fwd.z > 0.0f ? -kPitchLimit : kPitchLimit;
+                return;
+            }
+            a_yaw = std::atan2(hx, hy);
+            // Pitch in the vertical plane of that yaw (positive looks down). Past straight up / down (an upside-down
+            // head) it goes beyond 90 degrees and the caller's clamp holds it at the pole.
+            a_pitch = std::atan2(-a_fwd.z, (a_fwd.x * hx + a_fwd.y * hy) / hl);
         }
 
         bool EyePose(RE::Actor* a_actor, Pose& a_p, bool a_log) {
@@ -617,7 +645,7 @@ namespace SceneCam {
             if (!ComputeEyeFrame(a_actor, fr)) return false;
             float yaw   = 0.0f;
             float pitch = 0.0f;
-            LookAngles(fr.fwd, yaw, pitch);
+            EyeAngles(fr.fwd, fr.up, yaw, pitch);
             a_p.pos   = fr.eye + fr.fwd * s_cfg.eyeForward;
             a_p.yaw   = WrapPi(yaw + s_eye.yawOff);
             a_p.pitch = std::clamp(pitch + s_eye.pitchOff, -kPitchLimit, kPitchLimit);
@@ -627,8 +655,10 @@ namespace SceneCam {
                 const float        h = a_actor->GetAngleZ();
                 const RE::NiPoint3 heading{ std::sin(h), std::cos(h), 0.0f };
                 SKSE::log::info("SceneCam: eye frame for {} ({:08X}) from {}: dot(forward, actor heading) = {:.2f} (about 1 "
-                                "for an actor standing straight), forward ({:.2f}, {:.2f}, {:.2f})",
-                    a_actor->GetName(), a_actor->GetFormID(), fr.source, Dot(fr.fwd, heading), fr.fwd.x, fr.fwd.y, fr.fwd.z);
+                                "for an actor standing straight), forward ({:.2f}, {:.2f}, {:.2f}), up ({:.2f}, {:.2f}, {:.2f}), "
+                                "yaw {:.1f} pitch {:.1f} deg before the mouse offset",
+                    a_actor->GetName(), a_actor->GetFormID(), fr.source, Dot(fr.fwd, heading), fr.fwd.x, fr.fwd.y, fr.fwd.z,
+                    fr.up.x, fr.up.y, fr.up.z, yaw * kRadToDeg, pitch * kRadToDeg);
             }
             return true;
         }
@@ -722,7 +752,6 @@ namespace SceneCam {
             s_eye.preferred  = a_index;
             s_eye.yawOff     = 0.0f;
             s_eye.pitchOff   = 0.0f;
-            s_eye.axisChosen = false;
             s_eye.nullSince  = -1.0;
             s_eye.haveLast   = false;
             MaintainHeadCull(a_actor);
@@ -801,6 +830,12 @@ namespace SceneCam {
                 return false;
             }
             const int idx = s_eye.preferred % static_cast<int>(partners.size());
+            if (Pose check; !EyePose(partners[idx].get(), check, false)) {  // e.g. a creature without NPC Head [Head]
+                Refuse("Eye view: no head found on the partner's skeleton",
+                    std::format("eye view: {} ({:08X}) has no NPC Head [Head] / eye nodes", partners[idx]->GetName(),
+                        partners[idx]->GetFormID()));
+                return false;
+            }
             // From orbit: blend from the orbit's pose and FOV; leaving eye view later returns to the pre-orbit FOV.
             const bool  fromOrbit = s_mode == TFCAM_API::kModeOrbit;
             const float orbitFOV  = s_orbit.entryFOV;
@@ -944,7 +979,10 @@ namespace SceneCam {
                     std::format("delete shot ({}): none saved for {}", a_source, ctx.key));
                 return false;
             }
-            SceneShots::Erase(ctx.key);
+            if (!SceneShots::Erase(ctx.key)) {  // it exists (checked above): the file write failed, the shot is kept
+                Refuse("Camera shot could not be deleted (see TFCam.log)", std::format("delete shot {}: file write failed", ctx.key));
+                return false;
+            }
             Notify(ctx.stage ? "Camera shot deleted for this stage" : "Camera shot deleted for this pose");
             Event(std::format("shot deleted ({}) {}", a_source, ctx.key));
             return true;
@@ -957,6 +995,11 @@ namespace SceneCam {
                 return;
             }
             const int n = SceneShots::EraseWithPrefix("stage:" + scene.sceneId + "|");
+            if (n < 0) {
+                Refuse("Camera shots could not be deleted (see TFCam.log)",
+                    std::format("delete scene shots '{}': file write failed", scene.sceneId));
+                return;
+            }
             Notify(std::format("Deleted {} camera shot(s) for this scene", n).c_str());
             Event(std::format("deleted {} shot(s) for scene '{}'", n, scene.sceneId));
         }
@@ -1079,14 +1122,16 @@ namespace SceneCam {
             s_eye.yawOff   = std::clamp(s_eye.yawOff + WrapPi(a_fcs->rotation.y - a_preYaw), -kLookLimit, kLookLimit);
             s_eye.pitchOff = std::clamp(s_eye.pitchOff + (a_fcs->rotation.x - a_prePitch), -kLookLimit, kLookLimit);
 
-            auto actor = s_eye.target.get();
-            Pose p;
-            if (!actor || !actor->Get3D(false) || !EyePose(actor.get(), p, false)) {
+            auto       actor  = s_eye.target.get();
+            const bool loaded = actor && actor->Get3D(false);
+            Pose       p;
+            if (!loaded || !EyePose(actor.get(), p, false)) {
                 const double now = Now();
                 if (s_eye.nullSince < 0.0) s_eye.nullSince = now;
                 if (now - s_eye.nullSince > 0.5) {
-                    Notify("Eye view ended: the partner is not loaded");
-                    LeaveEye("the partner's 3D was gone for 0.5 s", true);
+                    Notify(loaded ? "Eye view ended: no head found on the partner's skeleton"
+                                  : "Eye view ended: the partner is not loaded");
+                    LeaveEye(loaded ? "no head frame on the partner for 0.5 s" : "the partner's 3D was gone for 0.5 s", true);
                     return;
                 }
                 if (s_eye.haveLast) WritePose(a_fcs, s_eye.last, false);  // hold still meanwhile
@@ -1117,7 +1162,7 @@ namespace SceneCam {
         void PublishStatus() {
             TFCAM_API::SceneCamStatus st{};
             st.size = sizeof(st);
-            st.mode = static_cast<std::uint8_t>(FreeCam::TFCamDriving() ? s_mode : TFCAM_API::kModeNone);
+            st.mode = static_cast<std::uint8_t>(FreeCam::TFCamDriving() && !s_freeCamEnded ? s_mode : TFCAM_API::kModeNone);
 
             const auto& scene = SceneTracker::GetPlayerScene();
             st.inPlayerScene  = scene.inScene;
@@ -1273,6 +1318,7 @@ namespace SceneCam {
     void Drive(RE::FreeCameraState* a_fcs, float a_prePitch, float a_preYaw, bool a_driving) {
         const float dt = FrameDt();
         if (!a_fcs) return;
+        s_freeCamEnded = false;  // a free camera is live again
         if (!a_driving) {
             // An FCFW timeline / SLCC took this free camera: hands off, undo what we changed.
             if (s_mode != TFCAM_API::kModeFree || s_blend.active) {
@@ -1344,6 +1390,7 @@ namespace SceneCam {
             s_pending = Req::kNone;
         }
         DropModes("the free camera ended", true);
+        s_freeCamEnded = true;  // reported as None from now on, until a free camera updates again
         PublishStatus();
     }
 

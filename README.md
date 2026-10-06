@@ -37,7 +37,8 @@ Files (TFCam writes both; neither is ever shipped, so with MO2 they appear in `o
   `fShotBlend`. An older TFCam.ini without the section uses the defaults until a setting is changed.
 - `Data/SKSE/Plugins/TFCam/SceneShots.tsv`: one shot per line,
   `key  x  y  z  yawRel  pitch  roll  fov  savedAt  label`, keys `stage:<scene id>|<stage id>|<player slot>` and
-  `pose:<animation event>`. Lines TFCam cannot read are kept as they are.
+  `pose:<animation event>`. Lines TFCam cannot read (or with a value that is not a finite number) are kept as they
+  are and not used; a shot's FOV is held inside TFCam's FOV limits.
 
 What it does is logged to `Documents/My Games/Skyrim Special Edition/SKSE/TFCam.log` (mode changes, stage changes with
 the scene / stage ids, shots saved / recalled / deleted, refusals).

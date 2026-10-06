@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <charconv>
+#include <cmath>
 #include <cstdio>
 #include <format>
 #include <fstream>
@@ -61,7 +62,8 @@ namespace SceneShots {
             while (!a_s.empty() && a_s.back() == ' ') a_s.remove_suffix(1);
             if (a_s.empty()) return false;
             const auto res = std::from_chars(a_s.data(), a_s.data() + a_s.size(), a_out);
-            return res.ec == std::errc{} && res.ptr == a_s.data() + a_s.size();
+            // from_chars also reads "nan" / "inf": such a line is kept as an unreadable one, never applied.
+            return res.ec == std::errc{} && res.ptr == a_s.data() + a_s.size() && std::isfinite(a_out);
         }
 
         bool ParseLine(const std::string& a_line, std::string& a_key, Shot& a_shot) {
@@ -116,7 +118,9 @@ namespace SceneShots {
 
         std::string Fmt(float a_v) { return std::format("{:.3f}", a_v); }
 
-        bool Save() {
+        // Writes a_shots (the map as it will be once this succeeds); callers swap it in only on success, so memory never
+        // holds a change the file does not.
+        bool Save(const std::map<std::string, Shot>& a_shots) {
             if (!::CreateDirectoryW(DirW().c_str(), nullptr) && ::GetLastError() != ERROR_ALREADY_EXISTS) {
                 SKSE::log::error("SceneShots: could not create {} (Windows error {})", Narrow(DirW()), ::GetLastError());
                 return false;
@@ -126,7 +130,7 @@ namespace SceneShots {
             out += "# key\tx\ty\tz\tyawRel\tpitch\troll\tfov\tsavedAt\tlabel\n";
             out += "# x/y/z = camera position in the anchor's frame (x right, y forward, z up). Anchor: the player for\n";
             out += "# stage:<scene>|<stage>|<player slot>, the posed actor for pose:<animation event>. Angles in degrees.\n";
-            for (const auto& [key, s] : s_shots) {
+            for (const auto& [key, s] : a_shots) {
                 out += std::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", Clean(key), Fmt(s.x), Fmt(s.y), Fmt(s.z),
                     Fmt(s.yawRel), Fmt(s.pitch), Fmt(s.roll), Fmt(s.fov), Clean(s.savedAt), Clean(s.label));
             }
@@ -154,7 +158,15 @@ namespace SceneShots {
                 ::DeleteFileW(tmp.c_str());
                 return false;
             }
-            SKSE::log::info("SceneShots: saved {} shot(s) to {}", s_shots.size(), Narrow(FileW()));
+            SKSE::log::info("SceneShots: saved {} shot(s) to {}", a_shots.size(), Narrow(FileW()));
+            return true;
+        }
+
+        // Commits a changed copy of the map: memory takes it only once the file holds it.
+        bool Commit(std::map<std::string, Shot>&& a_next) {
+            if (!Save(a_next)) return false;
+            s_shots = std::move(a_next);
+            ++s_version;
             return true;
         }
     }
@@ -169,33 +181,32 @@ namespace SceneShots {
 
     bool Put(const std::string& a_key, const Shot& a_shot) {
         Load();
-        s_shots[Clean(a_key)] = a_shot;
-        ++s_version;
-        return Save();
+        auto next          = s_shots;
+        next[Clean(a_key)] = a_shot;
+        return Commit(std::move(next));
     }
 
     bool Erase(const std::string& a_key) {
         Load();
-        if (s_shots.erase(a_key) == 0) return false;
-        ++s_version;
-        return Save();
+        if (!s_shots.contains(a_key)) return false;
+        auto next = s_shots;
+        next.erase(a_key);
+        return Commit(std::move(next));
     }
 
     int EraseWithPrefix(const std::string& a_prefix) {
         Load();
-        int n = 0;
-        for (auto it = s_shots.begin(); it != s_shots.end();) {
+        auto next = s_shots;
+        int  n    = 0;
+        for (auto it = next.begin(); it != next.end();) {
             if (it->first.starts_with(a_prefix)) {
-                it = s_shots.erase(it);
+                it = next.erase(it);
                 ++n;
             } else {
                 ++it;
             }
         }
-        if (n > 0) {
-            ++s_version;
-            Save();
-        }
+        if (n > 0 && !Commit(std::move(next))) return -1;
         return n;
     }
 
