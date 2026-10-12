@@ -301,6 +301,9 @@ namespace AmbientCam {
             return s - 0.7f / (2.0f * kPi) * std::sin(2.0f * kPi * s);
         }
 
+        // 0.12.1: the first half of Glide stretched over the whole move - slow only where it starts, full speed at its end.
+        float GlideIn(float s) { return 2.0f * Glide(0.5f * std::clamp(s, 0.0f, 1.0f)); }
+
         float FarRadius() { return s_cfg.spiralFar * (InInterior() ? s_cfg.interiorScale : 1.0f); }
 
         float KeyRadius(const Key& k, float farR) { return (std::min)(s_cfg.spiralClose * k.close, farR); }
@@ -308,11 +311,15 @@ namespace AmbientCam {
         // 0.11.2 opening before the spiral: on the face from the front, back out to the far radius, down to the floor,
         // then in to the spiral's first key. hold = the stay on the face first (0 when the spiral plays again: its own
         // hold on the face comes just before). The zooms take less time when there is little to zoom (interiors).
+        // 0.12.1: no stop at the feet - the zoom in is the last inSec of the drop, the drop lands at full speed and the
+        // spiral already leaves the floor during its last FeetBlendSec (SpiralPose rounds that corner).
         struct Opening {
             float hold = 0, outSec = 0, dropSec = 0, inSec = 0;
             float rFace = 0, rFar = 0, rFloor = 0;
-            float Length() const { return hold + outSec + dropSec + inSec; }
+            float Length() const { return hold + outSec + dropSec; }
         };
+
+        float FeetBlendSec() { return 0.5f * AreaSec(); }
 
         Opening SpiralOpening(float hold) {
             Opening o;
@@ -329,7 +336,7 @@ namespace AmbientCam {
 
         float RoutineLength(Routine r, float spiralHold) {
             return r == Routine::kDolly ? (std::max)(s_cfg.dollyPeriod, 2.0f) * static_cast<float>((std::max)(s_cfg.dollyCycles, 1))
-                                        : SpiralOpening(spiralHold).Length() + SpiralLength();
+                                        : SpiralOpening(spiralHold).Length() - FeetBlendSec() + SpiralLength();
         }
 
         const char* RoutineName(Routine r) { return r == Routine::kDolly ? "Dolly zoom" : "Spiral"; }
@@ -379,8 +386,13 @@ namespace AmbientCam {
             return p;
         }
 
+        // Where a spiral pose sits on its ring: height, angle round the body, distance from the centre line.
+        struct Ring {
+            float z = 0, az = 0, radius = 0;
+        };
+
         // The face and floor keys both sit in front of the player (whole loops), so the opening stays at az0.
-        Pose OpeningPose(const Opening& o, float t, float az0) {
+        Ring OpeningRing(const Opening& o, float t, float az0) {
             const Key& faceKey  = kKeys[kKeyCount - 1];
             const Key& floorKey = kKeys[0];
             float      frac     = faceKey.frac;
@@ -389,24 +401,18 @@ namespace AmbientCam {
                 // on the face
             } else if ((t -= o.hold) < o.outSec) {
                 radius = o.rFace + (o.rFar - o.rFace) * Glide(t / o.outSec);
-            } else if ((t -= o.outSec) < o.dropSec) {
-                radius = o.rFar;
-                frac   = faceKey.frac + (floorKey.frac - faceKey.frac) * Glide(t / o.dropSec);
             } else {
-                t -= o.dropSec;
-                frac   = floorKey.frac;
-                radius = o.rFar + (o.rFloor - o.rFar) * Glide(t / o.inSec);
+                t -= o.outSec;
+                frac = faceKey.frac + (floorKey.frac - faceKey.frac) * GlideIn(t / o.dropSec);
+                const float in = t - (o.dropSec - o.inSec);
+                radius = in <= 0.0f ? o.rFar : o.rFar + (o.rFloor - o.rFar) * GlideIn(in / o.inSec);
             }
-            return RingPose(BodyZ(frac), az0, radius);
+            return { BodyZ(frac), az0, radius };
         }
 
-        Pose SpiralPose(float t, float az0, float openingHold) {
-            const Opening open = SpiralOpening(openingHold);
-            if (t < open.Length()) return OpeningPose(open, t, az0);
-            t -= open.Length();
-
-            const float farR = open.rFar;
-            const float dir  = s_cfg.spiralSpeed < 0.0f ? -1.0f : 1.0f;
+        // t = seconds since the spiral left the floor key.
+        Ring SpiralRing(float t, float az0, float farR) {
+            const float dir = s_cfg.spiralSpeed < 0.0f ? -1.0f : 1.0f;
 
             int   seg  = kKeyCount - 1;  // past the last segment = the hold on the face
             float s    = 1.0f;
@@ -431,7 +437,25 @@ namespace AmbientCam {
             const float swell  = hold ? 0.0f : std::sin(kPi * s);  // out between areas, in on them
             const float radius = base + (farR - base) * 0.5f * swell * swell;
             const float az     = az0 + dir * 2.0f * kPi * loops;
-            return RingPose(z, az, radius);
+            return { z, az, radius };
+        }
+
+        Pose SpiralPose(float t, float az0, float openingHold) {
+            const Opening open  = SpiralOpening(openingHold);
+            const float   blend = FeetBlendSec();
+            const float   start = open.Length() - blend;  // the spiral leaves the floor before the drop lands there
+            if (t < start) {
+                const Ring r = OpeningRing(open, t, az0);
+                return RingPose(r.z, r.az, r.radius);
+            }
+            Ring r = SpiralRing(t - start, az0, open.rFar);
+            if (t < open.Length()) {
+                // Round the corner at the feet: fade from the falling camera into the rising spiral, neither one slowing.
+                const Ring  d = OpeningRing(open, t, az0);
+                const float w = SmoothStep((t - start) / blend);
+                r             = { d.z + (r.z - d.z) * w, d.az + (r.az - d.az) * w, d.radius + (r.radius - d.radius) * w };
+            }
+            return RingPose(r.z, r.az, r.radius);
         }
 
         // 0.11.2: the crossfade into a routine goes round the body, not through it (from the normal camera behind the
