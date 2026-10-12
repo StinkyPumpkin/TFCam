@@ -1,4 +1,5 @@
 #include "SceneCam.h"
+#include "CamCollision.h"
 #include "SceneShots.h"
 #include "SceneTracker.h"
 #include "FreeCamController.h"
@@ -1131,6 +1132,8 @@ namespace SceneCam {
             s_blend.t += a_dt;
             const float w = s_blend.dur > 0.0f ? SmoothStep(s_blend.t / s_blend.dur) : 1.0f;
             WritePose(a_fcs, LerpPose(s_blend.from, s_blend.to, w), true);
+            // 0.12.0: keep a saved shot (anchored on a moved actor / other furniture) out of walls.
+            if (RE::NiPoint3 pivot{}; OrbitTargetRaw(pivot, nullptr)) CamCollision::Request(pivot, "blend to a saved shot");
             if (w >= 1.0f) {
                 s_blend.active = false;
                 SKSE::log::info("SceneCam: blend finished - free-fly from here");
@@ -1171,6 +1174,7 @@ namespace SceneCam {
             p.roll = FreeCam::GetRollRadians();
             p.fov  = s_orbit.fov;
             WritePose(a_fcs, p, false);
+            CamCollision::Request(s_orbit.target, "scene orbit");  // 0.12.0
         }
 
         void DriveEye(RE::FreeCameraState* a_fcs, float a_prePitch, float a_preYaw, float a_dt) {

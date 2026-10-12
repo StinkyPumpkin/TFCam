@@ -9,6 +9,7 @@
 #include "CellEntryCam.h"
 #include "SceneCam.h"
 #include "AmbientCam.h"
+#include "CamCollision.h"
 
 #include <RE/I/INISettingCollection.h>
 #include <RE/A/AttackBlockHandler.h>
@@ -755,6 +756,7 @@ namespace FreeCam {
             if (a_this) {
                 SceneCam::Drive(AsFreeCam(a_this), prePitch, preYaw, driving);
                 AmbientCam::Drive(AsFreeCam(a_this), driving);  // 0.11.0: idle / furniture camera, after the Scene Camera
+                CamCollision::Apply(AsFreeCam(a_this), driving);  // 0.12.0: walls, for whatever an automatic camera wrote
             }
 
             // Save the live free-cam transform as the menu-restore anchor — while no

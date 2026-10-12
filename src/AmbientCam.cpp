@@ -1,4 +1,5 @@
 #include "AmbientCam.h"
+#include "CamCollision.h"
 #include "CellEntryCam.h"
 #include "FreeCamController.h"
 #include "FreeCamMenu.h"
@@ -246,6 +247,20 @@ namespace AmbientCam {
             auto* player = RE::PlayerCharacter::GetSingleton();
             auto* cell   = player ? player->GetParentCell() : nullptr;
             return cell && cell->IsInteriorCell();
+        }
+
+        // 0.12.0: the point on the camera's line of sight nearest the body's centre line (the face for the dolly, the
+        // centre line at camera height for the spiral) - where the wall check casts from. Looking away from the body
+        // (rare, mid-crossfade): the centre line at camera height.
+        RE::NiPoint3 SightPoint(const RE::NiPoint3& a_pos, float a_yaw, float a_pitch) {
+            const RE::NiPoint3 axis  = AxisAt(std::clamp(a_pos.z, s_subj.feet.z, s_subj.top.z));
+            const float        horiz = std::hypot(a_pos.x - axis.x, a_pos.y - axis.y);
+            const float        cp    = std::cos(a_pitch);
+            if (cp < 0.2f) return axis;
+            const float        t = horiz / cp;
+            const RE::NiPoint3 p{ a_pos.x + std::sin(a_yaw) * cp * t, a_pos.y + std::cos(a_yaw) * cp * t, a_pos.z - std::sin(a_pitch) * t };
+            const RE::NiPoint3 onAxis = AxisAt(std::clamp(p.z, s_subj.feet.z, s_subj.top.z));
+            return std::hypot(p.x - onAxis.x, p.y - onAxis.y) < 40.0f ? p : axis;
         }
 
         // ---- routines ------------------------------------------------------------------------------------------------
@@ -715,6 +730,7 @@ namespace AmbientCam {
             s_ret.t += dt;
             const float w = s_ret.dur > 0.0f ? SmoothStep(s_ret.t / s_ret.dur) : 1.0f;
             WritePose(fcs, LerpPose(s_ret.from, FromPre(s_sess.pre), w));
+            if (Subject now; ReadSubject(now)) CamCollision::Request(now.head, "idle camera, back to the normal camera");
             if (w >= 1.0f) {
                 const bool handOff = s_ret.handOff;
                 FinishReturn(handOff);
@@ -782,6 +798,7 @@ namespace AmbientCam {
             s_v.last     = p;
             s_v.haveLast = true;
             WritePose(fcs, p);
+            CamCollision::Request(SightPoint(p.pos, p.yaw, p.pitch), "idle camera");
         }
 
         // ---- furniture start ------------------------------------------------------------------------------------------

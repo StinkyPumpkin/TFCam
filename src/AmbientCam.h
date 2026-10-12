@@ -21,6 +21,8 @@
 // the spot, press the Scene Camera "Save camera shot" key. Sitting on that furniture later blends the camera there.
 // The shots live in SceneShots.tsv under the key "furn:<plugin>|<local id>".
 //
+// 0.12.0: walls (CamCollision.h) - DriveVanity / DriveReturn name the point the camera looks at each frame.
+//
 // Main thread, except where noted.
 namespace AmbientCam {
 

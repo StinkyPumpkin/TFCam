@@ -27,7 +27,8 @@ camera is on) the camera circles you, playing these routines in turn:
 Any key, click or mouse movement gives the camera back. It works in first and third person. After *Runs for* seconds it
 hands over to **Sandbox When Idle** (po3): that mod starts when the engine's idle timer passes `fAutoVanityModeDelay`, so
 TFCam sets `PlayerCamera::idleTimer` past it as the camera is given back. Keep *starts after* + *runs for* below
-`fAutoVanityModeDelay` (120 s by default). The free camera has no collision; *Distances in interiors* shrinks the radii.
+`fAutoVanityModeDelay` (120 s by default). *Distances in interiors* shrinks the radii indoors; walls are handled by
+*Walls* (below).
 
 **Furniture camera.** A camera shot saved per furniture (its base form, in the player's frame). Sit on the furniture,
 turn on free-fly, fly to where the camera should be and press the Scene Camera **Save camera shot** key (bind it on the
@@ -36,7 +37,17 @@ furniture, by hand or through Sandbox When Idle, blends the camera there after a
 back. Movement, jump and activate keys also give it back (not TFCam's own roll / reset / freeze / screenshot / slow keys).
 Shots are kept in `SceneShots.tsv` under `furn:<plugin>|<local id>`.
 
-Settings: `TFCam.ini` sections `[Idle]` and `[Furniture]` (written by the page; an older file uses the defaults).
+**Walls.** The automatic cameras stop in front of walls: the idle camera (and its blend back), the Scene Camera orbit
+and every blend to a saved shot (scene stage, pose, furniture). Each frame TFCam casts rays from the point the camera
+looks at to the camera (one on the camera, one either side of it, level with it). If something solid is in between,
+the camera moves in at once to *Distance kept from a wall* in front of it. When the way is clear again it waits a
+quarter of a second and then eases back out over *Ease back out*. People are passed through. Your own free-fly and the
+eye view are never stopped. A shot that ends behind a wall stays at the safe spot, and you fly on from there. The rays
+use the camera-sphere collision layer (`iLayer=36` in `[Collision]`; 41 = line of sight). Each push is logged in
+`TFCam.log` ("CamCollision: ... pulled in N of M units by <ref> (layer L)").
+
+Settings: `TFCam.ini` sections `[Idle]`, `[Furniture]` and `[Collision]` (written by the page; an older file uses the
+defaults).
 
 ## Scene Camera (0.10.0)
 

@@ -6,6 +6,7 @@
 #include "CellEntryCam.h"
 #include "SceneCam.h"
 #include "AmbientCam.h"
+#include "CamCollision.h"
 #include "SceneShots.h"
 
 #include <RE/I/INISettingCollection.h>
@@ -164,6 +165,7 @@ namespace FreeCamMenu {
     static void SaveINIValues();
     static void WriteSceneCamValues();
     static void WriteAmbientValues();
+    static void WriteCollisionValues();
 
     // Called on every settings change (every frame while a slider is dragged), so the log is rate-limited.
     static void SaveINI() {
@@ -239,6 +241,16 @@ namespace FreeCamMenu {
 
         WriteSceneCamValues();
         WriteAmbientValues();
+        WriteCollisionValues();
+    }
+
+    // 0.12.0 walls for the automatic cameras, TFCam.ini [Collision].
+    static void WriteCollisionValues() {
+        const auto& c = CamCollision::Get();
+        WriteINIInt("Collision", "bEnabled", c.enabled ? 1 : 0);
+        WriteINIFloat("Collision", "fMargin", c.margin);
+        WriteINIFloat("Collision", "fReturnSeconds", c.returnSec);
+        WriteINIInt("Collision", "iLayer", c.layer);
     }
 
     // 0.11.0 Idle + Furniture camera, TFCam.ini [Idle] / [Furniture].
@@ -783,7 +795,27 @@ namespace FreeCamMenu {
         changed |= ImGuiMCP::SliderFloat("Back to the normal camera (s)##amRet", &a.returnTime, 0.0f, 3.0f, "%.1f");
         ImGuiMCP::SetNextItemWidth(200.0f);
         changed |= ImGuiMCP::SliderFloat("Distances in interiors##amInt", &a.interiorScale, 0.3f, 1.0f, "%.2f");
-        ImGuiMCP::TextColored(grey, "The free camera does not collide: shrink this where walls get in the way.");
+        ImGuiMCP::TextColored(grey, "Smaller circles indoors. Walls are handled below.");
+
+        // 0.12.0
+        ImGuiMCP::SeparatorText("Walls");
+        ImGuiMCP::TextColored(grey,
+            "The idle camera, the Scene Camera orbit and the blends to a saved shot (scene, pose, furniture) stop in front "
+            "of walls and ease back out when the way is clear. People are passed through. Your own free-fly is never stopped.");
+        {
+            auto& c        = CamCollision::Get();
+            bool  wChanged = false;
+            wChanged |= ImGuiMCP::Checkbox("Stop at walls##cwOn", &c.enabled);
+            ImGuiMCP::SetNextItemWidth(200.0f);
+            wChanged |= ImGuiMCP::SliderFloat("Distance kept from a wall##cwMargin", &c.margin, 4.0f, 60.0f, "%.0f");
+            ImGuiMCP::SetNextItemWidth(200.0f);
+            wChanged |= ImGuiMCP::SliderFloat("Ease back out (s)##cwRet", &c.returnSec, 0.1f, 3.0f, "%.1f");
+            ImGuiMCP::TextColored(grey, "Walls: %s", CamCollision::MenuStatus().c_str());
+            if (wChanged) {
+                CamCollision::Clamp();
+                changed = true;
+            }
+        }
 
         ImGuiMCP::SeparatorText("Dolly zoom");
         ImGuiMCP::SetNextItemWidth(200.0f);
@@ -1046,6 +1078,19 @@ namespace FreeCamMenu {
             a.furnDelay       = readFloat("Furniture", "fDelay", d.furnDelay);
             a.furnMoveCancels = readInt("Furniture", "bMoveCancels", d.furnMoveCancels ? 1 : 0) != 0;
             AmbientCam::Clamp();
+        }
+
+        // 0.12.0 walls for the automatic cameras (code defaults when the section is missing).
+        {
+            auto&                        c = CamCollision::Get();
+            const CamCollision::Settings d{};
+            c.enabled   = readInt("Collision", "bEnabled", d.enabled ? 1 : 0) != 0;
+            c.margin    = readFloat("Collision", "fMargin", d.margin);
+            c.returnSec = readFloat("Collision", "fReturnSeconds", d.returnSec);
+            c.layer     = readInt("Collision", "iLayer", d.layer);
+            CamCollision::Clamp();
+            SKSE::log::info("CamCollision: walls {} for the automatic cameras - margin {:.0f}, ease out {:.1f} s, ray layer {}",
+                c.enabled ? "on" : "off", c.margin, c.returnSec, c.layer);
         }
 
         CameraLight::SetScrollBrightness(s_lightScrollBrightness);
