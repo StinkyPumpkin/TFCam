@@ -9,8 +9,10 @@
 // Idle camera: after N seconds without input (and nothing going on: no menu, combat, SexLab scene, cell-entry move or
 // free camera), the camera cycles through routines round the player until any input:
 //   Dolly zoom - the camera dollies in/out while the FOV zooms the opposite way, so the subject keeps its size and the
-//                background stretches (distance = framing / (2 tan(fov / 2))).
-//   Spiral     - climbs from the feet to the face in a spiral, close to the body, swelling in and out on each area.
+//                background stretches (distance = framing / (2 tan(fov / 2))). 0.11.1: from low near the ground,
+//                tilted up at the face, circling.
+//   Spiral     - 0.11.1: from the floor up to the face in two loops, settling on the bum (from behind), the genitals,
+//                the breasts and the face (from the front).
 // After a set duration it hands over to po3's Sandbox When Idle: that mod hooks the engine's auto-vanity start, whose
 // idle countdown is PlayerCamera idleTimer; TFCam sets it so the sandbox starts the moment the camera is given back.
 //
@@ -38,12 +40,14 @@ namespace AmbientCam {
         float dollyWideFOV    = 85.0f;
         float dollyPeriod     = 9.0f;    // seconds for one in-and-out
         int   dollyCycles     = 2;       // in-and-outs before the next routine
+        float dollyCamHeight  = 25.0f;   // camera height above the ground; it looks up at the face
+        float dollySpin       = 10.0f;   // degrees per second round the player (negative = other way)
         // spiral
         float spiralFar       = 170.0f;
         float spiralClose     = 55.0f;
         float spiralFOV       = 65.0f;
-        float spiralAreaSec   = 3.2f;    // seconds per body area
-        float spiralSpeed     = 40.0f;   // degrees per second round the body (negative = other way)
+        float spiralAreaSec   = 3.2f;    // seconds per focus area (the move there and the settle)
+        float spiralSpeed     = 40.0f;   // only the sign is used since 0.11.1: + / - = the two directions round the body
         // ---- furniture camera ----
         bool  furnEnabled     = true;
         float furnDelay       = 1.2f;    // seconds after sitting down before the camera moves

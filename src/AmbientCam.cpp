@@ -251,22 +251,44 @@ namespace AmbientCam {
         // ---- routines ------------------------------------------------------------------------------------------------
         enum class Routine { kDolly, kSpiral };
 
-        struct Area {
+        // 0.11.1 spiral: from the floor to the face in two loops, settling on the four areas the user wants to see.
+        // loops = position round the body (0 = in front of the player, 0.5 = behind), frac = body height (0 feet,
+        // 0.5 pelvis, 1 top of the head), close = close-radius multiplier.
+        struct Key {
             const char* name;
-            float       frac;   // body fraction
-            float       close;  // close-radius multiplier
+            float       loops;
+            float       frac;
+            float       close;
         };
-        constexpr Area kAreas[] = {
-            { "feet", 0.03f, 0.85f },     { "ankles", 0.08f, 0.85f }, { "calves", 0.20f, 0.9f },
-            { "knees", 0.30f, 0.9f },     { "thighs", 0.40f, 1.0f },  { "hips", 0.50f, 1.0f },
-            { "waist", 0.58f, 1.0f },     { "chest", 0.70f, 1.05f },  { "shoulders", 0.82f, 1.1f },
-            { "face", 0.94f, 1.35f },
+        constexpr Key kKeys[] = {
+            { "floor", 0.00f, 0.02f, 2.20f },     // start low and wide, then rise at once
+            { "bum", 0.50f, 0.47f, 0.95f },       // from behind
+            { "genitals", 1.00f, 0.45f, 0.90f },  // from the front
+            { "breasts", 1.85f, 0.72f, 1.00f },   // front three-quarter
+            { "face", 2.00f, 0.95f, 1.30f },      // from the front
         };
-        constexpr int kAreaCount = static_cast<int>(sizeof(kAreas) / sizeof(kAreas[0]));
+        constexpr int kKeyCount = static_cast<int>(sizeof(kKeys) / sizeof(kKeys[0]));
+
+        float AreaSec() { return (std::max)(s_cfg.spiralAreaSec, 0.8f); }
+
+        // One segment: the move round the body to the next area plus the settle on it.
+        float SegmentSec(int i) { return AreaSec() * (1.0f + 2.0f * (kKeys[i + 1].loops - kKeys[i].loops)); }
+
+        float SpiralLength() {
+            float sum = AreaSec();  // the hold on the face
+            for (int i = 0; i + 1 < kKeyCount; ++i) sum += SegmentSec(i);
+            return sum;
+        }
+
+        // Slows near both ends of a segment (0.3x) and hurries in the middle (1.7x), never stopping.
+        float Glide(float s) {
+            s = std::clamp(s, 0.0f, 1.0f);
+            return s - 0.7f / (2.0f * kPi) * std::sin(2.0f * kPi * s);
+        }
 
         float RoutineLength(Routine r) {
             return r == Routine::kDolly ? (std::max)(s_cfg.dollyPeriod, 2.0f) * static_cast<float>((std::max)(s_cfg.dollyCycles, 1))
-                                        : static_cast<float>(kAreaCount) * (std::max)(s_cfg.spiralAreaSec, 0.8f);
+                                        : SpiralLength();
         }
 
         const char* RoutineName(Routine r) { return r == Routine::kDolly ? "Dolly zoom" : "Spiral"; }
@@ -284,37 +306,55 @@ namespace AmbientCam {
             const float fov    = narrow + (wide - narrow) * phase;
             const float dist   = framing / (2.0f * std::tan(0.5f * fov * kDegToRad));
 
-            const RE::NiPoint3 u   = Mix(s_subj.pelvis, s_subj.head, 0.7f);  // upper body
-            const float        az  = az0 + 0.05f * t;                        // a slow drift keeps it alive
-            const float        el  = 6.0f * kDegToRad;
-            const RE::NiPoint3 dir{ std::sin(az) * std::cos(el), std::cos(az) * std::cos(el), std::sin(el) };
-            Pose               p;
-            p.pos = { u.x + dir.x * dist, u.y + dir.y * dist, u.z + dir.z * dist };
-            LookAngles({ u.x - p.pos.x, u.y - p.pos.y, u.z - p.pos.z }, p.yaw, p.pitch);
+            // 0.11.1: low near the ground, tilted up at the face while it circles. When it is too close to stay that low,
+            // it rises just enough to keep the distance, so the dolly relation stays exact.
+            const RE::NiPoint3 face     = Mix(s_subj.pelvis, s_subj.head, 0.97f);
+            const float        az       = az0 + s_cfg.dollySpin * kDegToRad * t;
+            const float        minHoriz = 0.35f * dist;
+            float              dz       = (s_subj.feet.z + s_cfg.dollyCamHeight) - face.z;  // < 0: below the face
+            float              horiz    = minHoriz;
+            if (dist * dist - dz * dz >= minHoriz * minHoriz) {
+                horiz = std::sqrt(dist * dist - dz * dz);
+            } else {
+                dz = (dz < 0.0f ? -1.0f : 1.0f) * std::sqrt((std::max)(dist * dist - horiz * horiz, 0.0f));
+            }
+            Pose p;
+            p.pos = { face.x + std::sin(az) * horiz, face.y + std::cos(az) * horiz, face.z + dz };
+            LookAngles({ face.x - p.pos.x, face.y - p.pos.y, face.z - p.pos.z }, p.yaw, p.pitch);
             p.roll = 0.0f;
             p.fov  = fov;
             return p;
         }
 
         Pose SpiralPose(float t, float az0) {
-            const float areaSec = (std::max)(s_cfg.spiralAreaSec, 0.8f);
-            const float scale   = InInterior() ? s_cfg.interiorScale : 1.0f;
-            int         k       = static_cast<int>(t / areaSec);
-            float       s       = t / areaSec - static_cast<float>(k);
-            if (k >= kAreaCount - 1) {
-                k = kAreaCount - 1;
-                s = std::clamp(t / areaSec - static_cast<float>(k), 0.0f, 1.0f);
-            }
-            const float zk   = BodyZ(kAreas[k].frac);
-            const float zn   = k + 1 < kAreaCount ? BodyZ(kAreas[k + 1].frac) : zk;
-            const float ease = k + 1 < kAreaCount ? SmoothStep((s - 0.55f) / 0.45f) : 0.0f;
-            const float z    = zk + (zn - zk) * ease;
+            const float scale = InInterior() ? s_cfg.interiorScale : 1.0f;
+            const float farR  = s_cfg.spiralFar * scale;
+            const float dir   = s_cfg.spiralSpeed < 0.0f ? -1.0f : 1.0f;
 
-            const float farR   = s_cfg.spiralFar * scale;
-            const float closeR = (std::min)(s_cfg.spiralClose * kAreas[k].close, farR);
-            const float pulse  = std::sin(kPi * s);
-            const float radius = farR - (farR - closeR) * pulse * pulse;
-            const float az     = az0 + s_cfg.spiralSpeed * kDegToRad * t;
+            int   seg  = kKeyCount - 1;  // past the last segment = the hold on the face
+            float s    = 1.0f;
+            float done = 0.0f;
+            for (int i = 0; i + 1 < kKeyCount; ++i) {
+                const float len = SegmentSec(i);
+                if (t < done + len) {
+                    seg = i;
+                    s   = (t - done) / len;
+                    break;
+                }
+                done += len;
+            }
+            const bool  hold = seg >= kKeyCount - 1;
+            const Key&  a    = kKeys[hold ? kKeyCount - 1 : seg];
+            const Key&  b    = kKeys[hold ? kKeyCount - 1 : seg + 1];
+            const float e    = hold ? 1.0f : Glide(s);
+
+            auto keyRadius = [&](const Key& k) { return (std::min)(s_cfg.spiralClose * k.close, farR); };
+            const float z      = BodyZ(a.frac + (b.frac - a.frac) * e);
+            const float loops  = a.loops + (b.loops - a.loops) * e;
+            const float base   = keyRadius(a) + (keyRadius(b) - keyRadius(a)) * e;
+            const float swell  = hold ? 0.0f : std::sin(kPi * s);  // out between areas, in on them
+            const float radius = base + (farR - base) * 0.5f * swell * swell;
+            const float az     = az0 + dir * 2.0f * kPi * loops;
 
             const RE::NiPoint3 axis = AxisAt(z);
             Pose               p;
@@ -842,6 +882,8 @@ namespace AmbientCam {
         range(s_cfg.dollyWideFOV, 50.0f, 130.0f, 85.0f);
         range(s_cfg.dollyPeriod, 2.0f, 30.0f, 9.0f);
         s_cfg.dollyCycles = std::clamp(s_cfg.dollyCycles, 1, 10);
+        range(s_cfg.dollyCamHeight, 0.0f, 200.0f, 25.0f);
+        range(s_cfg.dollySpin, -90.0f, 90.0f, 10.0f);
         range(s_cfg.spiralFar, 60.0f, 500.0f, 170.0f);
         range(s_cfg.spiralClose, 25.0f, 200.0f, 55.0f);
         range(s_cfg.spiralFOV, 30.0f, 110.0f, 65.0f);

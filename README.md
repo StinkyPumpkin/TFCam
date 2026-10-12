@@ -5,7 +5,7 @@ FOV control, screenshot keys, a cell-entry camera, and the Scene Camera below. S
 pages under **FreeCam** and in `Data/SKSE/Plugins/TFCam.ini`, which TFCam creates on first launch (it is never part of
 the download). The Nexus page text is in `nexus_description.txt`; build steps are in `BUILD.md`.
 
-## Idle camera and Furniture camera (0.11.0)
+## Idle camera and Furniture camera (0.11.0, routines reworked in 0.11.1)
 
 Page: **SKSE Menu Framework > FreeCam > Idle & Furniture**. Both drive TFCam's free camera and give it back with a short
 blend.
@@ -14,9 +14,13 @@ blend.
 camera is on) the camera circles you, playing these routines in turn:
 
 - *Dolly zoom*: the camera moves in while the lens zooms out (distance = framing / (2 tan(FOV / 2))), so you keep your
-  size while the world stretches.
-- *Spiral*: climbs from your feet to your face, close to the body, swelling in and out on each area (feet, ankles, calves,
-  knees, thighs, hips, waist, chest, shoulders, face). Heights follow the player's own skeleton, so it fits any scale.
+  size while the world stretches. It sits low near the ground (*Camera height above the ground*, default 25 units) and
+  tilts up at your face while it circles you (*Speed round you*, default 10 degrees a second, negative = the other way).
+  When it comes too close to stay that low, it rises just enough to keep the zoom exact.
+- *Spiral*: from the floor to your face in two loops round you, slowing down on four areas only: the bum (from behind),
+  the genitals, the breasts and the face (from the front). It swings out between areas and comes in close on them.
+  *Seconds per area* sets the pace; *Go round the other way* flips the direction. Heights follow the player's own
+  skeleton, so it fits any scale.
 
 Any key, click or mouse movement gives the camera back. It works in first and third person. After *Runs for* seconds it
 hands over to **Sandbox When Idle** (po3): that mod starts when the engine's idle timer passes `fAutoVanityModeDelay`, so

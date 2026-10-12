@@ -258,6 +258,8 @@ namespace FreeCamMenu {
         WriteINIFloat("Idle", "fDollyWideFOV", a.dollyWideFOV);
         WriteINIFloat("Idle", "fDollyPeriod", a.dollyPeriod);
         WriteINIInt("Idle", "iDollyCycles", a.dollyCycles);
+        WriteINIFloat("Idle", "fDollyCameraHeight", a.dollyCamHeight);
+        WriteINIFloat("Idle", "fDollySpin", a.dollySpin);
         WriteINIFloat("Idle", "fSpiralFar", a.spiralFar);
         WriteINIFloat("Idle", "fSpiralClose", a.spiralClose);
         WriteINIFloat("Idle", "fSpiralFOV", a.spiralFOV);
@@ -794,7 +796,12 @@ namespace FreeCamMenu {
         changed |= ImGuiMCP::SliderFloat("Seconds per in-and-out##amPeriod", &a.dollyPeriod, 2.0f, 30.0f, "%.1f");
         ImGuiMCP::SetNextItemWidth(200.0f);
         changed |= ImGuiMCP::SliderInt("In-and-outs before the next routine##amCycles", &a.dollyCycles, 1, 10);
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Camera height above the ground##amDH", &a.dollyCamHeight, 0.0f, 200.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Speed round you (degrees/s)##amDSpin", &a.dollySpin, -90.0f, 90.0f, "%.0f");
         ImGuiMCP::TextColored(grey, "Camera distance = framing / (2 tan(FOV / 2)): your size stays the same while the FOV sweeps.");
+        ImGuiMCP::TextColored(grey, "It looks up at your face from that height, and rises only when it comes too close to stay low.");
 
         ImGuiMCP::SeparatorText("Spiral");
         ImGuiMCP::SetNextItemWidth(200.0f);
@@ -805,9 +812,14 @@ namespace FreeCamMenu {
         changed |= ImGuiMCP::SliderFloat("FOV##amSpFov", &a.spiralFOV, 30.0f, 110.0f, "%.0f");
         ImGuiMCP::SetNextItemWidth(200.0f);
         changed |= ImGuiMCP::SliderFloat("Seconds per area##amArea", &a.spiralAreaSec, 0.8f, 10.0f, "%.1f");
-        ImGuiMCP::SetNextItemWidth(200.0f);
-        changed |= ImGuiMCP::SliderFloat("Speed round you (degrees/s)##amSpd", &a.spiralSpeed, -180.0f, 180.0f, "%.0f");
-        ImGuiMCP::TextColored(grey, "Areas: feet, ankles, calves, knees, thighs, hips, waist, chest, shoulders, face.");
+        {
+            bool other = a.spiralSpeed < 0.0f;
+            if (ImGuiMCP::Checkbox("Go round the other way##amDir", &other)) {
+                a.spiralSpeed = other ? -40.0f : 40.0f;
+                changed       = true;
+            }
+        }
+        ImGuiMCP::TextColored(grey, "Floor to face in two loops: bum (from behind), genitals, breasts, face (from the front).");
 
         ImGuiMCP::Separator();
         if (ImGuiMCP::Button("Test the idle camera (runs when this menu closes)##amTest")) {
@@ -1022,6 +1034,8 @@ namespace FreeCamMenu {
             a.dollyWideFOV    = readFloat("Idle", "fDollyWideFOV", d.dollyWideFOV);
             a.dollyPeriod     = readFloat("Idle", "fDollyPeriod", d.dollyPeriod);
             a.dollyCycles     = readInt("Idle", "iDollyCycles", d.dollyCycles);
+            a.dollyCamHeight  = readFloat("Idle", "fDollyCameraHeight", d.dollyCamHeight);
+            a.dollySpin       = readFloat("Idle", "fDollySpin", d.dollySpin);
             a.spiralFar       = readFloat("Idle", "fSpiralFar", d.spiralFar);
             a.spiralClose     = readFloat("Idle", "fSpiralClose", d.spiralClose);
             a.spiralFOV       = readFloat("Idle", "fSpiralFOV", d.spiralFOV);
