@@ -83,23 +83,35 @@ namespace HUDHider {
     }
 
     // ---- Hide / Show everything ----
+    // 0.12.2: the Scaleform writes run as an SKSE UI task. Freecam enter/exit is not on the UI
+    // thread that runs the HUD movie's ActionScript, and Scaleform's ref counts are not atomic
+    // (compass CTD SkyrimSE.exe+FF1FB3, a freed clip handle inside the compass's SetMarkers).
+    // The decision, the Aroused Widget message and s_hidden stay synchronous.
     static void HideHUD() {
         auto* ui = RE::UI::GetSingleton();
         if (!ui) return;
-        auto view = ui->GetMovieView("HUD Menu");
-        if (!view) return;
+        if (!ui->GetMovieView("HUD Menu")) return;
+        auto* tasks = SKSE::GetTaskInterface();
+        if (!tasks) return;
 
-        // Main HUD (compass, bars, crosshair, notifications, subtitles)
-        SetGfxAlpha(view.get(), "_root.HUDMovieBaseInstance", 0.0);
+        tasks->AddUITask([]() {
+            auto* ui = RE::UI::GetSingleton();
+            if (!ui) return;
+            auto view = ui->GetMovieView("HUD Menu");
+            if (!view) return;
 
-        // SkyUI Widget Framework container (PSQ bar, etc.)
-        SetGfxAlpha(view.get(), "_root.WidgetContainer", 0.0);
+            // Main HUD (compass, bars, crosshair, notifications, subtitles)
+            SetGfxAlpha(view.get(), "_root.HUDMovieBaseInstance", 0.0);
 
-        // TrueHUD player bars (separate Scaleform menu)
-        SetMenuRootAlpha("TrueHUD", 0.0);
+            // SkyUI Widget Framework container (PSQ bar, etc.)
+            SetGfxAlpha(view.get(), "_root.WidgetContainer", 0.0);
 
-        // STB widgets (separate menus)
-        SetSTBAlpha(0.0);
+            // TrueHUD player bars (separate Scaleform menu)
+            SetMenuRootAlpha("TrueHUD", 0.0);
+
+            // STB widgets (separate menus)
+            SetSTBAlpha(0.0);
+        });
 
         // ArousedWidgetClaude (ImGui overlay, SKSE messaging)
         SendArousedMessage(kHideAll);
@@ -112,21 +124,25 @@ namespace HUDHider {
         // 0.7.7 (reported by the Aroused Widget side): the old early returns on a missing UI /
         // "HUD Menu" view skipped the RestoreAll message and left s_hidden set, so the widgets
         // stayed hidden. Restore every piece that exists; the message and the flag always go out.
-        bool hudMenu = false;
-        if (auto* ui = RE::UI::GetSingleton()) {
-            if (auto view = ui->GetMovieView("HUD Menu")) {
-                SetGfxAlpha(view.get(), "_root.HUDMovieBaseInstance", 100.0);
-                SetGfxAlpha(view.get(), "_root.WidgetContainer", 100.0);
-                hudMenu = true;
-            }
-            SetMenuRootAlpha("TrueHUD", 100.0);
-            SetSTBAlpha(100.0);
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddUITask([]() {
+                bool hudMenu = false;
+                if (auto* ui = RE::UI::GetSingleton()) {
+                    if (auto view = ui->GetMovieView("HUD Menu")) {
+                        SetGfxAlpha(view.get(), "_root.HUDMovieBaseInstance", 100.0);
+                        SetGfxAlpha(view.get(), "_root.WidgetContainer", 100.0);
+                        hudMenu = true;
+                    }
+                    SetMenuRootAlpha("TrueHUD", 100.0);
+                    SetSTBAlpha(100.0);
+                }
+                SKSE::log::info("HUDHider: shown (all restored{})", hudMenu ? "" : "; HUD Menu view was not available");
+            });
         }
 
         SendArousedMessage(kRestoreAll);
 
         s_hidden = false;
-        SKSE::log::info("HUDHider: shown (all restored{})", hudMenu ? "" : "; HUD Menu view was not available");
     }
 
     // ---- Public API ----
