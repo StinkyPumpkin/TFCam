@@ -58,6 +58,11 @@ namespace SceneCam {
     void OnSceneChanged(bool a_keyChanged);  // stage key committed (true) or only the actors changed (false)
     void OnPlayerSceneEnd();
 
+    // 0.11.0 (AmbientCam, main thread): the furniture the player sits on has a saved shot / go to it. The second one
+    // enters TFCam free-fly first when needed (like the "Go to saved shot" key).
+    bool HasFurnitureShot();
+    bool RecallFurnitureShot(const char* a_source);
+
     void OnGameLoad(const char* a_why);  // kPreLoadGame / kPostLoadGame / kNewGame
 
     // TFCamAPI v2 (any thread)

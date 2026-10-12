@@ -5,6 +5,7 @@
 #include "HUDHider.h"
 #include "CellEntryCam.h"
 #include "SceneCam.h"
+#include "AmbientCam.h"
 #include "SceneShots.h"
 
 #include <RE/I/INISettingCollection.h>
@@ -162,6 +163,7 @@ namespace FreeCamMenu {
 
     static void SaveINIValues();
     static void WriteSceneCamValues();
+    static void WriteAmbientValues();
 
     // Called on every settings change (every frame while a slider is dragged), so the log is rate-limited.
     static void SaveINI() {
@@ -236,6 +238,34 @@ namespace FreeCamMenu {
         WriteINIInt("CellEntry", "bKeysCancel", ce.keysCancel ? 1 : 0);
 
         WriteSceneCamValues();
+        WriteAmbientValues();
+    }
+
+    // 0.11.0 Idle + Furniture camera, TFCam.ini [Idle] / [Furniture].
+    static void WriteAmbientValues() {
+        const auto& a = AmbientCam::Get();
+        WriteINIInt("Idle", "bEnabled", a.vanityEnabled ? 1 : 0);
+        WriteINIFloat("Idle", "fStartDelay", a.vanityStart);
+        WriteINIFloat("Idle", "fDuration", a.vanityDuration);
+        WriteINIInt("Idle", "bHandOffSandbox", a.handOffSandbox ? 1 : 0);
+        WriteINIInt("Idle", "bDolly", a.dolly ? 1 : 0);
+        WriteINIInt("Idle", "bSpiral", a.spiral ? 1 : 0);
+        WriteINIFloat("Idle", "fCrossfade", a.crossfade);
+        WriteINIFloat("Idle", "fReturnTime", a.returnTime);
+        WriteINIFloat("Idle", "fInteriorScale", a.interiorScale);
+        WriteINIFloat("Idle", "fDollyFraming", a.dollyFraming);
+        WriteINIFloat("Idle", "fDollyNarrowFOV", a.dollyNarrowFOV);
+        WriteINIFloat("Idle", "fDollyWideFOV", a.dollyWideFOV);
+        WriteINIFloat("Idle", "fDollyPeriod", a.dollyPeriod);
+        WriteINIInt("Idle", "iDollyCycles", a.dollyCycles);
+        WriteINIFloat("Idle", "fSpiralFar", a.spiralFar);
+        WriteINIFloat("Idle", "fSpiralClose", a.spiralClose);
+        WriteINIFloat("Idle", "fSpiralFOV", a.spiralFOV);
+        WriteINIFloat("Idle", "fSpiralAreaSeconds", a.spiralAreaSec);
+        WriteINIFloat("Idle", "fSpiralSpeed", a.spiralSpeed);
+        WriteINIInt("Furniture", "bEnabled", a.furnEnabled ? 1 : 0);
+        WriteINIFloat("Furniture", "fDelay", a.furnDelay);
+        WriteINIInt("Furniture", "bMoveCancels", a.furnMoveCancels ? 1 : 0);
     }
 
     // 0.10.0 Scene Camera, TFCam.ini [SceneCam].
@@ -710,6 +740,103 @@ namespace FreeCamMenu {
         }
     }
 
+    // 0.11.0: FreeCam > Idle & Furniture page.
+    static void __stdcall RenderAmbient() {
+        auto& a       = AmbientCam::Get();
+        bool  changed = false;
+        const ImGuiMCP::ImVec4 grey{ 0.5f, 0.5f, 0.5f, 1.0f };
+
+        const auto ms = AmbientCam::GetMenuStatus();
+        ImGuiMCP::SeparatorText("Idle camera");
+        ImGuiMCP::TextColored(grey,
+            "After a while without input the camera circles you: a dolly zoom (the camera moves in while the lens zooms out, "
+            "so you keep your size and the world stretches) and a spiral from your feet up to your face, swelling in and out "
+            "on each area. Any key, click or mouse move gives the camera back.");
+        ImGuiMCP::Text("Now: %s", ms.state[0] ? ms.state : "-");
+        if (ms.routine[0]) ImGuiMCP::Text("Routine: %s", ms.routine);
+
+        changed |= ImGuiMCP::Checkbox("Idle camera on##amOn", &a.vanityEnabled);
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Starts after (s without input)##amStart", &a.vanityStart, 5.0f, 300.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Runs for (s, 0 = until input)##amDur", &a.vanityDuration, 0.0f, 600.0f, "%.0f");
+        changed |= ImGuiMCP::Checkbox("Then let Sandbox When Idle start##amSwi", &a.handOffSandbox);
+        if (!ms.swiLoaded) {
+            ImGuiMCP::TextColored(grey, "po3's Sandbox When Idle is not installed - nothing to hand over to.");
+        } else {
+            ImGuiMCP::TextColored(grey,
+                "When the time is up TFCam gives the camera back and sets the engine's idle timer so Sandbox When Idle starts "
+                "straight away. Engine idle timer: %s", ms.timer);
+        }
+        ImGuiMCP::TextColored(grey,
+            "Keep 'starts after' + 'runs for' under the game's auto-vanity delay (fAutoVanityModeDelay, 120 s by default).");
+
+        ImGuiMCP::SeparatorText("Routines (played in order, then again)");
+        changed |= ImGuiMCP::Checkbox("Dolly zoom##amDolly", &a.dolly);
+        ImGuiMCP::SameLine();
+        changed |= ImGuiMCP::Checkbox("Spiral up the body##amSpiral", &a.spiral);
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Blend between routines (s)##amXf", &a.crossfade, 0.0f, 5.0f, "%.1f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Back to the normal camera (s)##amRet", &a.returnTime, 0.0f, 3.0f, "%.1f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Distances in interiors##amInt", &a.interiorScale, 0.3f, 1.0f, "%.2f");
+        ImGuiMCP::TextColored(grey, "The free camera does not collide: shrink this where walls get in the way.");
+
+        ImGuiMCP::SeparatorText("Dolly zoom");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Framing (units visible at you)##amFrame", &a.dollyFraming, 40.0f, 400.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Narrow FOV (camera far)##amNarrow", &a.dollyNarrowFOV, 10.0f, 60.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Wide FOV (camera close)##amWide", &a.dollyWideFOV, 50.0f, 130.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Seconds per in-and-out##amPeriod", &a.dollyPeriod, 2.0f, 30.0f, "%.1f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderInt("In-and-outs before the next routine##amCycles", &a.dollyCycles, 1, 10);
+        ImGuiMCP::TextColored(grey, "Camera distance = framing / (2 tan(FOV / 2)): your size stays the same while the FOV sweeps.");
+
+        ImGuiMCP::SeparatorText("Spiral");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Far radius (between areas)##amFar", &a.spiralFar, 60.0f, 500.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Close radius (on an area)##amClose", &a.spiralClose, 25.0f, 200.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("FOV##amSpFov", &a.spiralFOV, 30.0f, 110.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Seconds per area##amArea", &a.spiralAreaSec, 0.8f, 10.0f, "%.1f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Speed round you (degrees/s)##amSpd", &a.spiralSpeed, -180.0f, 180.0f, "%.0f");
+        ImGuiMCP::TextColored(grey, "Areas: feet, ankles, calves, knees, thighs, hips, waist, chest, shoulders, face.");
+
+        ImGuiMCP::Separator();
+        if (ImGuiMCP::Button("Test the idle camera (runs when this menu closes)##amTest")) {
+            AmbientCam::TestVanityOnMenuClose();
+        }
+
+        ImGuiMCP::SeparatorText("Furniture camera");
+        ImGuiMCP::TextColored(grey,
+            "A camera shot saved per furniture. Sit down, turn on free-fly, fly to where you want the camera, press the "
+            "Scene Camera 'Save camera shot' key (FreeCam > Scene Camera). From then on, sitting on that furniture "
+            "blends the camera there.");
+        changed |= ImGuiMCP::Checkbox("Furniture camera on##amFurnOn", &a.furnEnabled);
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Delay after sitting down (s)##amFurnDelay", &a.furnDelay, 0.0f, 6.0f, "%.1f");
+        changed |= ImGuiMCP::Checkbox("Movement / jump / activate keys give the camera back##amFurnMove", &a.furnMoveCancels);
+        if (ms.furniture[0]) {
+            ImGuiMCP::Text("Sitting on: %s", ms.furniture);
+            ImGuiMCP::Text("Saved shot for it: %s", ms.furnHasShot ? "yes" : "no");
+        } else {
+            ImGuiMCP::TextColored(grey, "Not on furniture.");
+        }
+        if (ms.lastEvent[0]) ImGuiMCP::TextColored(grey, "Last: %s", ms.lastEvent);
+
+        if (changed) {
+            AmbientCam::Clamp();
+            SaveINI();
+        }
+    }
+
     // 0.7.9: first run with no TFCam.ini - write one from the code defaults (MO2 puts a new file in overwrite\).
     // Afterwards only the in-game page writes it; no update or deploy ever ships or copies it.
     static void CreateDefaultINI(const char* a_path) {
@@ -877,6 +1004,35 @@ namespace FreeCamMenu {
             SceneCam::ClampConfig();
         }
 
+        // 0.11.0 Idle + Furniture camera (an existing TFCam.ini without these sections gets the code defaults).
+        {
+            auto&                      a = AmbientCam::Get();
+            const AmbientCam::Settings d{};
+            a.vanityEnabled   = readInt("Idle", "bEnabled", d.vanityEnabled ? 1 : 0) != 0;
+            a.vanityStart     = readFloat("Idle", "fStartDelay", d.vanityStart);
+            a.vanityDuration  = readFloat("Idle", "fDuration", d.vanityDuration);
+            a.handOffSandbox  = readInt("Idle", "bHandOffSandbox", d.handOffSandbox ? 1 : 0) != 0;
+            a.dolly           = readInt("Idle", "bDolly", d.dolly ? 1 : 0) != 0;
+            a.spiral          = readInt("Idle", "bSpiral", d.spiral ? 1 : 0) != 0;
+            a.crossfade       = readFloat("Idle", "fCrossfade", d.crossfade);
+            a.returnTime      = readFloat("Idle", "fReturnTime", d.returnTime);
+            a.interiorScale   = readFloat("Idle", "fInteriorScale", d.interiorScale);
+            a.dollyFraming    = readFloat("Idle", "fDollyFraming", d.dollyFraming);
+            a.dollyNarrowFOV  = readFloat("Idle", "fDollyNarrowFOV", d.dollyNarrowFOV);
+            a.dollyWideFOV    = readFloat("Idle", "fDollyWideFOV", d.dollyWideFOV);
+            a.dollyPeriod     = readFloat("Idle", "fDollyPeriod", d.dollyPeriod);
+            a.dollyCycles     = readInt("Idle", "iDollyCycles", d.dollyCycles);
+            a.spiralFar       = readFloat("Idle", "fSpiralFar", d.spiralFar);
+            a.spiralClose     = readFloat("Idle", "fSpiralClose", d.spiralClose);
+            a.spiralFOV       = readFloat("Idle", "fSpiralFOV", d.spiralFOV);
+            a.spiralAreaSec   = readFloat("Idle", "fSpiralAreaSeconds", d.spiralAreaSec);
+            a.spiralSpeed     = readFloat("Idle", "fSpiralSpeed", d.spiralSpeed);
+            a.furnEnabled     = readInt("Furniture", "bEnabled", d.furnEnabled ? 1 : 0) != 0;
+            a.furnDelay       = readFloat("Furniture", "fDelay", d.furnDelay);
+            a.furnMoveCancels = readInt("Furniture", "bMoveCancels", d.furnMoveCancels ? 1 : 0) != 0;
+            AmbientCam::Clamp();
+        }
+
         CameraLight::SetScrollBrightness(s_lightScrollBrightness);
         CameraLight::SetScrollRadius(s_lightScrollRadius);
         CameraLight::SetRadius(s_lightRadius);
@@ -955,6 +1111,7 @@ namespace FreeCamMenu {
         SKSEMenuFramework::AddSectionItem("Settings", RenderSettings);
         SKSEMenuFramework::AddSectionItem("Cell Entry", RenderCellEntry);  // 0.9.0
         SKSEMenuFramework::AddSectionItem("Scene Camera", RenderSceneCam);  // 0.10.0
+        SKSEMenuFramework::AddSectionItem("Idle & Furniture", RenderAmbient);  // 0.11.0
         SKSEMenuFramework::AddInputEvent(OnSMFInput);
 
         SKSE::log::info("FreeCamMenu: settings section registered");

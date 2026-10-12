@@ -77,7 +77,7 @@ namespace SceneShots {
             }
             if (f.size() < 9) return false;
             const std::string_view key = f[0];
-            if (!(key.starts_with("stage:") || key.starts_with("pose:")) || key.size() < 7) return false;
+            if (!(key.starts_with("stage:") || key.starts_with("pose:") || key.starts_with("furn:")) || key.size() < 7) return false;
             Shot s;
             if (!ParseFloat(f[1], s.x) || !ParseFloat(f[2], s.y) || !ParseFloat(f[3], s.z) || !ParseFloat(f[4], s.yawRel) ||
                 !ParseFloat(f[5], s.pitch) || !ParseFloat(f[6], s.roll) || !ParseFloat(f[7], s.fov)) {

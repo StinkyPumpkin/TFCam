@@ -8,6 +8,7 @@
 #include "SceneTracker.h"
 #include "CellEntryCam.h"
 #include "SceneCam.h"
+#include "AmbientCam.h"
 
 #include <RE/I/INISettingCollection.h>
 #include <RE/A/AttackBlockHandler.h>
@@ -753,6 +754,7 @@ namespace FreeCam {
             // own clock stops while the game is paused.
             if (a_this) {
                 SceneCam::Drive(AsFreeCam(a_this), prePitch, preYaw, driving);
+                AmbientCam::Drive(AsFreeCam(a_this), driving);  // 0.11.0: idle / furniture camera, after the Scene Camera
             }
 
             // Save the live free-cam transform as the menu-restore anchor — while no
@@ -896,6 +898,7 @@ namespace FreeCam {
             // 0.10.0: Scene Camera back to Free - partner's head shown, near clip restored, orbit / eye FOV undone
             // (ExitWorkAfterVanilla then puts the session's base FOV back as before).
             SceneCam::OnFreeCamEnd();
+            AmbientCam::OnFreeCamEnd();
         }
 
         // Main thread only. s_baseFOV is main-thread state since 0.7.10 (the Begin batch sets it, this reads it), so a
@@ -1122,6 +1125,7 @@ namespace FreeCam {
 
             // 0.9.0: mouse movement (and keys, if set) cancels the cell-entry camera move at once.
             CellEntryCam::OnInput(a_events);
+            AmbientCam::OnInput(a_events);  // 0.11.0: input ends the idle camera; movement keys end the furniture camera
 
             bool active = IsActive();
             // 0.7.7: camera-writing hotkeys (FOV wheel, roll, reset, FOV/reset remaps) key on this;

@@ -38,6 +38,9 @@ namespace SlccBridge {
     // 0.10.0: the Scene Camera needs TFCam free-fly (orbit / eye view / go to shot). Only ever enters: a free cam TFCam
     // drives already is left alone, a camera SLCC owns is handed over as for the free-fly key. Main thread.
     void RequestEnterFreeFly(const char* a_source);
+    // 0.11.0: the idle / furniture camera gives the free cam back. Only turns off a free cam TFCam drives (never an FCFW
+    // timeline's or SLCC's). Main thread.
+    void LeaveFreeFly(const char* a_source);
     // FreeCameraState Begin / End. Main thread: since 0.7.10 the hooks queue these there (in order) when the camera
     // was toggled from a Papyrus VM thread, so a_selfToggle is IsSelfToggle() as read inside the hook.
     void OnFreeCamBegin(bool a_tfcamDriving, bool a_selfToggle);

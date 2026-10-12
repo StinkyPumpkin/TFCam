@@ -1292,6 +1292,17 @@ namespace SlccBridge {
         CycleStep(a_source);
     }
 
+    void LeaveFreeFly(const char* a_source) {
+        auto* cam = RE::PlayerCamera::GetSingleton();
+        if (!cam || !cam->IsInFreeCameraMode()) return;
+        if (FcfwBridge::FcfwOwnsCamera() || SlccOwnsCamera()) {
+            SKSE::log::info("SLCC bridge: {} - the free cam belongs to FCFW / SLCC; not leaving it", a_source);
+            return;
+        }
+        SKSE::log::info("SLCC bridge: {} - leaving TFCam free-fly", a_source);
+        ToggleFreeCam(cam);
+    }
+
     void RequestEnterFreeFly(const char* a_source) {
         auto* cam = RE::PlayerCamera::GetSingleton();
         if (!cam) return;

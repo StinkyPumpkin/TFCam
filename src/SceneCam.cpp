@@ -4,6 +4,7 @@
 #include "FreeCamController.h"
 #include "FreeCamMenu.h"
 #include "SlccBridge.h"
+#include "AmbientCam.h"
 
 #include <RE/I/INIPrefSettingCollection.h>
 #include <RE/I/INISettingCollection.h>
@@ -285,7 +286,7 @@ namespace SceneCam {
         };
         EyeState s_eye;
 
-        enum class Req { kNone, kOrbit, kEye, kRecall };
+        enum class Req { kNone, kOrbit, kEye, kRecall, kFurniture };
         Req    s_pending      = Req::kNone;  // waits for TFCam free-fly (entered on the request)
         double s_pendingUntil = 0.0;
 
@@ -294,6 +295,7 @@ namespace SceneCam {
             case Req::kOrbit:  return "orbit";
             case Req::kEye:    return "eye view";
             case Req::kRecall: return "go to shot";
+            case Req::kFurniture: return "furniture shot";
             default:           return "none";
             }
         }
@@ -340,7 +342,8 @@ namespace SceneCam {
         // ---- saved shots ---------------------------------------------------------------------------------------------
         struct ShotContext {
             bool         ok    = false;
-            bool         stage = false;  // stage shot (else pose shot)
+            bool         stage = false;  // stage shot (else pose / furniture shot)
+            const char*  what  = "pose";  // "stage" / "pose" / "furniture", for messages
             std::string  key;
             std::string  label;
             RE::NiPoint3 anchor{};
@@ -360,6 +363,7 @@ namespace SceneCam {
             if (!scene.inScene || !scene.stageKnown || !player) return c;
             c.ok      = true;
             c.stage   = true;
+            c.what    = "stage";
             c.key     = StageKey(scene);
             c.label   = scene.sceneName.empty() ? scene.sceneId : scene.sceneName;
             c.anchor  = player->GetPosition();
@@ -380,10 +384,29 @@ namespace SceneCam {
             return c;
         }
 
-        // In the player's scene with a known stage: the stage shot; otherwise the active pose's shot.
+        // 0.11.0: the furniture the player sits on. Anchored on the player, whose reference sits at the furniture's marker
+        // (so one shot per furniture base form fits every marker and every placement).
+        ShotContext FurnitureContext() {
+            ShotContext c;
+            auto*       player = RE::PlayerCharacter::GetSingleton();
+            std::string key, label;
+            if (!player || !AmbientCam::CurrentFurniture(key, label)) return c;
+            c.ok      = true;
+            c.what    = "furniture";
+            c.key     = key;
+            c.label   = label;
+            c.anchor  = player->GetPosition();
+            c.heading = player->GetAngleZ();
+            return c;
+        }
+
+        // In the player's scene with a known stage: the stage shot; otherwise the active pose's shot; otherwise the
+        // furniture the player sits on.
         ShotContext CurrentContext() {
             auto c = StageContext();
-            return c.ok ? c : PoseContext();
+            if (c.ok) return c;
+            c = PoseContext();
+            return c.ok ? c : FurnitureContext();
         }
 
         // Anchor frame: forward = (sin h, cos h, 0), right = (cos h, -sin h, 0), up = +Z.
@@ -958,7 +981,7 @@ namespace SceneCam {
         bool DoSave(std::string_view a_source) {
             const auto ctx = CurrentContext();
             if (!ctx.ok) {
-                Refuse("No scene stage or pose to save the shot for", std::format("save shot ({}): no stage / pose", a_source));
+                Refuse("No scene stage, pose or furniture to save the shot for", std::format("save shot ({}): no stage / pose", a_source));
                 return false;
             }
             auto* fcs = FreeCam::TFCamDriving() ? CurrentFreeCam() : nullptr;
@@ -972,7 +995,7 @@ namespace SceneCam {
                 Refuse("Camera shot could not be saved (see TFCam.log)", std::format("save shot {}: file write failed", ctx.key));
                 return false;
             }
-            Notify(ctx.stage ? "Camera shot saved for this stage" : "Camera shot saved for this pose");
+            Notify(std::format("Camera shot saved for this {}", ctx.what).c_str());
             Event(std::format("shot saved ({}) {} - local ({:.1f}, {:.1f}, {:.1f}) yaw {:.1f} pitch {:.1f} roll {:.1f} FOV {:.1f}",
                 a_source, ctx.key, shot.x, shot.y, shot.z, shot.yawRel, shot.pitch, shot.roll, shot.fov));
             return true;
@@ -981,12 +1004,12 @@ namespace SceneCam {
         bool DoRecall(std::string_view a_source) {
             const auto ctx = CurrentContext();
             if (!ctx.ok) {
-                Refuse("No scene stage or pose to go to a shot for", std::format("go to shot ({}): no stage / pose", a_source));
+                Refuse("No scene stage, pose or furniture to go to a shot for", std::format("go to shot ({}): no stage / pose", a_source));
                 return false;
             }
             const auto* shot = SceneShots::Find(ctx.key);
             if (!shot) {
-                Refuse(ctx.stage ? "No saved camera shot for this stage" : "No saved camera shot for this pose",
+                Refuse(std::format("No saved camera shot for this {}", ctx.what).c_str(),
                     std::format("go to shot ({}): none saved for {}", a_source, ctx.key));
                 return false;
             }
@@ -1001,11 +1024,11 @@ namespace SceneCam {
         bool DoDelete(std::string_view a_source) {
             const auto ctx = CurrentContext();
             if (!ctx.ok) {
-                Refuse("No scene stage or pose to delete a shot for", std::format("delete shot ({}): no stage / pose", a_source));
+                Refuse("No scene stage, pose or furniture to delete a shot for", std::format("delete shot ({}): no stage / pose", a_source));
                 return false;
             }
             if (!SceneShots::Has(ctx.key)) {
-                Refuse(ctx.stage ? "No saved camera shot for this stage" : "No saved camera shot for this pose",
+                Refuse(std::format("No saved camera shot for this {}", ctx.what).c_str(),
                     std::format("delete shot ({}): none saved for {}", a_source, ctx.key));
                 return false;
             }
@@ -1013,7 +1036,7 @@ namespace SceneCam {
                 Refuse("Camera shot could not be deleted (see TFCam.log)", std::format("delete shot {}: file write failed", ctx.key));
                 return false;
             }
-            Notify(ctx.stage ? "Camera shot deleted for this stage" : "Camera shot deleted for this pose");
+            Notify(std::format("Camera shot deleted for this {}", ctx.what).c_str());
             Event(std::format("shot deleted ({}) {}", a_source, ctx.key));
             return true;
         }
@@ -1078,6 +1101,9 @@ namespace SceneCam {
                 break;
             case Req::kRecall:
                 DoRecall("after entering free-fly");
+                break;
+            case Req::kFurniture:
+                RecallFurnitureShot("furniture camera, after entering free-fly");
                 break;
             default:
                 break;
@@ -1385,7 +1411,7 @@ namespace SceneCam {
     }
 
     bool OwnsMotion() {
-        return s_mode == TFCAM_API::kModeOrbit || s_mode == TFCAM_API::kModeEye || s_blend.active;
+        return s_mode == TFCAM_API::kModeOrbit || s_mode == TFCAM_API::kModeEye || s_blend.active || AmbientCam::OwnsMotion();
     }
 
     bool OnWheel(int a_dir) {
@@ -1436,6 +1462,7 @@ namespace SceneCam {
     }
 
     void OnPlayerSceneStart() {
+        AmbientCam::OnPlayerSceneStart();
         s_eye.preferred = 0;
         PublishStatus();
         ScheduleTick();
@@ -1476,6 +1503,24 @@ namespace SceneCam {
         LeaveOrbit("the player's scene ended", true);
         s_eye.preferred = 0;
         PublishStatus();
+    }
+
+    bool HasFurnitureShot() {
+        const auto ctx = FurnitureContext();
+        return ctx.ok && SceneShots::Has(ctx.key);
+    }
+
+    bool RecallFurnitureShot(const char* a_source) {
+        const auto ctx = FurnitureContext();
+        if (!ctx.ok) return false;
+        const auto* shot = SceneShots::Find(ctx.key);
+        if (!shot) return false;
+        if (WaitForFreeCam(Req::kFurniture)) return true;
+        LeaveOrbit("going to a furniture shot", false);
+        LeaveEye("going to a furniture shot", false);
+        StartBlend(ReadPose(CurrentFreeCam()), ShotToPose(*shot, ctx), s_cfg.shotBlend);
+        Event(std::format("go to shot ({}) {} over {:.1f} s", a_source, ctx.key, s_cfg.shotBlend));
+        return true;
     }
 
     void OnGameLoad(const char* a_why) {
