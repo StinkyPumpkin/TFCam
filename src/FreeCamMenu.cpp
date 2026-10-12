@@ -752,7 +752,7 @@ namespace FreeCamMenu {
         ImGuiMCP::SeparatorText("Idle camera");
         ImGuiMCP::TextColored(grey,
             "After a while without input the camera circles you: a dolly zoom (the camera moves in while the lens zooms out, "
-            "so you keep your size and the world stretches) and a spiral from your feet up to your face, swelling in and out "
+            "so you keep your size and the world stretches) and a spiral that opens on your face, drops to your feet and climbs back up to your face, swelling in and out "
             "on each area. Any key, click or mouse move gives the camera back.");
         ImGuiMCP::Text("Now: %s", ms.state[0] ? ms.state : "-");
         if (ms.routine[0]) ImGuiMCP::Text("Routine: %s", ms.routine);
@@ -819,7 +819,8 @@ namespace FreeCamMenu {
                 changed       = true;
             }
         }
-        ImGuiMCP::TextColored(grey, "Floor to face in two loops: bum (from behind), genitals, breasts, face (from the front).");
+        ImGuiMCP::TextColored(grey, "Opens on your face, pulls back, drops to the floor and comes in; then floor to face in two loops:");
+        ImGuiMCP::TextColored(grey, "bum (from behind), genitals, breasts, face (from the front). Seconds per area = pace of the whole path.");
 
         ImGuiMCP::Separator();
         if (ImGuiMCP::Button("Test the idle camera (runs when this menu closes)##amTest")) {

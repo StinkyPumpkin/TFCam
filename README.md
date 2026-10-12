@@ -17,9 +17,11 @@ camera is on) the camera circles you, playing these routines in turn:
   size while the world stretches. It sits low near the ground (*Camera height above the ground*, default 25 units) and
   tilts up at your face while it circles you (*Speed round you*, default 10 degrees a second, negative = the other way).
   When it comes too close to stay that low, it rises just enough to keep the zoom exact.
-- *Spiral*: from the floor to your face in two loops round you, slowing down on four areas only: the bum (from behind),
+- *Spiral*: it opens on your face from the front, pulls back, drops slowly to the floor and comes in again; then it
+  spirals from the floor to your face in two loops round you, slowing down on four areas only: the bum (from behind),
   the genitals, the breasts and the face (from the front). It swings out between areas and comes in close on them.
-  *Seconds per area* sets the pace; *Go round the other way* flips the direction. Heights follow the player's own
+  *Seconds per area* sets the pace of the whole path, opening included (higher = slower); *Go round the other way*
+  flips the direction. The blend into it goes round you, not through you. Heights follow the player's own
   skeleton, so it fits any scale.
 
 Any key, click or mouse movement gives the camera back. It works in first and third person. After *Runs for* seconds it

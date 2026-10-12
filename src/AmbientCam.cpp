@@ -286,9 +286,35 @@ namespace AmbientCam {
             return s - 0.7f / (2.0f * kPi) * std::sin(2.0f * kPi * s);
         }
 
-        float RoutineLength(Routine r) {
+        float FarRadius() { return s_cfg.spiralFar * (InInterior() ? s_cfg.interiorScale : 1.0f); }
+
+        float KeyRadius(const Key& k, float farR) { return (std::min)(s_cfg.spiralClose * k.close, farR); }
+
+        // 0.11.2 opening before the spiral: on the face from the front, back out to the far radius, down to the floor,
+        // then in to the spiral's first key. hold = the stay on the face first (0 when the spiral plays again: its own
+        // hold on the face comes just before). The zooms take less time when there is little to zoom (interiors).
+        struct Opening {
+            float hold = 0, outSec = 0, dropSec = 0, inSec = 0;
+            float rFace = 0, rFar = 0, rFloor = 0;
+            float Length() const { return hold + outSec + dropSec + inSec; }
+        };
+
+        Opening SpiralOpening(float hold) {
+            Opening o;
+            o.rFar     = FarRadius();
+            o.rFace    = KeyRadius(kKeys[kKeyCount - 1], o.rFar);
+            o.rFloor   = KeyRadius(kKeys[0], o.rFar);
+            auto zoom  = [&](float dr) { return AreaSec() * std::clamp(std::fabs(dr) / (0.4f * o.rFar), 0.25f, 1.0f); };
+            o.hold     = hold;
+            o.outSec   = zoom(o.rFar - o.rFace);
+            o.dropSec  = 3.0f * AreaSec();
+            o.inSec    = zoom(o.rFar - o.rFloor);
+            return o;
+        }
+
+        float RoutineLength(Routine r, float spiralHold) {
             return r == Routine::kDolly ? (std::max)(s_cfg.dollyPeriod, 2.0f) * static_cast<float>((std::max)(s_cfg.dollyCycles, 1))
-                                        : SpiralLength();
+                                        : SpiralOpening(spiralHold).Length() + SpiralLength();
         }
 
         const char* RoutineName(Routine r) { return r == Routine::kDolly ? "Dolly zoom" : "Spiral"; }
@@ -326,10 +352,46 @@ namespace AmbientCam {
             return p;
         }
 
-        Pose SpiralPose(float t, float az0) {
-            const float scale = InInterior() ? s_cfg.interiorScale : 1.0f;
-            const float farR  = s_cfg.spiralFar * scale;
-            const float dir   = s_cfg.spiralSpeed < 0.0f ? -1.0f : 1.0f;
+        // On a ring round the body at height z, looking level at its centre line.
+        Pose RingPose(float z, float az, float radius) {
+            const RE::NiPoint3 axis = AxisAt(z);
+            Pose               p;
+            p.pos   = { axis.x + std::sin(az) * radius, axis.y + std::cos(az) * radius, z };
+            p.yaw   = std::atan2(axis.x - p.pos.x, axis.y - p.pos.y);
+            p.pitch = 0.0f;
+            p.roll  = 0.0f;
+            p.fov   = s_cfg.spiralFOV;
+            return p;
+        }
+
+        // The face and floor keys both sit in front of the player (whole loops), so the opening stays at az0.
+        Pose OpeningPose(const Opening& o, float t, float az0) {
+            const Key& faceKey  = kKeys[kKeyCount - 1];
+            const Key& floorKey = kKeys[0];
+            float      frac     = faceKey.frac;
+            float      radius   = o.rFace;
+            if (t < o.hold) {
+                // on the face
+            } else if ((t -= o.hold) < o.outSec) {
+                radius = o.rFace + (o.rFar - o.rFace) * Glide(t / o.outSec);
+            } else if ((t -= o.outSec) < o.dropSec) {
+                radius = o.rFar;
+                frac   = faceKey.frac + (floorKey.frac - faceKey.frac) * Glide(t / o.dropSec);
+            } else {
+                t -= o.dropSec;
+                frac   = floorKey.frac;
+                radius = o.rFar + (o.rFloor - o.rFar) * Glide(t / o.inSec);
+            }
+            return RingPose(BodyZ(frac), az0, radius);
+        }
+
+        Pose SpiralPose(float t, float az0, float openingHold) {
+            const Opening open = SpiralOpening(openingHold);
+            if (t < open.Length()) return OpeningPose(open, t, az0);
+            t -= open.Length();
+
+            const float farR = open.rFar;
+            const float dir  = s_cfg.spiralSpeed < 0.0f ? -1.0f : 1.0f;
 
             int   seg  = kKeyCount - 1;  // past the last segment = the hold on the face
             float s    = 1.0f;
@@ -348,21 +410,61 @@ namespace AmbientCam {
             const Key&  b    = kKeys[hold ? kKeyCount - 1 : seg + 1];
             const float e    = hold ? 1.0f : Glide(s);
 
-            auto keyRadius = [&](const Key& k) { return (std::min)(s_cfg.spiralClose * k.close, farR); };
             const float z      = BodyZ(a.frac + (b.frac - a.frac) * e);
             const float loops  = a.loops + (b.loops - a.loops) * e;
-            const float base   = keyRadius(a) + (keyRadius(b) - keyRadius(a)) * e;
+            const float base   = KeyRadius(a, farR) + (KeyRadius(b, farR) - KeyRadius(a, farR)) * e;
             const float swell  = hold ? 0.0f : std::sin(kPi * s);  // out between areas, in on them
             const float radius = base + (farR - base) * 0.5f * swell * swell;
             const float az     = az0 + dir * 2.0f * kPi * loops;
+            return RingPose(z, az, radius);
+        }
 
-            const RE::NiPoint3 axis = AxisAt(z);
+        // 0.11.2: the crossfade into a routine goes round the body, not through it (from the normal camera behind the
+        // player to the opening in front of the face). Position in cylinder coordinates about the body's centre line,
+        // heading kept relative to the direction towards the body. Both angle steps are tracked from frame to frame so
+        // a half-turn blend cannot flip to the other side on the way.
+        struct OrbitBlend {
+            bool  started = false;
+            float turn    = 0.0f;  // azimuth step a -> b
+            float look    = 0.0f;  // step of the heading relative to the body
+        };
+
+        float KeepSide(float d, float last, bool started) {
+            d = WrapPi(d);
+            if (started) {
+                if (d - last > kPi) d -= 2.0f * kPi;
+                else if (last - d > kPi) d += 2.0f * kPi;
+            }
+            return d;
+        }
+
+        Pose OrbitLerp(const Pose& a, const Pose& b, float w, OrbitBlend& ob) {
+            auto polar = [](const Pose& p, float& az, float& r) {
+                const RE::NiPoint3 c = AxisAt(p.pos.z);
+                r  = std::hypot(p.pos.x - c.x, p.pos.y - c.y);
+                az = std::atan2(p.pos.x - c.x, p.pos.y - c.y);
+            };
+            float azA = 0.0f, rA = 0.0f, azB = 0.0f, rB = 0.0f;
+            polar(a, azA, rA);
+            polar(b, azB, rB);
+            if (rA < 1.0f) azA = azB;  // on the centre line: no side to come from
+            if (rB < 1.0f) azB = azA;
+            const float relA = WrapPi(a.yaw - azA - kPi);  // 0 = facing the body
+            const float relB = WrapPi(b.yaw - azB - kPi);
+            ob.turn    = KeepSide(azB - azA, ob.turn, ob.started);
+            ob.look    = KeepSide(relB - relA, ob.look, ob.started);
+            ob.started = true;
+
+            const float        az = azA + ob.turn * w;
+            const float        r  = rA + (rB - rA) * w;
+            const float        z  = a.pos.z + (b.pos.z - a.pos.z) * w;
+            const RE::NiPoint3 c  = AxisAt(z);
             Pose               p;
-            p.pos   = { axis.x + std::sin(az) * radius, axis.y + std::cos(az) * radius, z };
-            p.yaw   = std::atan2(axis.x - p.pos.x, axis.y - p.pos.y);
-            p.pitch = 0.0f;
-            p.roll  = 0.0f;
-            p.fov   = s_cfg.spiralFOV;
+            p.pos   = { c.x + std::sin(az) * r, c.y + std::cos(az) * r, z };
+            p.yaw   = WrapPi(az + kPi + relA + ob.look * w);
+            p.pitch = a.pitch + (b.pitch - a.pitch) * w;
+            p.roll  = a.roll + WrapPi(b.roll - a.roll) * w;
+            p.fov   = a.fov + (b.fov - a.fov) * w;
             return p;
         }
 
@@ -402,9 +504,11 @@ namespace AmbientCam {
             float   rt = 0.0f;          // seconds into the routine
             float   elapsed = 0.0f;     // seconds the idle camera has run
             float   az0 = 0.0f;         // azimuth the routine starts from
+            float   spiralHold = 0.0f;  // the spiral opening's stay on the face (see SpiralOpening)
             bool    xfade = false;
             Pose    xfadeFrom;
             float   xt = 0.0f;
+            OrbitBlend xfadeOrbit;
             Pose    last;
             bool    haveLast = false;
         };
@@ -626,15 +730,20 @@ namespace AmbientCam {
             UpdateSubject(dt);
             if (!s_subj.ok) return;
 
+            // Fresh into the spiral: stay on the face until the crossfade has landed there, then a moment more.
+            const float freshHold = s_cfg.crossfade + 0.5f * AreaSec();
+
             if (s_v.state == VState::kStarting) {
-                s_v.state     = VState::kRunning;
+                s_v.state      = VState::kRunning;
                 s_v.routineIdx = 0;
-                s_v.rt        = 0.0f;
-                s_v.elapsed   = 0.0f;
-                s_v.az0       = s_subj.heading + 0.5f;
-                s_v.xfade     = true;
-                s_v.xfadeFrom = ReadPose(fcs);
-                s_v.xt        = 0.0f;
+                s_v.rt         = 0.0f;
+                s_v.elapsed    = 0.0f;
+                s_v.az0        = s_subj.heading + (routines[0] == Routine::kDolly ? 0.5f : 0.0f);
+                s_v.spiralHold = freshHold;
+                s_v.xfade      = true;
+                s_v.xfadeFrom  = ReadPose(fcs);
+                s_v.xt         = 0.0f;
+                s_v.xfadeOrbit = OrbitBlend{};
                 Event(std::format("idle camera running - first routine {}", RoutineName(routines[0])));
             }
 
@@ -647,24 +756,27 @@ namespace AmbientCam {
 
             s_v.routineIdx %= static_cast<int>(routines.size());
             Routine routine = routines[static_cast<std::size_t>(s_v.routineIdx)];
-            if (s_v.rt >= RoutineLength(routine)) {
+            if (s_v.rt >= RoutineLength(routine, s_v.spiralHold)) {
+                const Routine previous = routine;
                 s_v.routineIdx = (s_v.routineIdx + 1) % static_cast<int>(routines.size());
                 routine        = routines[static_cast<std::size_t>(s_v.routineIdx)];
                 s_v.rt         = 0.0f;
                 s_v.az0        = s_subj.heading + (routine == Routine::kDolly ? 0.5f : 0.0f);
+                s_v.spiralHold = previous == Routine::kSpiral ? 0.0f : freshHold;
                 if (s_v.haveLast) {
-                    s_v.xfade     = true;
-                    s_v.xfadeFrom = s_v.last;
-                    s_v.xt        = 0.0f;
+                    s_v.xfade      = true;
+                    s_v.xfadeFrom  = s_v.last;
+                    s_v.xt         = 0.0f;
+                    s_v.xfadeOrbit = OrbitBlend{};
                 }
                 Event(std::format("idle camera routine: {}", RoutineName(routine)));
             }
 
-            Pose p = routine == Routine::kDolly ? DollyPose(s_v.rt, s_v.az0) : SpiralPose(s_v.rt, s_v.az0);
+            Pose p = routine == Routine::kDolly ? DollyPose(s_v.rt, s_v.az0) : SpiralPose(s_v.rt, s_v.az0, s_v.spiralHold);
             if (s_v.xfade) {
                 s_v.xt += dt;
                 const float w = s_cfg.crossfade > 0.0f ? SmoothStep(s_v.xt / s_cfg.crossfade) : 1.0f;
-                p             = LerpPose(s_v.xfadeFrom, p, w);
+                p             = OrbitLerp(s_v.xfadeFrom, p, w, s_v.xfadeOrbit);
                 if (w >= 1.0f) s_v.xfade = false;
             }
             s_v.last     = p;

@@ -12,7 +12,8 @@
 //                background stretches (distance = framing / (2 tan(fov / 2))). 0.11.1: from low near the ground,
 //                tilted up at the face, circling.
 //   Spiral     - 0.11.1: from the floor up to the face in two loops, settling on the bum (from behind), the genitals,
-//                the breasts and the face (from the front).
+//                the breasts and the face (from the front). 0.11.2: opens on the face from the front, backs out,
+//                drops to the floor and comes in to the first key; the crossfade into a routine orbits the body.
 // After a set duration it hands over to po3's Sandbox When Idle: that mod hooks the engine's auto-vanity start, whose
 // idle countdown is PlayerCamera idleTimer; TFCam sets it so the sandbox starts the moment the camera is given back.
 //
