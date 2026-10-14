@@ -108,6 +108,8 @@ namespace SceneTracker {
             std::string             nameFor;    // scene id whose name was asked for
             std::string             name;
             bool                    nameReady = false;
+            std::string             checkFor;          // 0.13.0: "scene|stage" sent to SexLabRegistry.StageExists
+            int                     checkAnswer = -1;  // -1 none yet, 0 false, 1 true, 2 not a bool (the call failed)
         };
         Mailbox s_mail;
 
@@ -122,9 +124,23 @@ namespace SceneTracker {
         // A changed key counts once two reads in a row agree (P+'s ResetScene first sets the new scene and only then
         // the new stage, so one read can pair the new scene with the old scene's stage).
         bool                    s_candValid = false;
+        bool                    s_candConfirmed = false;  // two reads agreed; waiting for the stage check
         std::string             s_candScene;
         std::string             s_candStage;
         int                     s_candSlot = -1;
+        std::vector<RE::FormID> s_candActors;
+
+        // 0.13.0: two agreeing reads were not enough (TFCam.log 10-14 08:05:27 committed the new scene with the old
+        // scene's stage for 1.2 s). P+ sslThreadModel sets the new scene (:1172), sends StageStart (:1249) and only then
+        // sets the stage (AdvanceScene, :1251), and both reads can land in that gap. A confirmed key is committed only
+        // once SexLabRegistry.StageExists(scene, stage) says the stage belongs to the scene (P+ native,
+        // SexLabRegistry.cpp:432 -> Scene::GetStageByID). The registry never changes, so the answers are kept.
+        std::map<std::string, bool> s_stageOk;          // "scene|stage" -> StageExists
+        bool                        s_checkSent = false;
+        std::string                 s_checkFor;
+        double                      s_checkAt = 0.0;
+        bool                        s_checkUnavailable = false;  // the call fails (older SexLab): commit unchecked
+        std::string                 s_lastRefused;
 
         class ReadCallback final : public RE::BSScript::IStackCallbackFunctor {
         public:
@@ -167,6 +183,23 @@ namespace SceneTracker {
         private:
             std::uint32_t _gen;
             Part          _part;
+        };
+
+        class StageCheckCallback final : public RE::BSScript::IStackCallbackFunctor {
+        public:
+            explicit StageCheckCallback(std::string a_for) : _for(std::move(a_for)) {}
+
+            void operator()(RE::BSScript::Variable a_result) override {
+                const int answer = a_result.IsBool() ? (a_result.GetBool() ? 1 : 0) : 2;
+                std::lock_guard lock(s_mail.lock);
+                if (s_mail.checkFor != _for) return;
+                s_mail.checkAnswer = answer;
+            }
+
+            void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
+
+        private:
+            std::string _for;
         };
 
         class NameCallback final : public RE::BSScript::IStackCallbackFunctor {
@@ -213,12 +246,16 @@ namespace SceneTracker {
             s_dirtyUntil      = 0.0;
             s_nextAt          = 0.0;
             s_candValid       = false;
+            s_candConfirmed   = false;
+            s_checkSent       = false;
             {
                 std::lock_guard lock(s_mail.lock);
                 s_mail.gen       = ++s_gen;  // answers still on their way are dropped
                 s_mail.got       = 0;
                 s_mail.nameFor.clear();
                 s_mail.nameReady = false;
+                s_mail.checkFor.clear();
+                s_mail.checkAnswer = -1;
             }
             if (had) SKSE::log::info("SceneTracker: player scene info cleared ({})", a_why);
         }
@@ -298,6 +335,75 @@ namespace SceneTracker {
             return out;
         }
 
+        void Commit() {
+            const bool sceneChanged = s_candScene != s_scene.sceneId;
+            SKSE::log::info("SceneTracker: player scene key -> scene '{}' stage '{}' player slot {} ({} actor(s), thread {}){}",
+                s_candScene, s_candStage, s_candSlot, s_candActors.size(), s_queryTid,
+                s_scene.stageKnown ? std::format(" - was scene '{}' stage '{}' slot {}", s_scene.sceneId, s_scene.stageId,
+                                         s_scene.playerSlot)
+                                   : std::string());
+            s_scene.stageKnown = true;
+            s_scene.sceneId    = s_candScene;
+            s_scene.stageId    = s_candStage;
+            s_scene.playerSlot = s_candSlot;
+            s_scene.actorIDs   = s_candActors;
+            s_scene.actors     = ToHandles(s_candActors);
+            ++s_scene.keySerial;
+            s_candValid     = false;
+            s_candConfirmed = false;
+            s_lastRefused.clear();
+            if (sceneChanged) {
+                s_scene.sceneName.clear();
+                RequestSceneName(s_scene.sceneId);
+            }
+            SceneCam::OnSceneChanged(true);
+        }
+
+        void SendStageCheck(const std::string& a_pair, double a_now) {
+            {
+                std::lock_guard lock(s_mail.lock);
+                s_mail.checkFor    = a_pair;
+                s_mail.checkAnswer = -1;
+            }
+            auto* vm = static_cast<RE::BSScript::IVirtualMachine*>(RE::BSScript::Internal::VirtualMachine::GetSingleton());
+            RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> cb(new StageCheckCallback(a_pair));
+            if (!vm || !vm->DispatchStaticCall("SexLabRegistry", "StageExists",
+                           RE::MakeFunctionArguments(RE::BSFixedString(s_candScene.c_str()), RE::BSFixedString(s_candStage.c_str())),
+                           cb)) {
+                s_checkUnavailable = true;
+                SKSE::log::warn("SceneTracker: SexLabRegistry.StageExists could not be called - stage keys are committed "
+                                "after two agreeing reads only (older SexLab P+?)");
+                return;
+            }
+            s_checkSent = true;
+            s_checkFor  = a_pair;
+            s_checkAt   = a_now;
+        }
+
+        // The candidate is confirmed (two reads agree): commit it once P+ says its stage belongs to its scene.
+        void TryCommit(double a_now) {
+            if (!s_candValid || !s_candConfirmed) return;
+            const std::string pair = s_candScene + "|" + s_candStage;
+            if (!s_checkUnavailable) {
+                const auto it = s_stageOk.find(pair);
+                if (it == s_stageOk.end()) {
+                    if (!s_checkSent || s_checkFor != pair) SendStageCheck(pair, a_now);
+                    if (!s_checkUnavailable) return;  // the answer comes in a later tick
+                } else if (!it->second) {
+                    if (s_lastRefused != pair) {
+                        s_lastRefused = pair;
+                        SKSE::log::info("SceneTracker: stage '{}' is not a stage of scene '{}' (P+ has set the new scene but "
+                                        "not its stage yet) - not committed, reading again", s_candStage, s_candScene);
+                    }
+                    s_candValid     = false;
+                    s_candConfirmed = false;
+                    OpenDirtyWindow(a_now);
+                    return;
+                }
+            }
+            Commit();
+        }
+
         void Apply(std::string a_scene, std::string a_stage, std::vector<RE::FormID> a_actors, bool a_positionsOk,
             double a_now) {
             a_scene = Lower(std::move(a_scene));
@@ -340,33 +446,19 @@ namespace SceneTracker {
 
             if (!(s_candValid && s_candScene == a_scene && s_candStage == a_stage && s_candSlot == slot)) {
                 // First sighting: confirm with one more read before it counts.
-                s_candValid = true;
-                s_candScene = a_scene;
-                s_candStage = a_stage;
-                s_candSlot  = slot;
+                s_candValid     = true;
+                s_candConfirmed = false;
+                s_candScene     = a_scene;
+                s_candStage     = a_stage;
+                s_candSlot      = slot;
+                s_candActors    = std::move(a_actors);
                 s_dirtyUntil = (std::max)(s_dirtyUntil, a_now + 0.6);
                 return;
             }
 
-            s_candValid = false;
-            const bool sceneChanged = a_scene != s_scene.sceneId;
-            SKSE::log::info("SceneTracker: player scene key -> scene '{}' stage '{}' player slot {} ({} actor(s), thread {}){}",
-                a_scene, a_stage, slot, a_actors.size(), s_queryTid,
-                s_scene.stageKnown ? std::format(" - was scene '{}' stage '{}' slot {}", s_scene.sceneId, s_scene.stageId,
-                                         s_scene.playerSlot)
-                                   : std::string());
-            s_scene.stageKnown = true;
-            s_scene.sceneId    = a_scene;
-            s_scene.stageId    = a_stage;
-            s_scene.playerSlot = slot;
-            s_scene.actorIDs   = a_actors;
-            s_scene.actors     = ToHandles(a_actors);
-            ++s_scene.keySerial;
-            if (sceneChanged) {
-                s_scene.sceneName.clear();
-                RequestSceneName(a_scene);
-            }
-            SceneCam::OnSceneChanged(true);
+            s_candActors    = std::move(a_actors);
+            s_candConfirmed = true;
+            TryCommit(a_now);
         }
 
         // Main thread: the player's thread started (or was re-announced).
@@ -381,6 +473,8 @@ namespace SceneTracker {
             s_scene.inScene   = true;
             s_scene.tid       = a_tid;
             s_candValid       = false;
+            s_candConfirmed   = false;
+            s_checkSent       = false;
             s_inFlight        = false;
             s_loggedNoObject  = false;
             s_dirtyUntil      = 0.0;
@@ -542,6 +636,36 @@ namespace SceneTracker {
             if (ready) {
                 s_scene.sceneName = std::move(name);
                 SKSE::log::info("SceneTracker: scene '{}' is \"{}\"", s_scene.sceneId, s_scene.sceneName);
+            }
+        }
+
+        // 0.13.0: the StageExists answer for the confirmed candidate.
+        if (s_checkSent) {
+            int         answer = -1;
+            std::string forPair;
+            {
+                std::lock_guard lock(s_mail.lock);
+                if (s_mail.checkAnswer >= 0) {
+                    answer             = s_mail.checkAnswer;
+                    forPair            = s_mail.checkFor;
+                    s_mail.checkAnswer = -1;
+                }
+            }
+            if (answer >= 0 && forPair == s_checkFor) {
+                s_checkSent = false;
+                if (answer == 2) {
+                    s_checkUnavailable = true;
+                    SKSE::log::warn("SceneTracker: SexLabRegistry.StageExists gave no answer for '{}' - stage keys are "
+                                    "committed after two agreeing reads only (older SexLab P+?)", forPair);
+                } else {
+                    if (s_stageOk.size() >= 512) s_stageOk.clear();
+                    s_stageOk[forPair] = answer == 1;
+                }
+                TryCommit(now);
+            } else if (now - s_checkAt > kAnswerTimeout) {
+                s_checkSent = false;  // sent again at the next confirmed read
+                SKSE::log::info("SceneTracker: no StageExists answer for '{}' in {:.0f} s - asking again", s_checkFor,
+                    kAnswerTimeout);
             }
         }
 

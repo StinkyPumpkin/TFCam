@@ -295,12 +295,16 @@ namespace FreeCamMenu {
         WriteINIFloat("SceneCam", "fOrbitHeight", sc.orbitHeight);
         WriteINIFloat("SceneCam", "fOrbitSpeed", sc.orbitSpeed);
         WriteINIFloat("SceneCam", "fOrbitFOV", sc.orbitFOV);
+        WriteINIFloat("SceneCam", "fOrbitAim", sc.orbitAim);
+        WriteINIFloat("SceneCam", "fOrbitSway", sc.orbitSway);
+        WriteINIInt("SceneCam", "iOrbitTarget", sc.orbitTarget);
         WriteINIFloat("SceneCam", "fEyeFOV", sc.eyeFOV);
         WriteINIFloat("SceneCam", "fEyeNearClip", sc.eyeNearClip);
         WriteINIFloat("SceneCam", "fEyeForward", sc.eyeForward);
         WriteINIInt("SceneCam", "bEyeHideHead", sc.eyeHideHead ? 1 : 0);
         WriteINIInt("SceneCam", "bAutoStageShots", sc.autoStageShots ? 1 : 0);
         WriteINIInt("SceneCam", "bAutoPoseShots", sc.autoPoseShots ? 1 : 0);
+        WriteINIInt("SceneCam", "bAutoEnterShots", sc.autoEnterShots ? 1 : 0);
         WriteINIFloat("SceneCam", "fShotBlend", sc.shotBlend);
     }
 
@@ -310,8 +314,10 @@ namespace FreeCamMenu {
         WriteSceneCamValues();
         const auto& sc = SceneCam::GetConfig();
         if (s_saveWriteOk) {
-            SKSE::log::info("FreeCamMenu: Scene Camera settings saved - radius {:.0f}, height {:.0f}, speed {:.0f}, orbit FOV "
-                            "{:.0f}, eye FOV {:.0f}", sc.orbitRadius, sc.orbitHeight, sc.orbitSpeed, sc.orbitFOV, sc.eyeFOV);
+            SKSE::log::info("FreeCamMenu: Scene Camera settings saved - radius {:.0f}, tilt {:.0f}, speed {:.0f}, orbit FOV "
+                            "{:.0f}, eye FOV {:.0f}, aim {:+.0f}, sway {:.0f}, orbit target {}, automatic free camera {}",
+                sc.orbitRadius, sc.orbitHeight, sc.orbitSpeed, sc.orbitFOV, sc.eyeFOV, sc.orbitAim, sc.orbitSway,
+                sc.orbitTarget, sc.autoEnterShots ? 1 : 0);
         } else {
             SKSE::log::error("FreeCamMenu: saving the Scene Camera settings to {} FAILED (Windows error {}) - they only last "
                              "until the game closes", GetINIPath(), s_saveWriteErr);
@@ -719,13 +725,28 @@ namespace FreeCamMenu {
         ImGuiMCP::SetNextItemWidth(200.0f);
         changed |= ImGuiMCP::SliderFloat("Radius##scRadius", &sc.orbitRadius, 30.0f, 500.0f, "%.0f");
         ImGuiMCP::SetNextItemWidth(200.0f);
-        changed |= ImGuiMCP::SliderFloat("Height (degrees)##scHeight", &sc.orbitHeight, -20.0f, 75.0f, "%.0f");
+        changed |= ImGuiMCP::SliderFloat("Tilt (degrees above)##scHeight", &sc.orbitHeight, -20.0f, 75.0f, "%.0f");
         ImGuiMCP::SetNextItemWidth(200.0f);
         changed |= ImGuiMCP::SliderFloat("Speed (degrees/s)##scSpeed", &sc.orbitSpeed, -90.0f, 90.0f, "%.0f");
         ImGuiMCP::SetNextItemWidth(200.0f);
         changed |= ImGuiMCP::SliderFloat("FOV##scOrbitFov", &sc.orbitFOV, 20.0f, 120.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Aim height (units)##scAim", &sc.orbitAim, -60.0f, 60.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Sway (degrees)##scSway", &sc.orbitSway, 0.0f, 15.0f, "%.0f");
+        {
+            static const char* targets[] = { "Auto (scene actors, else the posed actor, else you)", "You only" };
+            int t = sc.orbitTarget == 1 ? 1 : 0;
+            ImGuiMCP::SetNextItemWidth(320.0f);
+            if (ImGuiMCP::Combo("Orbit round##scTarget", &t, targets, 2)) {
+                sc.orbitTarget = t;
+                changed        = true;
+            }
+        }
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
-            "A negative speed orbits the other way. Mouse wheel while orbiting: radius. WASD and the mouse do nothing.");
+            "A negative speed orbits the other way. Aim height moves the point the orbit circles and looks at up or down "
+            "(the tilt stays the angle the camera looks down at). Sway: how far the tilt slowly rises and falls (0 = "
+            "none). Mouse wheel while orbiting: radius. WASD and the mouse do nothing.");
 
         ImGuiMCP::SeparatorText("Eye view");
         ImGuiMCP::SetNextItemWidth(200.0f);
@@ -741,12 +762,16 @@ namespace FreeCamMenu {
         ImGuiMCP::SeparatorText("Saved shots");
         changed |= ImGuiMCP::Checkbox("Go to a stage's shot at scene start / stage change##scAutoStage", &sc.autoStageShots);
         changed |= ImGuiMCP::Checkbox("Go to a pose's shot when the pose starts##scAutoPose", &sc.autoPoseShots);
+        changed |= ImGuiMCP::Checkbox("Turn the free camera on for a saved shot##scAutoEnter", &sc.autoEnterShots);
         ImGuiMCP::SetNextItemWidth(200.0f);
         changed |= ImGuiMCP::SliderFloat("Blend time (s)##scBlend", &sc.shotBlend, 0.0f, 3.0f, "%.1f");
         static const std::string s_shotFile = SceneShots::FilePath();
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
-            "Automatic moves only happen in free-fly (not in orbit or eye view) and never turn the free camera on. "
-            "Shots are kept per stage and your position slot. File: %s", s_shotFile.c_str());
+            "Automatic moves only happen in free-fly (not in orbit or eye view). With 'Turn the free camera on' a stage "
+            "with a saved shot (and an NPC's pose with one) turns TFCam free-fly on by itself, once nothing is open "
+            "(SLUI, console, dialogue, a paused menu); leave the free camera during a scene and it stays off for the "
+            "rest of that scene. A free camera turned on for an NPC's pose goes off again when the pose ends. Your own "
+            "poses never turn it on. Shots are kept per stage and your position slot. File: %s", s_shotFile.c_str());
 
         if (changed) {
             SceneCam::OnConfigChanged();
@@ -937,14 +962,19 @@ namespace FreeCamMenu {
           << "\n; Saved shots: per scene stage (in your scene) or per pose (a pose SLUI started)\n"
           << "iSceneShotSaveKey=" << sc.shotSaveKey << "\niSceneShotRecallKey=" << sc.shotRecallKey
           << "\niSceneShotDeleteKey=" << sc.shotDeleteKey
-          << "\n; Orbit: radius 30..500 units, height -20..75 degrees, speed -90..90 degrees/s (sign = direction), FOV 20..120\n"
+          << "\n; Orbit: radius 30..500 units, height = tilt -20..75 degrees, speed -90..90 degrees/s (sign = direction), FOV 20..120\n"
           << "fOrbitRadius=" << fl(sc.orbitRadius) << "\nfOrbitHeight=" << fl(sc.orbitHeight)
           << "\nfOrbitSpeed=" << fl(sc.orbitSpeed) << "\nfOrbitFOV=" << fl(sc.orbitFOV)
+          << "\n; Orbit aim -60..60 units (point circled / looked at, up or down), sway 0..15 degrees (tilt breathing),\n"
+             "; target 0 = auto (scene actors, else the posed actor, else you), 1 = you only\n"
+          << "fOrbitAim=" << fl(sc.orbitAim) << "\nfOrbitSway=" << fl(sc.orbitSway) << "\niOrbitTarget=" << sc.orbitTarget
           << "\n; Eye view: FOV 30..130, near clip 1..10, camera in front of the eyes -5..10, 1 = hide the partner's head\n"
           << "fEyeFOV=" << fl(sc.eyeFOV) << "\nfEyeNearClip=" << fl(sc.eyeNearClip) << "\nfEyeForward=" << fl(sc.eyeForward)
           << "\nbEyeHideHead=" << (sc.eyeHideHead ? 1 : 0)
           << "\n; 1 = blend to a saved shot at scene start / stage change, and when a pose starts (free-fly only)\n"
           << "bAutoStageShots=" << (sc.autoStageShots ? 1 : 0) << "\nbAutoPoseShots=" << (sc.autoPoseShots ? 1 : 0)
+          << "\n; 1 = a stage (or an NPC's pose) with a saved shot turns the free camera on by itself\n"
+          << "bAutoEnterShots=" << (sc.autoEnterShots ? 1 : 0)
           << "\n; seconds, 0..3\nfShotBlend=" << fl(sc.shotBlend) << "\n";
         f.flush();
         if (!f) {
@@ -1039,12 +1069,16 @@ namespace FreeCamMenu {
             sc.orbitHeight    = readFloat("SceneCam", "fOrbitHeight", def.orbitHeight);
             sc.orbitSpeed     = readFloat("SceneCam", "fOrbitSpeed", def.orbitSpeed);
             sc.orbitFOV       = readFloat("SceneCam", "fOrbitFOV", def.orbitFOV);
+            sc.orbitAim       = readFloat("SceneCam", "fOrbitAim", def.orbitAim);
+            sc.orbitSway      = readFloat("SceneCam", "fOrbitSway", def.orbitSway);
+            sc.orbitTarget    = readInt("SceneCam", "iOrbitTarget", def.orbitTarget);
             sc.eyeFOV         = readFloat("SceneCam", "fEyeFOV", def.eyeFOV);
             sc.eyeNearClip    = readFloat("SceneCam", "fEyeNearClip", def.eyeNearClip);
             sc.eyeForward     = readFloat("SceneCam", "fEyeForward", def.eyeForward);
             sc.eyeHideHead    = readInt("SceneCam", "bEyeHideHead", def.eyeHideHead ? 1 : 0) != 0;
             sc.autoStageShots = readInt("SceneCam", "bAutoStageShots", def.autoStageShots ? 1 : 0) != 0;
             sc.autoPoseShots  = readInt("SceneCam", "bAutoPoseShots", def.autoPoseShots ? 1 : 0) != 0;
+            sc.autoEnterShots = readInt("SceneCam", "bAutoEnterShots", def.autoEnterShots ? 1 : 0) != 0;
             sc.shotBlend      = readFloat("SceneCam", "fShotBlend", def.shotBlend);
             SceneCam::ClampConfig();
         }

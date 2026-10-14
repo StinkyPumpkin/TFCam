@@ -14,6 +14,9 @@
 //           the partner's head is hidden and the near clip pulled in while it lasts.
 // Saved shots (SceneShots.h) are kept per scene stage + the player's slot, and per pose (SLUI tells TFCam which
 // pose plays through ITFCam2::SetActivePose).
+// 0.13.0: with autoEnterShots a stage (or an NPC pose) that has a saved shot turns TFCam free-fly on by itself, once per
+// committed key, waiting while a pausing / focus menu is open; a free cam entered that way for an NPC pose is left
+// again when the pose ends.
 //
 // Everything here runs on the main thread; the Api* entry points copy their arguments into an SKSE task.
 namespace SceneCam {
@@ -27,15 +30,19 @@ namespace SceneCam {
         int   shotRecallKey  = 0;
         int   shotDeleteKey  = 0;
         float orbitRadius    = 120.0f;  // 30..500 game units
-        float orbitHeight    = 20.0f;   // -20..75 degrees above the target
+        float orbitHeight    = 20.0f;   // -20..75 degrees above the target (the "tilt" in API v3)
         float orbitSpeed     = 10.0f;   // -90..90 degrees per second, sign = direction
         float orbitFOV       = 70.0f;   // 20..120
+        float orbitAim       = 0.0f;    // 0.13.0: -60..60 units, the orbit circles / looks at the target this far up
+        float orbitSway      = 8.0f;    // 0.13.0: 0..15 degrees of elevation breathing (was a fixed 8)
+        int   orbitTarget    = 0;       // 0.13.0: 0 = auto (scene actors > posed actor > player), 1 = the player only
         float eyeFOV         = 90.0f;   // 30..130
         float eyeNearClip    = 3.0f;    // 1..10, fNearDistance while in eye view
         float eyeForward     = 1.0f;    // -5..10, camera this far in front of the eye point
         bool  eyeHideHead    = true;    // hide the partner's head (FaceGen node) in eye view
         bool  autoStageShots = true;    // blend to a stage's saved shot at scene start / stage change (Free mode)
         bool  autoPoseShots  = true;    // blend to a pose's saved shot when SLUI starts the pose (Free mode)
+        bool  autoEnterShots = true;    // 0.13.0: a stage / NPC pose with a saved shot turns the free camera on itself
         float shotBlend      = 0.6f;    // 0..3 seconds
     };
 
@@ -75,6 +82,11 @@ namespace SceneCam {
     bool ApiDeleteShot();
     void ApiSetActivePose(std::uint32_t a_actor, const char* a_animEvent);
     void ApiGetStatus(TFCAM_API::SceneCamStatus* a_out);
+
+    // TFCamAPI v3 (any thread)
+    void ApiSetSettings3(const TFCAM_API::SceneCamSettings3& a_settings);
+    bool ApiGetStatus3(TFCAM_API::SceneCamStatus3* a_out);
+    bool ApiDeleteSceneShots();
 
     // SKSE Menu Framework page (any thread)
     struct MenuStatus {

@@ -7,9 +7,11 @@
 // 0.10.0: v2 = Scene Camera control for SLUI. One object serves both versions (ITFCam2 extends ITFCam1), so
 // RequestTFCamAPI(1) keeps returning the same pointer PEM / Whore Horde always got. Every v2 call copies its
 // arguments into an SKSE task (SceneCam does the engine work on the main thread); GetStatus reads a snapshot.
+// 0.13.0: v3 = ITFCam3 (orbit aim / sway / target, automatic free camera for saved shots, status with the free-camera
+// state, delete the scene's shots). Still one object: RequestTFCamAPI(1) / (2) return the same pointer as before.
 namespace
 {
-    class TFCamAPIImpl final : public TFCAM_API::ITFCam2
+    class TFCamAPIImpl final : public TFCAM_API::ITFCam3
     {
     public:
         void SetSnapHandler(TFCAM_API::SnapHandler a_handler) noexcept override
@@ -71,6 +73,24 @@ namespace
             });
         }
 
+        void SetSettings3(const TFCAM_API::SceneCamSettings3& a_settings) noexcept override
+        {
+            Guard([&] {
+                SceneCam::ApiSetSettings3(a_settings);
+                return true;
+            });
+        }
+
+        bool GetStatus3(TFCAM_API::SceneCamStatus3* a_out) noexcept override
+        {
+            return Guard([&] { return SceneCam::ApiGetStatus3(a_out); });
+        }
+
+        bool DeleteSceneShots() noexcept override
+        {
+            return Guard([] { return SceneCam::ApiDeleteSceneShots(); });
+        }
+
     private:
         // Nothing may leave a noexcept call into another DLL (a failed task allocation would otherwise terminate).
         template <class F>
@@ -79,7 +99,7 @@ namespace
             try {
                 return a_fn();
             } catch (...) {
-                SKSE::log::error("TFCamAPI: a v2 call failed with an exception - ignored");
+                SKSE::log::error("TFCamAPI: an API call failed with an exception - ignored");
                 return false;
             }
         }
@@ -95,6 +115,8 @@ extern "C" __declspec(dllexport) void* RequestTFCamAPI(std::uint32_t a_version)
         return static_cast<TFCAM_API::ITFCam1*>(&g_api);
     case TFCAM_API::kVersion2:
         return static_cast<TFCAM_API::ITFCam2*>(&g_api);
+    case TFCAM_API::kVersion3:
+        return static_cast<TFCAM_API::ITFCam3*>(&g_api);
     default:
         return nullptr;
     }

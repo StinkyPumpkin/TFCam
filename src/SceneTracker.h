@@ -19,6 +19,8 @@
 // BEFORE P+ advances the stage, so StageStart / StageEnd / ActorsRelocated / PositionChange / AnimationChange open
 // a 1.5 s window of re-reads every 150 ms, and a running scene is re-read every 2 s anyway (the P+ HUD and SLUI
 // change scenes and positions without any event). A new key counts once two reads in a row agree.
+// 0.13.0: ...and once SexLabRegistry.StageExists(scene, stage) confirms the stage belongs to the scene (P+ sets a new
+// scene before its stage, so two reads could pair the new scene with the previous scene's stage).
 //
 // Every state change runs on the main thread (the sink only queues a task).
 namespace SceneTracker {

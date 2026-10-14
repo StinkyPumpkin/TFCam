@@ -8,10 +8,15 @@
 //     the player flies the camera for a photo.
 // v2: Scene Camera control for SLUI (SexLab UI): orbit, partner eye view, saved shots per
 //     SexLab scene stage and per pose. ITFCam2 extends ITFCam1, so a v2 pointer is also a v1.
+// v3 (TFCam 0.13.0): orbit aim / sway / target, automatic free camera for saved shots, a status
+//     with the free-camera state and the scene's shot count, delete every shot of the scene.
+//     ITFCam3 extends ITFCam2 (single inheritance: the v1 / v2 parts of the vtable are unchanged).
+//     The v2 structs stay as they were; v3 has its own, each with a size field.
 //
 //   auto* dll = GetModuleHandleW(L"TFCam.dll");
 //   auto  fn  = dll ? reinterpret_cast<TFCAM_API::RequestFn>(GetProcAddress(dll, "RequestTFCamAPI")) : nullptr;
-//   auto* api = fn ? static_cast<TFCAM_API::ITFCam2*>(fn(TFCAM_API::kVersion2)) : nullptr;
+//   auto* api = fn ? static_cast<TFCAM_API::ITFCam3*>(fn(TFCAM_API::kVersion3)) : nullptr;
+//   // nullptr from an older TFCam: ask for kVersion2 and use ITFCam2.
 //
 // Older TFCam builds have no export or return nullptr for an unknown version. Plain types only.
 // This header is copied verbatim into consumers (SLUI include/TFCamAPI.h): change both together.
@@ -19,6 +24,7 @@ namespace TFCAM_API
 {
     inline constexpr std::uint32_t kVersion1 = 1;
     inline constexpr std::uint32_t kVersion2 = 2;
+    inline constexpr std::uint32_t kVersion3 = 3;
 
     using SnapHandler = void (*)();
 
@@ -94,6 +100,58 @@ namespace TFCAM_API
 
         // Thread-safe snapshot. Leaves *a_out untouched if a_out->size is smaller than expected.
         virtual void GetStatus(SceneCamStatus* a_out) noexcept = 0;
+    };
+
+    // ---- v3 ------------------------------------------------------------------------------------
+    // Persisted in TFCam.ini [SceneCam]. Values outside the ranges are clamped by TFCam.
+    struct SceneCamSettings3
+    {
+        std::uint32_t size;           // = sizeof(SceneCamSettings3); SetSettings3 ignores any other size
+        float orbitRadius;            // game units from the target, 30..500 (default 120)
+        float orbitTilt;              // elevation above the target in degrees, -20..75 (default 20; v2 orbitHeight)
+        float orbitSpeed;             // degrees per second, -90..90, sign = direction (default 10)
+        float orbitFOV;               // 20..120 (default 70)
+        float eyeFOV;                 // 30..130 (default 90)
+        float orbitAim;               // look-at height offset in game units, -60..60 (default 0): the orbit
+                                      // circles and looks at the target this far up / down, keeping its tilt
+        float orbitSway;              // elevation breathing amplitude in degrees, 0..15 (default 8; 0 = none)
+        std::int32_t orbitTarget;     // 0 = auto (scene actors > posed actor > player), 1 = the player only
+        std::int32_t autoEnterShots;  // 1 = a saved stage shot (or an NPC pose's shot) turns TFCam's free
+                                      // camera on by itself (default 1)
+    };
+
+    // Snapshot for UIs. Caller sets size = sizeof(SceneCamStatus3) before calling GetStatus3;
+    // TFCam fills settings.size itself.
+    struct SceneCamStatus3
+    {
+        std::uint32_t size;
+        std::int32_t mode;            // SceneCamMode (0 none, 1 free, 2 orbit, 3 eye)
+        std::int32_t freeCamActive;   // 1 = TFCam drives a free camera right now (no FCFW timeline / SLCC owns it)
+        std::int32_t inPlayerScene;   // the player is in a running SexLab scene
+        std::int32_t stageKnown;      // sceneId / stageId resolved for that scene
+        std::int32_t hasStageShot;    // a saved shot exists for the current scene + stage + player slot
+        std::int32_t poseActive;      // SLUI reported a pose (SetActivePose) that is still current
+        std::int32_t hasPoseShot;     // a saved shot exists for that pose
+        std::int32_t eyeAvailable;    // the scene has at least one partner with a head to look from
+        std::uint32_t eyeTarget;      // FormID of the actor whose eyes we look through, 0 = none
+        std::int32_t partnerCount;    // non-player actors in the player's scene
+        std::int32_t playerSlot;      // player's position index in the scene, -1 unknown
+        std::int32_t sceneShotCount;  // saved stage shots of the current scene (all stages / slots)
+        char sceneId[32];             // SLSB scene id (lower case), "" unknown
+        char stageId[32];             // SLSB stage id (lower case), "" unknown
+        char poseKey[96];             // "pose:<animevent lower case>", "" none
+        SceneCamSettings3 settings;
+    };
+
+    // Same threading and return rules as ITFCam2.
+    struct ITFCam3 : ITFCam2
+    {
+        // Applies live and saves to TFCam.ini (debounced).
+        virtual void SetSettings3(const SceneCamSettings3& a_settings) noexcept = 0;
+        // Thread-safe snapshot. false (and *a_out untouched) if a_out is null or a_out->size != sizeof(SceneCamStatus3).
+        virtual bool GetStatus3(SceneCamStatus3* a_out) noexcept = 0;
+        // Deletes every saved stage shot of the player's current scene (all stages and slots).
+        virtual bool DeleteSceneShots() noexcept = 0;
     };
 
     using RequestFn = void* (*)(std::uint32_t a_version);

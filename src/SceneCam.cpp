@@ -1,5 +1,6 @@
 #include "SceneCam.h"
 #include "CamCollision.h"
+#include "FcfwBridge.h"
 #include "SceneShots.h"
 #include "SceneTracker.h"
 #include "FreeCamController.h"
@@ -23,6 +24,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace SceneCam {
@@ -40,7 +42,8 @@ namespace SceneCam {
         constexpr float  kTargetHalfLife = 0.25f;              // orbit target smoothing
         constexpr float  kChaseHalfLife  = 0.2f;               // live setting changes (wheel, SLUI steppers)
         constexpr double kPendingTimeout = 1.2;                // a request waits this long for TFCam free-fly
-        constexpr double kAutoWindow     = 5.0;                // a stage shot is applied if the free cam arrives within this
+        constexpr double kAutoWindow     = 5.0;                // a stage shot is applied if the free cam arrives within this;
+                                                               // 0.13.0: an automatic free cam starts within this once clear
         constexpr double kSaveDebounce   = 0.75;               // ini save after the last wheel notch / SLUI change
 
         Config s_cfg;
@@ -258,6 +261,7 @@ namespace SceneCam {
             float        t      = 0.0f;  // seconds since entry
             float        breath = 0.0f;  // elevation breathing phase, degrees
             float        entryFOV = 0.0f;  // restored when the orbit ends
+            float        aim    = 0.0f;  // 0.13.0: look-at height offset, chased toward the setting
         };
         OrbitState s_orbit;
 
@@ -287,7 +291,7 @@ namespace SceneCam {
         };
         EyeState s_eye;
 
-        enum class Req { kNone, kOrbit, kEye, kRecall, kFurniture };
+        enum class Req { kNone, kOrbit, kEye, kRecall, kFurniture, kAutoShot };
         Req    s_pending      = Req::kNone;  // waits for TFCam free-fly (entered on the request)
         double s_pendingUntil = 0.0;
 
@@ -297,6 +301,7 @@ namespace SceneCam {
             case Req::kEye:    return "eye view";
             case Req::kRecall: return "go to shot";
             case Req::kFurniture: return "furniture shot";
+            case Req::kAutoShot: return "automatic shot";
             default:           return "none";
             }
         }
@@ -314,8 +319,22 @@ namespace SceneCam {
         double      s_saveAt    = -1.0;  // debounced TFCam.ini [SceneCam] save
         std::string s_lastEvent;
 
-        std::mutex                s_statusLock;
-        TFCAM_API::SceneCamStatus s_status{};
+        // 0.13.0 (autoEnterShots): a committed stage key / an NPC pose with a saved shot turns TFCam free-fly on.
+        struct AutoEnter {
+            std::string key;              // stage / pose key, "" = nothing armed
+            bool        pose   = false;
+            double      until  = 0.0;     // dropped after this; pushed on while a menu is in the way
+            bool        waited = false;   // the wait is logged once
+        };
+        AutoEnter   s_autoEnter;
+        std::string s_pendingShotKey;        // Req::kAutoShot: the shot to blend to once TFCam drives
+        bool        s_autoEnterOff = false;  // the user left the free camera in this player scene: no more entries
+        bool        s_autoOwnsFree = false;  // TFCam turned this free camera on for an NPC pose: given back at its end
+        bool        s_expectOwnEnd = false;  // the next free-cam end is TFCam giving that camera back
+
+        std::mutex                 s_statusLock;
+        TFCAM_API::SceneCamStatus  s_status{};
+        TFCAM_API::SceneCamStatus3 s_status3{};  // 0.13.0, API v3
         int                       s_statusSceneShots = 0;
         std::string               s_statusEvent;
 
@@ -713,18 +732,21 @@ namespace SceneCam {
         }
 
         // ---- orbit target ----------------------------------------------------------------------------------------------
-        // The player's scene actors; else the posed actor; else the player. Centre of their torso points.
-        bool OrbitTargetRaw(RE::NiPoint3& a_out, std::string* a_what) {
+        // The player's scene actors; else the posed actor; else the player (0.13.0 a_playerOnly: the player). Centre of
+        // their torso points.
+        bool OrbitTargetRaw(RE::NiPoint3& a_out, std::string* a_what, bool a_playerOnly = false) {
             std::vector<ActorPtr> list;
-            for (auto& actor : SceneActors(false)) {
-                if (actor->Get3D(false)) list.push_back(actor);
-            }
-            const char* what = "the scene's actors";
-            if (list.empty() && s_pose.id) {
-                auto actor = s_pose.actor.get();
-                if (actor && actor->Get3D(false)) {
-                    list.push_back(std::move(actor));
-                    what = "the posed actor";
+            const char*           what = "the scene's actors";
+            if (!a_playerOnly) {
+                for (auto& actor : SceneActors(false)) {
+                    if (actor->Get3D(false)) list.push_back(actor);
+                }
+                if (list.empty() && s_pose.id) {
+                    auto actor = s_pose.actor.get();
+                    if (actor && actor->Get3D(false)) {
+                        list.push_back(std::move(actor));
+                        what = "the posed actor";
+                    }
                 }
             }
             if (list.empty()) {
@@ -827,12 +849,13 @@ namespace SceneCam {
             s_blend.active = false;
             RE::NiPoint3 target{};
             std::string  what;
-            if (!OrbitTargetRaw(target, &what)) {
+            if (!OrbitTargetRaw(target, &what, s_cfg.orbitTarget == 1)) {
                 Refuse("Orbit: nothing to orbit", "orbit: no target (no player?)");
                 return;
             }
-            const Pose   cur  = ReadPose(a_fcs);
-            RE::NiPoint3 off  = cur.pos - target;
+            const Pose         cur    = ReadPose(a_fcs);
+            const RE::NiPoint3 centre = target + RE::NiPoint3{ 0.0f, 0.0f, s_cfg.orbitAim };
+            RE::NiPoint3       off    = cur.pos - centre;
             float        dist = Length(off);
             float        az   = 0.0f;
             float        el   = 0.0f;
@@ -857,18 +880,21 @@ namespace SceneCam {
             s_orbit.yaw0     = cur.yaw;
             s_orbit.pitch0   = cur.pitch;
             s_orbit.entryFOV = fromEye && preEyeFOV > 0.0f ? preEyeFOV : cur.fov;
+            s_orbit.aim      = s_cfg.orbitAim;
             s_mode           = TFCAM_API::kModeOrbit;
+            s_autoOwnsFree   = false;  // the user took this free camera over: it stays on when an NPC pose ends
 
             // Pitch sign check (camera convention: positive pitch looks down). When the camera already faces the target
             // both pitches have the same sign.
             float lookYaw   = 0.0f;
             float lookPitch = 0.0f;
-            LookAngles(target - cur.pos, lookYaw, lookPitch);
+            LookAngles(centre - cur.pos, lookYaw, lookPitch);
             SKSE::log::info("SceneCam: pitch check at orbit start - camera pitch {:.3f} yaw {:.3f}; look-at to the target "
                             "pitch {:.3f} yaw {:.3f} (camera {:.0f} units away, {:.0f} deg {} it)",
                 cur.pitch, WrapPi(cur.yaw), lookPitch, lookYaw, dist, std::fabs(el * kRadToDeg), el >= 0.0f ? "above" : "below");
-            Event(std::format("orbit on ({}) round {} - radius {:.0f}, height {:.0f}, speed {:.0f} deg/s, FOV {:.0f}", a_source,
-                what, s_cfg.orbitRadius, s_cfg.orbitHeight, s_cfg.orbitSpeed, s_cfg.orbitFOV));
+            Event(std::format("orbit on ({}) round {} - radius {:.0f}, tilt {:.0f}, speed {:.0f} deg/s, FOV {:.0f}, aim {:+.0f}, "
+                              "sway {:.0f}", a_source, what, s_cfg.orbitRadius, s_cfg.orbitHeight, s_cfg.orbitSpeed,
+                s_cfg.orbitFOV, s_cfg.orbitAim, s_cfg.orbitSway));
         }
 
         bool EnterEye(RE::FreeCameraState* a_fcs, std::string_view a_source) {
@@ -897,7 +923,8 @@ namespace SceneCam {
             s_eye.blending  = true;
             s_eye.blendT    = 0.0f;
             ApplyNearClip();
-            s_mode = TFCAM_API::kModeEye;
+            s_mode         = TFCAM_API::kModeEye;
+            s_autoOwnsFree = false;  // the user took this free camera over
             Pose probe;
             EyePose(partners[idx].get(), probe, true);
             Event(std::format("eye view on ({}): looking through {} ({:08X}), FOV {:.0f}, near clip {:.1f}, head {}", a_source,
@@ -1058,18 +1085,70 @@ namespace SceneCam {
             Event(std::format("deleted {} shot(s) for scene '{}'", n, scene.sceneId));
         }
 
+        // ---- 0.13.0 automatic free camera (autoEnterShots) ------------------------------------------------------------
+        constexpr RE::FormID kPlayerID = 0x14;
+
+        bool NpcPoseActive() { return s_pose.id != 0 && s_pose.id != kPlayerID; }
+
+        // nullptr = nothing in the way of turning the free camera on by itself. Entering free-fly under a focus menu
+        // pushes its input context under the menu's (the SLUI Studio steps aside before its own camera commands).
+        const char* AutoEnterBlock() {
+            auto* ui = RE::UI::GetSingleton();
+            if (!ui) return "no UI";
+            if (ui->GameIsPaused()) return "the game is paused";
+            for (const char* name :
+                { "PrismaUI_FocusMenu", "Cursor Menu", "Console", "Dialogue Menu", "MessageBoxMenu", "Loading Menu" }) {
+                if (ui->IsMenuOpen(name)) return name;
+            }
+            if (FreeCamMenu::IsOverlayOpen()) return "SKSE Menu Framework";
+            return nullptr;
+        }
+
+        void ArmAutoEnter(const std::string& a_key, bool a_pose) {
+            s_autoEnter       = AutoEnter{};
+            s_autoEnter.key   = a_key;
+            s_autoEnter.pose  = a_pose;
+            s_autoEnter.until = Now() + kAutoWindow;
+            Event(std::format("auto: {} has a saved shot - the free camera turns on for it once nothing is in the way", a_key));
+            ScheduleTick();
+        }
+
+        // Gives back a free camera TFCam turned on by itself for an NPC pose. Never from the Update hook (a toggle there
+        // would replace the camera state inside its own Update): SetActivePose and the tick only.
+        void LeaveOwnFreeCam(std::string_view a_why) {
+            const bool pendingPose = s_pending == Req::kAutoShot && s_pendingShotKey.starts_with("pose:");
+            if (!s_autoOwnsFree && !pendingPose) return;
+            // Requested but not up yet: ApplyAutoShot takes it over and the next tick gives it back.
+            if (!s_autoOwnsFree && !FreeCam::TFCamDriving()) return;
+            s_autoOwnsFree = false;
+            if (pendingPose) {
+                s_pending = Req::kNone;
+                s_pendingShotKey.clear();
+            }
+            if (s_mode != TFCAM_API::kModeFree || !FreeCam::TFCamDriving()) return;
+            Event(std::format("giving back the free camera TFCam turned on for a pose ({})", a_why));
+            s_expectOwnEnd = true;
+            SlccBridge::LeaveFreeFly("Scene Camera: the pose ended");
+        }
+
         void SetActivePose(std::uint32_t a_id, const std::string& a_event) {
             if (a_id == 0 || a_event.empty()) {
                 if (s_pose.id) Event(std::format("pose cleared ({:08X} '{}')", s_pose.id, s_pose.event));
                 s_pose = ActivePose{};
+                if (s_autoEnter.pose) s_autoEnter = AutoEnter{};
+                LeaveOwnFreeCam("the pose stopped");
                 return;
             }
             auto* actor = RE::TESForm::LookupByID<RE::Actor>(a_id);
             if (!actor) {
                 SKSE::log::info("SceneCam: SetActivePose {:08X} '{}' - not an actor, no pose", a_id, a_event);
                 s_pose = ActivePose{};
+                if (s_autoEnter.pose) s_autoEnter = AutoEnter{};
+                LeaveOwnFreeCam("the pose stopped");
                 return;
             }
+            // A repeat (SLUI re-reports the target's pose) does not arm the automatic free camera again.
+            const bool repeat = s_pose.id == a_id && s_pose.event == Lower(a_event);
             s_pose.actor = actor->GetHandle();
             s_pose.id    = a_id;
             s_pose.event = Lower(a_event);
@@ -1086,9 +1165,106 @@ namespace SceneCam {
                     }
                 }
             }
+            // 0.13.0: only an NPC pose turns the free camera on - the player ends her pose by moving, which free-fly
+            // would take from her - and a free camera TFCam turned on for an NPC pose is given back for hers.
+            if (a_id == kPlayerID) {
+                if (s_autoEnter.pose) s_autoEnter = AutoEnter{};
+                LeaveOwnFreeCam("a pose on the player");
+            } else if (!repeat && s_cfg.autoEnterShots && s_cfg.autoPoseShots && !FreeCam::IsActive() &&
+                       SceneShots::Has(s_pose.key)) {
+                ArmAutoEnter(s_pose.key, true);
+            } else if (!repeat && s_autoEnter.pose) {
+                s_autoEnter = AutoEnter{};
+            }
+        }
+
+        // The tick: turn TFCam free-fly on for the armed shot once nothing is in the way. At most once per arming (a
+        // committed stage key / a new NPC pose); a menu in the way pushes the deadline on, anything else lets it run out.
+        void ServiceAutoEnter(double a_now) {
+            if (s_autoEnter.key.empty()) return;
+            const std::string key  = s_autoEnter.key;
+            const bool        pose = s_autoEnter.pose;
+            const auto        drop = [&key](std::string_view a_why) {
+                Event(std::format("auto free camera for {}: dropped - {}", key, a_why));
+                s_autoEnter = AutoEnter{};
+            };
+            const auto&       scene   = SceneTracker::GetPlayerScene();
+            const std::string current = pose ? (NpcPoseActive() ? s_pose.key : std::string())
+                                             : (scene.inScene && scene.stageKnown ? StageKey(scene) : std::string());
+            if (!s_cfg.autoEnterShots || !(pose ? s_cfg.autoPoseShots : s_cfg.autoStageShots)) {
+                drop("turned off");
+                return;
+            }
+            if (current != key) {
+                drop(pose ? "the pose changed" : "the stage changed");
+                return;
+            }
+            if (!pose && s_autoEnterOff) {
+                drop("you left the free camera in this scene");
+                return;
+            }
+            if (FreeCam::IsActive()) {
+                drop(FreeCam::TFCamDriving() ? "the free camera is on already" : "an FCFW timeline / SLCC has the camera");
+                return;
+            }
+            if (!SceneShots::Has(key)) {
+                drop("the shot was deleted");
+                return;
+            }
+            if (const char* block = AutoEnterBlock()) {
+                s_autoEnter.until = a_now + kAutoWindow;
+                if (!s_autoEnter.waited) {
+                    s_autoEnter.waited = true;
+                    Event(std::format("auto free camera for {}: waiting - {} is open", key, block));
+                }
+                return;
+            }
+            auto*       player = RE::PlayerCharacter::GetSingleton();
+            const char* wait   = nullptr;
+            if (s_pending != Req::kNone) {
+                wait = "another scene camera request is waiting";
+            } else if (s_mode != TFCAM_API::kModeFree) {
+                wait = "orbit / eye view is on";
+            } else if (FcfwBridge::FcfwOwnsCamera() || SlccBridge::SlccOwnsCamera()) {
+                wait = "an FCFW timeline / SLCC owns the camera";
+            } else if (!player || !player->Is3DLoaded()) {
+                wait = "the player is not loaded";
+            }
+            if (wait) {
+                if (a_now > s_autoEnter.until) drop(wait);
+                return;
+            }
+            s_autoEnter = AutoEnter{};
+            s_autoKey.clear();  // Req::kAutoShot blends to the shot once TFCam drives
+            s_pendingShotKey = key;
+            Event(std::format("auto: turning the free camera on for the saved shot of {}", key));
+            WaitForFreeCam(Req::kAutoShot);
         }
 
         // ---- per frame (Update hook) --------------------------------------------------------------------------------
+        // 0.13.0: the free camera TFCam turned on for a saved shot is up: blend to the shot of the stage / pose now.
+        void ApplyAutoShot(RE::FreeCameraState* a_fcs) {
+            const std::string key = std::move(s_pendingShotKey);
+            s_pendingShotKey.clear();
+            const bool pose = key.starts_with("pose:");
+            if (pose) {
+                s_autoOwnsFree = true;  // the tick gives it back when the NPC pose ends
+                if (!NpcPoseActive()) {
+                    Event(std::format("auto: free camera on for {}, but that pose has ended", key));
+                    return;
+                }
+            }
+            const auto  ctx  = pose ? PoseContext() : StageContext();
+            const auto* shot = ctx.ok ? SceneShots::Find(ctx.key) : nullptr;
+            if (!shot) {
+                Event(std::format("auto: free camera on for {}, but there is no saved shot for {} now", key,
+                    ctx.ok ? ctx.key : std::string("the current stage / pose")));
+                return;
+            }
+            StartBlend(ReadPose(a_fcs), ShotToPose(*shot, ctx), s_cfg.shotBlend);
+            Event(std::format("auto: free camera on - blending to the saved shot for {}", ctx.key));
+        }
+
         void ServicePending(RE::FreeCameraState* a_fcs) {
             if (s_pending == Req::kNone) return;
             const Req req = s_pending;
@@ -1105,6 +1281,9 @@ namespace SceneCam {
                 break;
             case Req::kFurniture:
                 RecallFurnitureShot("furniture camera, after entering free-fly");
+                break;
+            case Req::kAutoShot:
+                ApplyAutoShot(a_fcs);
                 break;
             default:
                 break;
@@ -1142,15 +1321,16 @@ namespace SceneCam {
 
         void DriveOrbit(RE::FreeCameraState* a_fcs, float a_dt) {
             RE::NiPoint3 raw{};
-            if (OrbitTargetRaw(raw, nullptr)) {
+            if (OrbitTargetRaw(raw, nullptr, s_cfg.orbitTarget == 1)) {
                 s_orbit.target = Mix(s_orbit.target, raw, ExpWeight(a_dt, kTargetHalfLife));
             }
             s_orbit.t += a_dt;
             s_orbit.az     = WrapPi(s_orbit.az + s_cfg.orbitSpeed * kDegToRad * a_dt);
-            // Breathing: +-8 degrees over three orbit periods.
+            // Breathing: +-orbitSway degrees (0.13.0; was a fixed 8) over three orbit periods.
             s_orbit.breath = std::fmod(s_orbit.breath + a_dt * std::fabs(s_cfg.orbitSpeed) / 3.0f, 360.0f);
             const float elGoal =
-                std::clamp(s_cfg.orbitHeight + 8.0f * std::sin(s_orbit.breath * kDegToRad), -85.0f, 85.0f) * kDegToRad;
+                std::clamp(s_cfg.orbitHeight + s_cfg.orbitSway * std::sin(s_orbit.breath * kDegToRad), -85.0f, 85.0f) *
+                kDegToRad;
             const float entry = s_orbit.t < kOrbitEntrySec ? SmoothStep(s_orbit.t / kOrbitEntrySec) : 1.0f;
             if (s_orbit.t < kOrbitEntrySec) {
                 s_orbit.el   = s_orbit.el0 + (elGoal - s_orbit.el0) * entry;
@@ -1162,11 +1342,15 @@ namespace SceneCam {
                 s_orbit.dist += (s_cfg.orbitRadius - s_orbit.dist) * w;
                 s_orbit.fov += (s_cfg.orbitFOV - s_orbit.fov) * w;
             }
+            s_orbit.aim += (s_cfg.orbitAim - s_orbit.aim) * ExpWeight(a_dt, kChaseHalfLife);
+            // 0.13.0 aim: the orbit circles and looks at a point above / below the target, so the tilt stays the angle
+            // the camera looks down at. Walls are still probed from the torso centre (always inside the actors).
+            const RE::NiPoint3 centre = s_orbit.target + RE::NiPoint3{ 0.0f, 0.0f, s_orbit.aim };
             const float  ce = std::cos(s_orbit.el);
             const RE::NiPoint3 dir{ std::sin(s_orbit.az) * ce, std::cos(s_orbit.az) * ce, std::sin(s_orbit.el) };
             Pose p;
-            p.pos  = s_orbit.target + dir * s_orbit.dist;
-            LookAngles(s_orbit.target - p.pos, p.yaw, p.pitch);
+            p.pos  = centre + dir * s_orbit.dist;
+            LookAngles(centre - p.pos, p.yaw, p.pitch);
             if (entry < 1.0f) {  // turn towards the target over the same second, no snap
                 p.yaw   = s_orbit.yaw0 + WrapPi(p.yaw - s_orbit.yaw0) * entry;
                 p.pitch = s_orbit.pitch0 + (p.pitch - s_orbit.pitch0) * entry;
@@ -1217,6 +1401,21 @@ namespace SceneCam {
             const std::size_t n = (std::min)(a_src.size(), a_size - 1);
             std::memcpy(a_dst, a_src.data(), n);
             a_dst[n] = '\0';
+        }
+
+        TFCAM_API::SceneCamSettings3 Settings3() {
+            TFCAM_API::SceneCamSettings3 s{};
+            s.size           = sizeof(s);
+            s.orbitRadius    = s_cfg.orbitRadius;
+            s.orbitTilt      = s_cfg.orbitHeight;
+            s.orbitSpeed     = s_cfg.orbitSpeed;
+            s.orbitFOV       = s_cfg.orbitFOV;
+            s.eyeFOV         = s_cfg.eyeFOV;
+            s.orbitAim       = s_cfg.orbitAim;
+            s.orbitSway      = s_cfg.orbitSway;
+            s.orbitTarget    = s_cfg.orbitTarget;
+            s.autoEnterShots = s_cfg.autoEnterShots ? 1 : 0;
+            return s;
         }
 
         void PublishStatus() {
@@ -1277,8 +1476,30 @@ namespace SceneCam {
             st.hasPoseShot  = s_cPoseHas;
             st.settings     = { s_cfg.orbitRadius, s_cfg.orbitHeight, s_cfg.orbitSpeed, s_cfg.orbitFOV, s_cfg.eyeFOV };
 
+            TFCAM_API::SceneCamStatus3 st3{};
+            static_assert(sizeof(st3.sceneId) == sizeof(st.sceneId) && sizeof(st3.stageId) == sizeof(st.stageId) &&
+                          sizeof(st3.poseKey) == sizeof(st.poseKey));
+            st3.size           = sizeof(st3);
+            st3.mode           = st.mode;
+            st3.freeCamActive  = FreeCam::TFCamDriving() && !s_freeCamEnded ? 1 : 0;
+            st3.inPlayerScene  = st.inPlayerScene;
+            st3.stageKnown     = st.stageKnown;
+            st3.hasStageShot   = st.hasStageShot;
+            st3.poseActive     = st.poseActive;
+            st3.hasPoseShot    = st.hasPoseShot;
+            st3.eyeAvailable   = st.eyeAvailable;
+            st3.eyeTarget      = st.eyeTarget;
+            st3.partnerCount   = static_cast<std::int32_t>(st.partnerCount);
+            st3.playerSlot     = st.playerSlot;
+            st3.sceneShotCount = s_cCount;
+            std::memcpy(st3.sceneId, st.sceneId, sizeof(st3.sceneId));
+            std::memcpy(st3.stageId, st.stageId, sizeof(st3.stageId));
+            std::memcpy(st3.poseKey, st.poseKey, sizeof(st3.poseKey));
+            st3.settings = Settings3();
+
             std::lock_guard lock(s_statusLock);
             s_status           = st;
+            s_status3          = st3;
             s_statusSceneShots = s_cCount;
             s_statusEvent      = s_lastEvent;
         }
@@ -1286,7 +1507,7 @@ namespace SceneCam {
         // ---- tick (SKSE task, once per frame while something is going on) --------------------------------------------
         bool NeedsTick() {
             return SceneTracker::NeedsTick() || s_pending != Req::kNone || s_saveAt > 0.0 || s_pose.id != 0 ||
-                   !s_autoKey.empty();
+                   !s_autoKey.empty() || !s_autoEnter.key.empty() || s_autoOwnsFree;
         }
 
         void Tick() {
@@ -1295,7 +1516,8 @@ namespace SceneCam {
             if (s_pending != Req::kNone && now > s_pendingUntil && !FreeCam::TFCamDriving()) {
                 const Req req = s_pending;
                 s_pending     = Req::kNone;
-                Refuse("Scene camera: the free camera did not start",
+                s_pendingShotKey.clear();
+                Refuse(req == Req::kAutoShot ? nullptr : "Scene camera: the free camera did not start",
                     std::format("{} - TFCam free-fly did not start within {:.1f} s", Name(req), kPendingTimeout));
             }
             if (s_pose.id) {
@@ -1305,6 +1527,8 @@ namespace SceneCam {
                     s_pose = ActivePose{};
                 }
             }
+            if (s_autoOwnsFree && !NpcPoseActive()) LeaveOwnFreeCam("the pose ended");
+            ServiceAutoEnter(now);
             if (!s_autoKey.empty() && now > s_autoUntil) s_autoKey.clear();
             if (s_saveAt > 0.0 && now >= s_saveAt) {
                 s_saveAt = -1.0;
@@ -1345,6 +1569,9 @@ namespace SceneCam {
         range(s_cfg.orbitHeight, -20.0f, 75.0f, 20.0f);
         range(s_cfg.orbitSpeed, -90.0f, 90.0f, 10.0f);
         range(s_cfg.orbitFOV, 20.0f, 120.0f, 70.0f);
+        range(s_cfg.orbitAim, -60.0f, 60.0f, 0.0f);
+        range(s_cfg.orbitSway, 0.0f, 15.0f, 8.0f);
+        s_cfg.orbitTarget = std::clamp(s_cfg.orbitTarget, 0, 1);
         range(s_cfg.eyeFOV, 30.0f, 130.0f, 90.0f);
         range(s_cfg.eyeNearClip, 1.0f, 10.0f, 3.0f);
         range(s_cfg.eyeForward, -5.0f, 10.0f, 1.0f);
@@ -1357,6 +1584,13 @@ namespace SceneCam {
     }
 
     void Install() {
+        {
+            // v3 consumers can read the settings before the first publish (a load).
+            std::lock_guard lock(s_statusLock);
+            s_status3.size       = sizeof(s_status3);
+            s_status3.playerSlot = -1;
+            s_status3.settings   = Settings3();
+        }
         SKSE::log::info("SceneCam: ready - orbit / eye view / saved shots ({}), keys orbit 0x{:X} eye 0x{:X} next 0x{:X} save "
                         "0x{:X} go to 0x{:X} delete 0x{:X}",
             SceneShots::FilePath(), s_cfg.orbitKey, s_cfg.eyeKey, s_cfg.eyeNextKey, s_cfg.shotSaveKey, s_cfg.shotRecallKey,
@@ -1456,10 +1690,21 @@ namespace SceneCam {
     }
 
     void OnFreeCamEnd() {
+        const bool ownLeave = std::exchange(s_expectOwnEnd, false);
         if (s_pending != Req::kNone) {
             Event(std::format("{} request dropped - the free camera ended", Name(s_pending)));
             s_pending = Req::kNone;
+            s_pendingShotKey.clear();
         }
+        // 0.13.0: the free camera went off in the player's scene (the user's key, P+'s key, the SLCC cycle to Off): saved
+        // stage shots leave it off until the scene ends. P+'s own exit at the scene's end is undone by OnPlayerSceneEnd.
+        if (!ownLeave && SceneTracker::PlayerSceneActive() && !s_autoEnterOff) {
+            s_autoEnterOff = true;
+            if (s_cfg.autoEnterShots) {
+                Event("free camera off during the player's scene - saved stage shots leave it off until the scene ends");
+            }
+        }
+        s_autoOwnsFree = false;
         DropModes("the free camera ended", true);
         s_freeCamEnded = true;  // reported as None from now on, until a free camera updates again
         PublishStatus();
@@ -1468,6 +1713,7 @@ namespace SceneCam {
     void OnPlayerSceneStart() {
         AmbientCam::OnPlayerSceneStart();
         s_eye.preferred = 0;
+        s_autoEnterOff  = false;
         PublishStatus();
         ScheduleTick();
     }
@@ -1495,6 +1741,14 @@ namespace SceneCam {
             } else {
                 s_autoKey.clear();
             }
+            // 0.13.0: no free camera on - a saved shot for the new stage turns it on (the tick, once nothing is in the way).
+            const auto& scene = SceneTracker::GetPlayerScene();
+            if (s_cfg.autoEnterShots && s_cfg.autoStageShots && !s_autoEnterOff && !FreeCam::IsActive() && scene.stageKnown &&
+                SceneShots::Has(StageKey(scene))) {
+                ArmAutoEnter(StageKey(scene), false);
+            } else if (!s_autoEnter.pose) {
+                s_autoEnter = AutoEnter{};
+            }
         }
         PublishStatus();
         ScheduleTick();
@@ -1502,6 +1756,12 @@ namespace SceneCam {
 
     void OnPlayerSceneEnd() {
         s_autoKey.clear();
+        s_autoEnterOff = false;
+        if (!s_autoEnter.pose) s_autoEnter = AutoEnter{};
+        if (s_pending == Req::kAutoShot && !s_pendingShotKey.starts_with("pose:")) {
+            s_pending = Req::kNone;
+            s_pendingShotKey.clear();
+        }
         if (s_pending == Req::kEye) s_pending = Req::kNone;
         LeaveEye("the player's scene ended", true);
         LeaveOrbit("the player's scene ended", true);
@@ -1530,6 +1790,11 @@ namespace SceneCam {
     void OnGameLoad(const char* a_why) {
         s_pending = Req::kNone;
         s_autoKey.clear();
+        s_pendingShotKey.clear();
+        s_autoEnter    = AutoEnter{};
+        s_autoEnterOff = false;
+        s_autoOwnsFree = false;
+        s_expectOwnEnd = false;
         DropModes(a_why, true);
         if (s_pose.id) Event(std::format("pose cleared ({})", a_why));
         s_pose          = ActivePose{};
@@ -1630,6 +1895,50 @@ namespace SceneCam {
         std::lock_guard lock(s_statusLock);
         *a_out      = s_status;
         a_out->size = sizeof(TFCAM_API::SceneCamStatus);
+    }
+
+    // ---- TFCamAPI v3 (any thread) ----------------------------------------------------------------------------------
+    void ApiSetSettings3(const TFCAM_API::SceneCamSettings3& a_settings) {
+        if (a_settings.size != sizeof(TFCAM_API::SceneCamSettings3)) {
+            SKSE::log::warn("SceneCam: SetSettings3 with size {} (TFCam expects {}) - ignored", a_settings.size,
+                sizeof(TFCAM_API::SceneCamSettings3));
+            return;
+        }
+        const TFCAM_API::SceneCamSettings3 copy = a_settings;
+        OnMain([copy] {
+            s_cfg.orbitRadius    = copy.orbitRadius;
+            s_cfg.orbitHeight    = copy.orbitTilt;
+            s_cfg.orbitSpeed     = copy.orbitSpeed;
+            s_cfg.orbitFOV       = copy.orbitFOV;
+            s_cfg.eyeFOV         = copy.eyeFOV;
+            s_cfg.orbitAim       = copy.orbitAim;
+            s_cfg.orbitSway      = copy.orbitSway;
+            s_cfg.orbitTarget    = copy.orbitTarget;
+            s_cfg.autoEnterShots = copy.autoEnterShots != 0;
+            ClampConfig();
+            s_saveAt = Now() + kSaveDebounce;
+            SKSE::log::info("SceneCam: settings from SLUI - radius {:.0f}, tilt {:.0f}, speed {:.0f}, orbit FOV {:.0f}, eye FOV "
+                            "{:.0f}, aim {:+.0f}, sway {:.0f}, orbit {}, automatic free camera {}",
+                s_cfg.orbitRadius, s_cfg.orbitHeight, s_cfg.orbitSpeed, s_cfg.orbitFOV, s_cfg.eyeFOV, s_cfg.orbitAim,
+                s_cfg.orbitSway, s_cfg.orbitTarget == 1 ? "the player" : "auto", s_cfg.autoEnterShots ? "on" : "off");
+            PublishStatus();
+            ScheduleTick();
+        });
+    }
+
+    bool ApiGetStatus3(TFCAM_API::SceneCamStatus3* a_out) {
+        if (!a_out || a_out->size != sizeof(TFCAM_API::SceneCamStatus3)) return false;
+        std::lock_guard lock(s_statusLock);
+        *a_out               = s_status3;
+        a_out->size          = sizeof(TFCAM_API::SceneCamStatus3);
+        a_out->settings.size = sizeof(TFCAM_API::SceneCamSettings3);
+        return true;
+    }
+
+    bool ApiDeleteSceneShots() {
+        const bool ok = Snapshot().sceneId[0] != '\0';
+        RequestDeleteSceneShots();
+        return ok;
     }
 
     MenuStatus GetMenuStatus() {
