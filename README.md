@@ -79,7 +79,8 @@ starts in TFCam free-fly as usual). Page: **SKSE Menu Framework > FreeCam > Scen
   and never runs while another Scene Camera request is waiting. Once per stage change at most; if you leave the free
   camera during a scene it stays off for the rest of that scene. The same goes for a pose SLUI starts on an **NPC** with
   a saved shot (never for your own poses: you end those by moving), and TFCam turns that free camera off again when the
-  pose ends (unless you switched it to orbit or eye view). Needs the matching *Go to a stage's / pose's shot*
+  pose ends (unless you switched it to orbit or eye view, or a SexLab scene of yours started: it is that scene's camera
+  then). Needs the matching *Go to a stage's / pose's shot*
   option. **This changes what happens for anyone who already has saved shots**: before 0.13.0 a saved shot only played
   when the free camera was already on. Turn the option off to get the old behaviour.
 

@@ -59,6 +59,7 @@ namespace SceneCam {
     bool OnWheel(int a_dir);              // -1 wheel up, +1 wheel down; true = used (orbit radius / eye FOV)
     bool OnHotkey(std::uint32_t a_code);  // keyboard key-down, no menu open; true = a Scene Camera key, consume it
     void OnFreeCamEnd();                  // main thread, before the vanilla End's FOV write-back
+    void NoteOwnLeave();                  // right before TFCam itself leaves its free-fly: that End is not the user's
 
     // SceneTracker (main thread)
     void OnPlayerSceneStart();

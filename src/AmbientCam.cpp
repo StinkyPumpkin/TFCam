@@ -686,6 +686,10 @@ namespace AmbientCam {
         // Last step of a session: give the free camera back, and (idle camera that ran its time) let Sandbox When Idle in.
         void FinishReturn(bool handOff) {
             SKSE::log::info("AmbientCam: giving the free camera back");
+            // TFCam's own leave, not the user's: at a scene start its End can run queued after SceneCam's scene reset,
+            // and would switch the automatic free camera off for the whole scene. Only when LeaveFreeFly really toggles
+            // (same checks), so a stale mark never swallows the user's next exit.
+            if (FreeCam::TFCamDriving()) SceneCam::NoteOwnLeave();
             SlccBridge::LeaveFreeFly("Ambient camera");
             ResetSession();
             s_lastActivity = Now();

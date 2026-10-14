@@ -330,7 +330,7 @@ namespace SceneCam {
         std::string s_pendingShotKey;        // Req::kAutoShot: the shot to blend to once TFCam drives
         bool        s_autoEnterOff = false;  // the user left the free camera in this player scene: no more entries
         bool        s_autoOwnsFree = false;  // TFCam turned this free camera on for an NPC pose: given back at its end
-        bool        s_expectOwnEnd = false;  // the next free-cam end is TFCam giving that camera back
+        bool        s_expectOwnEnd = false;  // the next free-cam end is TFCam's own (pose camera / AmbientCam hand-back)
 
         std::mutex                 s_statusLock;
         TFCAM_API::SceneCamStatus  s_status{};
@@ -1113,11 +1113,31 @@ namespace SceneCam {
             ScheduleTick();
         }
 
+        // The player's SexLab scene has the camera now (P+ AutoTFC keeps a free camera that is already on, the user flies
+        // it): a free camera TFCam turned on for an NPC pose is not TFCam's to turn off any more, and a pose shot still
+        // waiting for one is dropped (ApplyAutoShot would take it over again).
+        void HandPoseCamToScene(std::string_view a_why) {
+            const bool pendingPose = s_pending == Req::kAutoShot && s_pendingShotKey.starts_with("pose:");
+            if (!s_autoOwnsFree && !pendingPose) return;
+            s_autoOwnsFree = false;
+            if (pendingPose) {
+                s_pending = Req::kNone;
+                s_pendingShotKey.clear();
+            }
+            Event(std::format("the free camera TFCam turned on for a pose stays on - the player's scene has it ({})", a_why));
+        }
+
         // Gives back a free camera TFCam turned on by itself for an NPC pose. Never from the Update hook (a toggle there
         // would replace the camera state inside its own Update): SetActivePose and the tick only.
         void LeaveOwnFreeCam(std::string_view a_why) {
             const bool pendingPose = s_pending == Req::kAutoShot && s_pendingShotKey.starts_with("pose:");
             if (!s_autoOwnsFree && !pendingPose) return;
+            // Never during the player's scene: SLUI clears the pose when the posed NPC joins it, and turning the free
+            // camera off then would throw the player out of the camera her scene uses.
+            if (SceneTracker::PlayerSceneActive()) {
+                HandPoseCamToScene(a_why);
+                return;
+            }
             // Requested but not up yet: ApplyAutoShot takes it over and the next tick gives it back.
             if (!s_autoOwnsFree && !FreeCam::TFCamDriving()) return;
             s_autoOwnsFree = false;
@@ -1248,7 +1268,8 @@ namespace SceneCam {
             s_pendingShotKey.clear();
             const bool pose = key.starts_with("pose:");
             if (pose) {
-                s_autoOwnsFree = true;  // the tick gives it back when the NPC pose ends
+                // The tick gives it back when the NPC pose ends - unless the player's scene has started (its camera then).
+                s_autoOwnsFree = !SceneTracker::PlayerSceneActive();
                 if (!NpcPoseActive()) {
                     Event(std::format("auto: free camera on for {}, but that pose has ended", key));
                     return;
@@ -1689,6 +1710,8 @@ namespace SceneCam {
         return true;
     }
 
+    void NoteOwnLeave() { s_expectOwnEnd = true; }
+
     void OnFreeCamEnd() {
         const bool ownLeave = std::exchange(s_expectOwnEnd, false);
         if (s_pending != Req::kNone) {
@@ -1698,6 +1721,8 @@ namespace SceneCam {
         }
         // 0.13.0: the free camera went off in the player's scene (the user's key, P+'s key, the SLCC cycle to Off): saved
         // stage shots leave it off until the scene ends. P+'s own exit at the scene's end is undone by OnPlayerSceneEnd.
+        // TFCam's own hand-backs (NoteOwnLeave: the NPC pose camera, the idle / furniture camera at scene start) do not
+        // count; their End can run queued, after OnPlayerSceneStart.
         if (!ownLeave && SceneTracker::PlayerSceneActive() && !s_autoEnterOff) {
             s_autoEnterOff = true;
             if (s_cfg.autoEnterShots) {
@@ -1712,6 +1737,7 @@ namespace SceneCam {
 
     void OnPlayerSceneStart() {
         AmbientCam::OnPlayerSceneStart();
+        HandPoseCamToScene("the player's scene started");
         s_eye.preferred = 0;
         s_autoEnterOff  = false;
         PublishStatus();
