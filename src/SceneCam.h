@@ -3,6 +3,8 @@
 #include "TFCamAPI.h"
 
 #include <cstdint>
+#include <string>
+#include <string_view>
 
 // 0.10.0: Scene Camera. Drives TFCam's free camera (the vanilla FreeCameraState) from its Update hook, right after
 // the vanilla Update, while TFCam drives it (TFCamDriving(): no FCFW timeline / SLCC owns it):
@@ -41,7 +43,10 @@ namespace SceneCam {
         float orbitFOV       = 70.0f;   // 20..120
         float orbitAim       = 0.0f;    // 0.13.0: -60..60 units, the orbit circles / looks at the target this far up
         float orbitSway      = 8.0f;    // 0.13.0: 0..15 degrees of elevation breathing (was a fixed 8)
-        int   orbitTarget    = 0;       // 0.13.0: 0 = auto (scene actors > posed actor > player), 1 = the player only
+        int   orbitTarget    = 0;       // 0.13.0: 0 = auto (scene actors > posed actor > player), 1 = the player only,
+                                        // 0.17.0: 2 = the console's selected reference (else auto)
+        float orbitRoll      = 0.0f;    // 0.17.0: -90..90 degrees of camera roll while orbiting (a Dutch angle)
+        float orbitRollSpeed = 0.0f;    // 0.17.0: -90..90 degrees per second: the roll keeps turning (0 = fixed)
         float eyeFOV         = 90.0f;   // 30..130
         float eyeNearClip    = 3.0f;    // 1..10, fNearDistance while in eye view
         float eyeForward     = 1.0f;    // -5..10, camera this far in front of the eye point
@@ -53,6 +58,12 @@ namespace SceneCam {
     };
 
     Config& GetConfig();
+
+    // 0.17.0 (main thread): the camera path (CamPath.h) and the background blur (CamBlur.h).
+    bool SubjectPoint(RE::NiPoint3& a_out, std::string* a_what);  // your scene's actors, else the posed actor, else you
+    void StandDown(std::string_view a_why);                         // orbit / eye / preset / a shot blend off, FOV back
+    // The point to keep sharp while orbit / preset / eye view moves the camera. a_on = one of them runs.
+    bool BlurSubject(RE::NiPoint3& a_out, const char*& a_what, bool& a_on);
     void    ClampConfig();      // after loading the ini / a menu change
     void    OnConfigChanged();  // SKSE Menu Framework page changed a value (clamps; the drive reads it every frame)
 

@@ -15,6 +15,8 @@
 // v4 (TFCam 0.15.0): preset views round the player's SexLab scene (10 built-in angles, the stage's
 //     saved shot first) and "set cam pos" (fly the camera, the middle mouse button saves the
 //     stage's shot). ITFCam4 extends ITFCam3; the status structs are unchanged (mode 4 = preset).
+// v5 (TFCam 0.17.0): background blur (ENB's depth of field kept sharp on a subject) and an extra camera roll for
+//     another mod's camera - PEM / Whore Horde PhotoStudio, an inventory camera. ITFCam5 extends ITFCam4.
 //
 //   auto* dll = GetModuleHandleW(L"TFCam.dll");
 //   auto  fn  = dll ? reinterpret_cast<TFCAM_API::RequestFn>(GetProcAddress(dll, "RequestTFCamAPI")) : nullptr;
@@ -29,6 +31,7 @@ namespace TFCAM_API
     inline constexpr std::uint32_t kVersion2 = 2;
     inline constexpr std::uint32_t kVersion3 = 3;
     inline constexpr std::uint32_t kVersion4 = 4;
+    inline constexpr std::uint32_t kVersion5 = 5;
 
     using SnapHandler = void (*)();
 
@@ -187,6 +190,22 @@ namespace TFCAM_API
         virtual bool SetShotPlacing(std::int32_t a_state) noexcept = 0;
         // Thread-safe snapshot. false (and *a_out untouched) if a_out is null or a_out->size != sizeof(SceneCamPreset4).
         virtual bool GetPreset4(SceneCamPreset4* a_out) noexcept = 0;
+    };
+
+    // ---- v5 ------------------------------------------------------------------------------------
+    // Game thread.
+    struct ITFCam5 : ITFCam4
+    {
+        // Call every frame while your camera shows a subject: TFCam keeps the point (x, y, z, game units) sharp and
+        // blurs what is behind it with ENB's depth of field. a_strength 0..1 (below 0 = TFCam's own Background blur
+        // strength). a_on = false - or no call for half a second - gives ENB its own values back. Works for any camera
+        // (the free camera or a menu camera); a TFCam camera with its own blur on is overridden while you call.
+        virtual void SetBlurSubject(bool a_on, float a_x, float a_y, float a_z, float a_strength) noexcept = 0;
+        // true when the blur can work: ENB with its depth of field shader (Marty McFly's ADOF) is there.
+        virtual bool BlurAvailable() noexcept = 0;
+        // Extra roll in radians for a camera you drive through the vanilla free camera (FreeCameraState), on top of
+        // TFCam's own roll. Set 0 when your camera ends (TFCam also clears it when the free camera ends).
+        virtual void SetCameraRoll(float a_radians) noexcept = 0;
     };
 
     using RequestFn = void* (*)(std::uint32_t a_version);

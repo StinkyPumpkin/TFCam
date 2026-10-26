@@ -7,6 +7,8 @@
 #include "FreeCamMenu.h"
 #include "SlccBridge.h"
 #include "AmbientCam.h"
+#include "CamFocus.h"
+#include "CamPath.h"
 #include "ConvoCam.h"
 
 #include <RE/I/INIPrefSettingCollection.h>
@@ -271,6 +273,8 @@ namespace SceneCam {
             float        entryFOV = 0.0f;  // restored when the orbit ends
             float        aim    = 0.0f;  // 0.13.0: look-at height offset, chased toward the setting
             float        tilt   = 0.0f;  // 0.15.0: the mouse's up / down on top of the tilt setting, radians
+            float        roll   = 0.0f;  // 0.17.0: the orbit's own roll (FreeCam extra roll), radians, chased
+            float        rollPhase = 0.0f;  // 0.17.0: degrees turned so far at orbitRollSpeed
         };
         OrbitState s_orbit;
 
@@ -832,6 +836,17 @@ namespace SceneCam {
             return true;
         }
 
+        // 0.17.0: the orbit's target - the console selection with iOrbitTarget = 2 while one is picked, else as before.
+        bool OrbitSubject(RE::NiPoint3& a_out, std::string* a_what, float* a_floor) {
+            if (s_cfg.orbitTarget == 2) {
+                if (auto ref = CamFocus::ConsoleRef(); ref && CamFocus::RefPoint(ref.get(), a_out, a_floor)) {
+                    if (a_what) *a_what = "the console selection " + CamFocus::Describe(ref.get());
+                    return true;
+                }
+            }
+            return OrbitTargetRaw(a_out, a_what, s_cfg.orbitTarget == 1, a_floor);
+        }
+
         // ---- modes -------------------------------------------------------------------------------------------------------
         void LeaveOrbit(std::string_view a_why, bool a_restoreFOV) {
             if (s_mode != TFCAM_API::kModeOrbit) return;
@@ -921,6 +936,7 @@ namespace SceneCam {
         }
 
         void EnterOrbit(RE::FreeCameraState* a_fcs, std::string_view a_source) {
+            CamPath::Stop("orbit turned on");  // 0.17.0
             // From eye view: start where the eyes were, and give the pre-eye-view FOV back when the orbit ends.
             const bool  fromEye      = s_mode == TFCAM_API::kModeEye;
             const float preEyeFOV    = s_eye.pre.fov;
@@ -932,7 +948,7 @@ namespace SceneCam {
             s_blend.active = false;
             RE::NiPoint3 target{};
             std::string  what;
-            if (!OrbitTargetRaw(target, &what, s_cfg.orbitTarget == 1)) {
+            if (!OrbitSubject(target, &what, nullptr)) {
                 Refuse("Orbit: nothing to orbit", "orbit: no target (no player?)");
                 return;
             }
@@ -964,6 +980,7 @@ namespace SceneCam {
             s_orbit.pitch0   = cur.pitch;
             s_orbit.entryFOV = fromEye && preEyeFOV > 0.0f ? preEyeFOV : (fromPreset && prePresetFOV > 0.0f ? prePresetFOV : cur.fov);
             s_orbit.aim      = s_cfg.orbitAim;
+            s_orbit.roll     = FreeCam::GetExtraRoll();  // 0.17.0: from wherever the last orbit's roll eased back to
             s_mouseDY        = 0.0f;
             s_mode           = TFCAM_API::kModeOrbit;
             s_autoOwnsFree   = false;  // the user took this free camera over: it stays on when an NPC pose ends
@@ -982,6 +999,7 @@ namespace SceneCam {
         }
 
         bool EnterEye(RE::FreeCameraState* a_fcs, std::string_view a_source) {
+            CamPath::Stop("eye view turned on");  // 0.17.0
             auto partners = LoadedPartners();
             if (partners.empty()) {
                 Refuse("Eye view needs a partner in your SexLab scene", "eye view: no loaded partner in the player's scene");
@@ -1029,6 +1047,7 @@ namespace SceneCam {
         // a_view: 0 = the stage's saved shot (the front view when there is none), 1..kPresetCount, -1 = the saved shot
         // when there is one, else the front view.
         void EnterPreset(RE::FreeCameraState* a_fcs, std::string_view a_source, int a_view) {
+            CamPath::Stop("preset view turned on");  // 0.17.0
             // The FOV from before orbit / eye view comes back when preset view ends.
             float keepFOV = 0.0f;
             if (s_mode == TFCAM_API::kModeEye) keepFOV = s_eye.pre.fov;
@@ -1526,7 +1545,7 @@ namespace SceneCam {
 
         // A stage key changed while TFCam was (or soon is) driving in Free mode: blend to its saved shot.
         void ServiceAuto(RE::FreeCameraState* a_fcs) {
-            if (s_autoKey.empty()) return;
+            if (s_autoKey.empty() || CamPath::Playing()) return;  // 0.17.0: a playing camera path keeps the camera
             if (s_mode != TFCAM_API::kModeFree || s_placing || Now() > s_autoUntil) {
                 s_autoKey.clear();
                 return;
@@ -1568,7 +1587,7 @@ namespace SceneCam {
         void DriveOrbit(RE::FreeCameraState* a_fcs, float a_dt) {
             RE::NiPoint3 raw{};
             float        floor     = 0.0f;
-            const bool   haveFloor = OrbitTargetRaw(raw, nullptr, s_cfg.orbitTarget == 1, &floor);
+            const bool   haveFloor = OrbitSubject(raw, nullptr, &floor);
             if (haveFloor) {
                 s_orbit.target = Mix(s_orbit.target, raw, ExpWeight(a_dt, kTargetHalfLife));
             }
@@ -1621,6 +1640,12 @@ namespace SceneCam {
             p.roll = FreeCam::GetRollRadians();
             p.fov  = s_orbit.fov;
             WritePose(a_fcs, p, false);
+            // 0.17.0 roll: a fixed Dutch angle that keeps turning at orbitRollSpeed degrees per second, chased so a new
+            // setting (or the orbit's start) rolls in. On top of the free camera's own Q / E roll.
+            s_orbit.rollPhase    = std::fmod(s_orbit.rollPhase + s_cfg.orbitRollSpeed * a_dt, 360.0f);
+            const float rollGoal = WrapPi((s_cfg.orbitRoll + s_orbit.rollPhase) * kDegToRad);
+            s_orbit.roll         = WrapPi(s_orbit.roll + WrapPi(rollGoal - s_orbit.roll) * ExpWeight(a_dt, kChaseHalfLife));
+            FreeCam::SetExtraRoll(s_orbit.roll);
             CamCollision::Request(s_orbit.target, "scene orbit");  // 0.12.0
         }
 
@@ -1901,7 +1926,9 @@ namespace SceneCam {
         range(s_cfg.orbitFOV, 20.0f, 120.0f, 70.0f);
         range(s_cfg.orbitAim, -60.0f, 60.0f, 0.0f);
         range(s_cfg.orbitSway, 0.0f, 15.0f, 8.0f);
-        s_cfg.orbitTarget = std::clamp(s_cfg.orbitTarget, 0, 1);
+        s_cfg.orbitTarget = std::clamp(s_cfg.orbitTarget, 0, 2);
+        range(s_cfg.orbitRoll, -90.0f, 90.0f, 0.0f);
+        range(s_cfg.orbitRollSpeed, -90.0f, 90.0f, 0.0f);
         range(s_cfg.eyeFOV, 30.0f, 130.0f, 90.0f);
         range(s_cfg.eyeNearClip, 1.0f, 10.0f, 3.0f);
         range(s_cfg.eyeForward, -5.0f, 10.0f, 1.0f);
@@ -1954,6 +1981,13 @@ namespace SceneCam {
         const float dt = FrameDt();
         if (!a_fcs) return;
         s_freeCamEnded = false;  // a free camera is live again
+        // 0.17.0: the orbit's roll eases back to none once the orbit ends (a playing camera path sets its own).
+        if (!a_driving) {
+            FreeCam::SetExtraRoll(0.0f);
+        } else if (s_mode != TFCAM_API::kModeOrbit && !CamPath::Playing()) {
+            const float r = FreeCam::GetExtraRoll();
+            if (r != 0.0f) FreeCam::SetExtraRoll(std::fabs(r) < 0.002f ? 0.0f : r * (1.0f - ExpWeight(dt, kChaseHalfLife)));
+        }
         if (!a_driving) {
             // An FCFW timeline / SLCC took this free camera: hands off, undo what we changed.
             if (s_mode != TFCAM_API::kModeFree || s_blend.active) {
@@ -1981,9 +2015,42 @@ namespace SceneCam {
         PublishStatus();
     }
 
+    bool SubjectPoint(RE::NiPoint3& a_out, std::string* a_what) { return OrbitTargetRaw(a_out, a_what, false, nullptr); }
+
+    void StandDown(std::string_view a_why) { DropModes(a_why, true); }
+
+    bool BlurSubject(RE::NiPoint3& a_out, const char*& a_what, bool& a_on) {
+        a_on = false;
+        if (!FreeCam::TFCamDriving()) return false;
+        switch (s_mode) {
+        case TFCAM_API::kModeOrbit:
+            a_on   = true;
+            a_out  = s_orbit.target + RE::NiPoint3{ 0.0f, 0.0f, s_orbit.aim };
+            a_what = "orbit: its centre";
+            return true;
+        case TFCAM_API::kModePreset:
+            a_on   = true;
+            a_out  = s_preset.target;
+            a_what = "preset view: the scene's centre";
+            return true;
+        case TFCAM_API::kModeEye:
+            // Eye view looks at you out of a partner's eyes: you stay sharp.
+            a_on = true;
+            if (auto* player = RE::PlayerCharacter::GetSingleton(); player && player->Get3D(false)) {
+                a_out  = TorsoPoint(player);
+                a_what = "eye view: you";
+                return true;
+            }
+            a_what = "eye view: screen centre";
+            return false;
+        default:
+            return false;
+        }
+    }
+
     bool OwnsMotion() {
         return s_mode == TFCAM_API::kModeOrbit || s_mode == TFCAM_API::kModeEye || s_mode == TFCAM_API::kModePreset ||
-               s_blend.active || AmbientCam::OwnsMotion() || ConvoCam::OwnsMotion();
+               s_blend.active || AmbientCam::OwnsMotion() || ConvoCam::OwnsMotion() || CamPath::OwnsMotion();
     }
 
     bool OnWheel(int a_dir) {
@@ -2298,7 +2365,8 @@ namespace SceneCam {
             SKSE::log::info("SceneCam: settings from SLUI - radius {:.0f}, tilt {:.0f}, speed {:.0f}, orbit FOV {:.0f}, eye FOV "
                             "{:.0f}, aim {:+.0f}, sway {:.0f}, orbit {}, automatic free camera {}",
                 s_cfg.orbitRadius, s_cfg.orbitHeight, s_cfg.orbitSpeed, s_cfg.orbitFOV, s_cfg.eyeFOV, s_cfg.orbitAim,
-                s_cfg.orbitSway, s_cfg.orbitTarget == 1 ? "the player" : "auto", s_cfg.autoEnterShots ? "on" : "off");
+                s_cfg.orbitSway, s_cfg.orbitTarget == 1 ? "the player" : (s_cfg.orbitTarget == 2 ? "console selection" : "auto"),
+                s_cfg.autoEnterShots ? "on" : "off");
             PublishStatus();
             ScheduleTick();
         });

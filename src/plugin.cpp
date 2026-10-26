@@ -7,6 +7,8 @@
 #include "SceneCam.h"
 #include "AmbientCam.h"
 #include "ConvoCam.h"
+#include "CamBlur.h"
+#include "CamPath.h"
 
 #include <spdlog/sinks/basic_file_sink.h>
 #include <ShlObj.h>
@@ -106,6 +108,7 @@ namespace {
         case SKSE::MessagingInterface::kPostLoad:
             // 0.7.7: every plugin is loaded now - FCFW's API and SLUI's 'TFCF' messages.
             FcfwBridge::Init();
+            CamBlur::Install();  // 0.17.0: ENB SDK for the background blur (retried at kDataLoaded)
             // Listen for SLUI's 'TFCF' only if TFCam will arm at kDataLoaded. Without the Address
             // Library TFCam stays inert; with no listener SLUI's Dispatch returns false and SLUI does
             // its own plain toggle, instead of the request being accepted and silently dropped.
@@ -126,6 +129,7 @@ namespace {
             SceneCam::Install();       // 0.10.0: orbit / eye view / saved shots
             AmbientCam::Install();     // 0.11.0: idle camera + furniture camera
             ConvoCam::Install();       // 0.16.0: conversation camera
+            CamBlur::Install();        // 0.17.0: no-op when already linked at kPostLoad
             FreeCamMenu::Register();
             FreeCamMenu::ApplyGameSettings();
             break;
@@ -136,12 +140,16 @@ namespace {
             SceneCam::OnGameLoad("save loading");
             AmbientCam::OnGameLoad("save loading");
             ConvoCam::OnGameLoad("save loading");
+            CamPath::OnGameLoad();       // 0.17.0
+            CamBlur::Off("save loading");  // 0.17.0
             break;
         case SKSE::MessagingInterface::kPostLoadGame:
             SceneTracker::Reset("save loaded");
             SceneCam::OnGameLoad("save loaded");
             AmbientCam::OnGameLoad("save loaded");
             ConvoCam::OnGameLoad("save loaded");
+            CamPath::OnGameLoad();       // 0.17.0
+            CamBlur::Off("save loaded");  // 0.17.0
             SlccBridge::OnGameLoaded("save loaded");
             break;
         case SKSE::MessagingInterface::kNewGame:
@@ -149,6 +157,8 @@ namespace {
             SceneCam::OnGameLoad("new game");
             AmbientCam::OnGameLoad("new game");
             ConvoCam::OnGameLoad("new game");
+            CamPath::OnGameLoad();       // 0.17.0
+            CamBlur::Off("new game");  // 0.17.0
             SlccBridge::OnGameLoaded("new game");
             break;
         default:

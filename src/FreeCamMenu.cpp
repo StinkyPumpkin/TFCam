@@ -4,6 +4,8 @@
 #include "CameraLight.h"
 #include "HUDHider.h"
 #include "CellEntryCam.h"
+#include "CamBlur.h"
+#include "CamPath.h"
 #include "SceneCam.h"
 #include "AmbientCam.h"
 #include "ConvoCam.h"
@@ -172,6 +174,7 @@ namespace FreeCamMenu {
     static void SaveINIValues();
     static void WriteSceneCamValues();
     static void WriteAmbientValues();
+    static void WriteCamToolsValues();
     static void WriteCollisionValues();
     static void WriteConvoValues();
 
@@ -255,6 +258,26 @@ namespace FreeCamMenu {
         WriteAmbientValues();
         WriteCollisionValues();
         WriteConvoValues();
+        WriteCamToolsValues();
+    }
+
+    // 0.17.0 background blur + camera path, TFCam.ini [Blur] / [CameraPath].
+    static void WriteCamToolsValues() {
+        const auto& b = CamBlur::Get();
+        WriteINIInt("Blur", "bEnabled", b.enabled ? 1 : 0);
+        WriteINIFloat("Blur", "fStrength", b.strength);
+        WriteINIInt("Blur", "bInFreeFly", b.inFreeFly ? 1 : 0);
+        const auto& c = CamPath::Get();
+        WriteINIInt("CameraPath", "bCurved", c.curved ? 1 : 0);
+        WriteINIInt("CameraPath", "bCut", c.snap ? 1 : 0);
+        WriteINIFloat("CameraPath", "fDuration", c.duration);
+        WriteINIInt("CameraPath", "iLoop", c.loop);
+        WriteINIInt("CameraPath", "iLook", c.look);
+        WriteINIInt("CameraPath", "iFocus", c.focus);
+        WriteINIFloat("CameraPath", "fFocusHeight", c.focusHeight);
+        WriteINIInt("CameraPath", "bFollowFocus", c.followFocus ? 1 : 0);
+        WriteINIInt("CameraPath", "iAddPointKey", c.addKey);
+        WriteINIInt("CameraPath", "iPlayKey", c.playKey);
     }
 
     // 0.16.0 conversation camera, TFCam.ini [Conversation].
@@ -339,6 +362,8 @@ namespace FreeCamMenu {
         WriteINIFloat("SceneCam", "fOrbitAim", sc.orbitAim);
         WriteINIFloat("SceneCam", "fOrbitSway", sc.orbitSway);
         WriteINIInt("SceneCam", "iOrbitTarget", sc.orbitTarget);
+        WriteINIFloat("SceneCam", "fOrbitRoll", sc.orbitRoll);
+        WriteINIFloat("SceneCam", "fOrbitRollSpeed", sc.orbitRollSpeed);
         WriteINIFloat("SceneCam", "fEyeFOV", sc.eyeFOV);
         WriteINIFloat("SceneCam", "fEyeNearClip", sc.eyeNearClip);
         WriteINIFloat("SceneCam", "fEyeForward", sc.eyeForward);
@@ -752,6 +777,37 @@ namespace FreeCamMenu {
             "Orbit round your SexLab scene's actors (or a posed actor, or you), look through a partner's eyes, and save a "
             "camera shot per scene stage or per pose. TFCam's free camera does the work: these turn it on when needed.");
 
+        // 0.17.0 background blur (every TFCam camera, kept on this page so it is found)
+        {
+            auto&      bl       = CamBlur::Get();
+            const auto bs       = CamBlur::GetStatus();
+            bool       bChanged = false;
+            ImGuiMCP::SeparatorText("Background blur");
+            ImGuiMCP::BeginDisabled(!bs.linked);
+            bChanged |= ImGuiMCP::Checkbox("Blur the background##blOn", &bl.enabled);
+            ImGuiMCP::SetNextItemWidth(200.0f);
+            bChanged |= ImGuiMCP::SliderFloat("Strength##blStrength", &bl.strength, 0.0f, 1.0f, "%.2f");
+            bChanged |= ImGuiMCP::Checkbox("Also in plain free-fly (sharp: the middle of the screen)##blFree", &bl.inFreeFly);
+            ImGuiMCP::EndDisabled();
+            if (bs.error[0]) {
+                ImGuiMCP::TextColored({ 0.9f, 0.45f, 0.35f, 1.0f }, "%s", bs.error);
+            } else if (bs.active) {
+                if (bs.distance > 0.0f) {
+                    ImGuiMCP::Text("Now: sharp at %s, %.0f units away", bs.what, bs.distance);
+                } else {
+                    ImGuiMCP::Text("Now: %s", bs.what);
+                }
+            }
+            ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+                "Keeps the subject sharp and blurs what is behind it while orbit, preset view, eye view, a camera path, the "
+                "idle camera or the conversation camera moves the camera. It uses ENB's depth of field, and ENB gets its own "
+                "values back the moment that camera stops (nothing is saved into your ENB preset). Needs ENB.");
+            if (bChanged) {
+                CamBlur::Clamp();
+                SaveINI();
+            }
+        }
+
         // Status (a snapshot the game updates every frame while something is going on).
         const auto  ms = SceneCam::GetMenuStatus();
         const auto& st = ms.status;
@@ -805,11 +861,16 @@ namespace FreeCamMenu {
         changed |= ImGuiMCP::SliderFloat("Aim height (units)##scAim", &sc.orbitAim, -60.0f, 60.0f, "%.0f");
         ImGuiMCP::SetNextItemWidth(200.0f);
         changed |= ImGuiMCP::SliderFloat("Sway (degrees)##scSway", &sc.orbitSway, 0.0f, 15.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Roll (degrees)##scRoll", &sc.orbitRoll, -90.0f, 90.0f, "%.0f");
+        ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Roll speed (degrees/s)##scRollSpeed", &sc.orbitRollSpeed, -90.0f, 90.0f, "%.0f");
         {
-            static const char* targets[] = { "Auto (scene actors, else the posed actor, else you)", "You only" };
-            int t = sc.orbitTarget == 1 ? 1 : 0;
+            static const char* targets[] = { "Auto (scene actors, else the posed actor, else you)", "You only",
+                "The reference picked in the console (else auto)" };
+            int t = std::clamp(sc.orbitTarget, 0, 2);
             ImGuiMCP::SetNextItemWidth(320.0f);
-            if (ImGuiMCP::Combo("Orbit round##scTarget", &t, targets, 2)) {
+            if (ImGuiMCP::Combo("Orbit round##scTarget", &t, targets, 3)) {
                 sc.orbitTarget = t;
                 changed        = true;
             }
@@ -817,8 +878,10 @@ namespace FreeCamMenu {
         ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
             "A negative speed orbits the other way. Aim height moves the point the orbit circles and looks at up or down "
             "(the tilt stays the angle the camera looks down at). Sway: how far the tilt slowly rises and falls (0 = "
-            "none). While orbiting: mouse wheel = FOV, Shift + wheel = radius, mouse up / down tilts the orbit (up to a "
-            "top view, down to looking up from below, never under the floor). WASD does nothing.");
+            "none). Roll tilts the picture (a Dutch angle); Roll speed keeps it turning while it orbits (0 = it stays at "
+            "the roll). While orbiting: mouse wheel = FOV, Shift + wheel = radius, mouse up / down tilts the orbit (up to a "
+            "top view, down to looking up from below, never under the floor). WASD does nothing. Console target: open the "
+            "console, click an NPC or object, close the console - the orbit circles it (a walking NPC is followed).");
 
         ImGuiMCP::SeparatorText("Eye view");
         ImGuiMCP::SetNextItemWidth(200.0f);
@@ -847,6 +910,103 @@ namespace FreeCamMenu {
 
         if (changed) {
             SceneCam::OnConfigChanged();
+            SaveINI();
+        }
+    }
+
+    // 0.17.0: FreeCam > Camera Path page.
+    static void __stdcall RenderCamPath() {
+        auto&                  cp      = CamPath::Get();
+        bool                   changed = false;
+        const ImGuiMCP::ImVec4 grey{ 0.5f, 0.5f, 0.5f, 1.0f };
+        const auto             ms = CamPath::GetMenuStatus();
+
+        ImGuiMCP::SeparatorText("Camera path");
+        ImGuiMCP::TextColored(grey,
+            "Fly the free camera to a spot and add it as a point (A, B, C ...), then the next spot, and so on. Play moves "
+            "the camera through the points - during a SexLab scene, a pose, or anywhere else.");
+        ImGuiMCP::Text("Points: %d%s", ms.points, ms.playing ? "   - playing" : "");
+        if (ms.playing) {
+            ImGuiMCP::Text("Progress: %.0f%%   (%.0f units along the path)", ms.progress * 100.0f, ms.length);
+            ImGuiMCP::Text("Focus: %s", ms.focus);
+        }
+        if (ms.lastEvent[0]) ImGuiMCP::TextColored(grey, "Last: %s", ms.lastEvent);
+        ImGuiMCP::BeginDisabled(!ms.freeCam);
+        if (ImGuiMCP::Button("Add point (where the camera is)##cpAdd")) CamPath::RequestAddPoint();
+        ImGuiMCP::EndDisabled();
+        ImGuiMCP::SameLine();
+        ImGuiMCP::BeginDisabled(ms.points == 0);
+        if (ImGuiMCP::Button("Remove last##cpDel")) CamPath::RequestRemoveLast();
+        ImGuiMCP::SameLine();
+        if (ImGuiMCP::Button("Clear##cpClear")) CamPath::RequestClear();
+        ImGuiMCP::EndDisabled();
+        ImGuiMCP::SameLine();
+        ImGuiMCP::BeginDisabled(ms.points < 2 && !ms.playing);
+        if (ImGuiMCP::Button(ms.playing ? "Stop##cpPlay" : "Play##cpPlay")) CamPath::RequestPlay(ms.playing ? 0 : 1);
+        ImGuiMCP::EndDisabled();
+        if (!ms.freeCam) ImGuiMCP::TextColored(grey, "Turn the free camera on to add points.");
+
+        ImGuiMCP::SeparatorText("Movement");
+        {
+            static const char* shapes[] = { "Curved through the points", "Straight lines (eases in and out at each point)" };
+            int k = cp.curved ? 0 : 1;
+            ImGuiMCP::SetNextItemWidth(320.0f);
+            if (ImGuiMCP::Combo("Path##cpShape", &k, shapes, 2)) {
+                cp.curved = k == 0;
+                changed   = true;
+            }
+            static const char* moves[] = { "Glide", "Cut from point to point" };
+            k = cp.snap ? 1 : 0;
+            ImGuiMCP::SetNextItemWidth(320.0f);
+            if (ImGuiMCP::Combo("Move##cpMove", &k, moves, 2)) {
+                cp.snap = k == 1;
+                changed = true;
+            }
+            ImGuiMCP::SetNextItemWidth(200.0f);
+            changed |= ImGuiMCP::SliderFloat("Time for the whole path (s)##cpTime", &cp.duration, 1.0f, 120.0f, "%.0f");
+            static const char* loops[] = { "Once", "Loop", "Back and forth" };
+            k = std::clamp(cp.loop, 0, 2);
+            ImGuiMCP::SetNextItemWidth(200.0f);
+            if (ImGuiMCP::Combo("Repeat##cpLoop", &k, loops, 3)) {
+                cp.loop = k;
+                changed = true;
+            }
+        }
+
+        ImGuiMCP::SeparatorText("Look");
+        {
+            static const char* looks[] = { "At the focus", "The way each point looked (no focus: straight pans and dollies)" };
+            int k = std::clamp(cp.look, 0, 1);
+            ImGuiMCP::SetNextItemWidth(420.0f);
+            if (ImGuiMCP::Combo("Camera looks##cpLook", &k, looks, 2)) {
+                cp.look = k;
+                changed = true;
+            }
+            static const char* focus[] = { "You (your SexLab scene's actors when in one)",
+                "The reference picked in the console (else you)" };
+            k = std::clamp(cp.focus, 0, 1);
+            ImGuiMCP::SetNextItemWidth(420.0f);
+            if (ImGuiMCP::Combo("Focus##cpFocus", &k, focus, 2)) {
+                cp.focus = k;
+                changed  = true;
+            }
+            ImGuiMCP::SetNextItemWidth(200.0f);
+            changed |= ImGuiMCP::SliderFloat("Aim height (units)##cpAim", &cp.focusHeight, -60.0f, 60.0f, "%.0f");
+            changed |= ImGuiMCP::Checkbox("The path moves with the focus##cpFollow", &cp.followFocus);
+        }
+        ImGuiMCP::TextColored(grey,
+            "Roll (Q / E) and FOV (mouse wheel) are kept with each point. Console focus: open the console, click an NPC or "
+            "object, close it - a walking NPC is followed. 'The path moves with the focus' keeps the points relative to the "
+            "focus, so the path follows a moving NPC and works again for the same pose somewhere else. Background blur "
+            "(Scene Camera page) keeps the focus sharp while a path plays.");
+
+        ImGuiMCP::SeparatorText("Hotkeys");
+        ImGuiMCP::TextColored(grey, "Unset until you bind them.");
+        changed |= KeyBindField("cpAddKey", "Add point", &cp.addKey);
+        changed |= KeyBindField("cpPlayKey", "Play / stop", &cp.playKey);
+
+        if (changed) {
+            CamPath::Clamp();
             SaveINI();
         }
     }
@@ -1218,6 +1378,8 @@ namespace FreeCamMenu {
             sc.orbitAim       = readFloat("SceneCam", "fOrbitAim", def.orbitAim);
             sc.orbitSway      = readFloat("SceneCam", "fOrbitSway", def.orbitSway);
             sc.orbitTarget    = readInt("SceneCam", "iOrbitTarget", def.orbitTarget);
+            sc.orbitRoll      = readFloat("SceneCam", "fOrbitRoll", def.orbitRoll);
+            sc.orbitRollSpeed = readFloat("SceneCam", "fOrbitRollSpeed", def.orbitRollSpeed);
             sc.eyeFOV         = readFloat("SceneCam", "fEyeFOV", def.eyeFOV);
             sc.eyeNearClip    = readFloat("SceneCam", "fEyeNearClip", def.eyeNearClip);
             sc.eyeForward     = readFloat("SceneCam", "fEyeForward", def.eyeForward);
@@ -1285,6 +1447,31 @@ namespace FreeCamMenu {
             ConvoCam::Clamp();
             SKSE::log::info("ConvoCam: conversation camera {} - {} shot, settle {:.1f} s, shot change {:.1f} s",
                 c.enabled ? "on" : "off", c.reverseKind == 1 ? "two-shot reverse" : "over-the-shoulder reverse", c.blendIn, c.shotSwitch);
+        }
+
+        // 0.17.0 background blur + camera path (code defaults when the sections are missing).
+        {
+            auto&                  b = CamBlur::Get();
+            const CamBlur::Settings bd{};
+            b.enabled   = readInt("Blur", "bEnabled", bd.enabled ? 1 : 0) != 0;
+            b.strength  = readFloat("Blur", "fStrength", bd.strength);
+            b.inFreeFly = readInt("Blur", "bInFreeFly", bd.inFreeFly ? 1 : 0) != 0;
+            CamBlur::Clamp();
+            auto&                  c = CamPath::Get();
+            const CamPath::Settings cd{};
+            c.curved      = readInt("CameraPath", "bCurved", cd.curved ? 1 : 0) != 0;
+            c.snap        = readInt("CameraPath", "bCut", cd.snap ? 1 : 0) != 0;
+            c.duration    = readFloat("CameraPath", "fDuration", cd.duration);
+            c.loop        = readInt("CameraPath", "iLoop", cd.loop);
+            c.look        = readInt("CameraPath", "iLook", cd.look);
+            c.focus       = readInt("CameraPath", "iFocus", cd.focus);
+            c.focusHeight = readFloat("CameraPath", "fFocusHeight", cd.focusHeight);
+            c.followFocus = readInt("CameraPath", "bFollowFocus", cd.followFocus ? 1 : 0) != 0;
+            c.addKey      = readInt("CameraPath", "iAddPointKey", cd.addKey);
+            c.playKey     = readInt("CameraPath", "iPlayKey", cd.playKey);
+            CamPath::Clamp();
+            SKSE::log::info("CamBlur: background blur {} (strength {:.2f}{})", b.enabled ? "on" : "off", b.strength,
+                b.inFreeFly ? ", also in free-fly" : "");
         }
 
         // 0.12.0 walls for the automatic cameras (code defaults when the section is missing).
@@ -1435,6 +1622,7 @@ namespace FreeCamMenu {
         SKSEMenuFramework::AddSectionItem("Cell Entry", RenderCellEntry);  // 0.9.0
         SKSEMenuFramework::AddSectionItem("Scene Camera", RenderSceneCam);  // 0.10.0
         SKSEMenuFramework::AddSectionItem("Idle & Furniture", RenderAmbient);  // 0.11.0
+        SKSEMenuFramework::AddSectionItem("Camera Path", RenderCamPath);       // 0.17.0
         SKSEMenuFramework::AddInputEvent(OnSMFInput);
 
         SKSE::log::info("FreeCamMenu: settings section registered");
