@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <format>
 #include <string>
@@ -40,6 +41,7 @@ namespace CamPathWindow {
         constexpr unsigned kIconOpen       = 0xf07c;
         constexpr unsigned kIconWalk       = 0xf554;
         constexpr unsigned kIconRepeat     = 0xf363;
+        constexpr unsigned kIconBack       = 0xf04a;
 
         const ImGuiMCP::ImVec4 kGrey{ 0.6f, 0.6f, 0.6f, 1.0f };
         const ImGuiMCP::ImVec4 kGold{ 1.0f, 0.82f, 0.35f, 1.0f };
@@ -77,7 +79,7 @@ namespace CamPathWindow {
         }
 
         // One camera's card. Returns true when the options changed (the caller hands them to CamPath::EditCam).
-        bool CamCard(int a_i, int a_count, bool a_loop, bool a_at, CamPath::Cam& a_c) {
+        bool CamCard(int a_i, int a_count, bool a_loop, bool a_at, const std::string& a_pivot, CamPath::Cam& a_c) {
             bool changed = false;
             ImGuiMCP::PushID(a_i);
             const std::string title = std::format("Camera {}{}###cam", a_i + 1, a_at ? "   (the camera is here)" : "");
@@ -88,10 +90,28 @@ namespace CamPathWindow {
                 if (Small(kIconGo, "Go here", "go")) CamPath::RequestGoToCam(a_i);
                 Tip("Puts the free camera on this camera");
                 ImGuiMCP::SameLine();
+                if (Small(kIconPlay, "Play from here", "playfrom")) {
+                    CamPath::RequestPlayFrom(a_i);
+                    Close();  // watch it
+                }
+                Tip("Plays the path starting at this camera (the window closes so you can watch)");
+                ImGuiMCP::SameLine();
                 if (Small(kIconPin, "Move it to where I am", "here")) CamPath::RequestSetCamHere(a_i);
                 Tip("This camera takes the free camera's spot and view");
                 ImGuiMCP::SameLine();
                 if (Small(kIconTrash, "Delete", "del")) CamPath::RequestDeleteCam(a_i);
+
+                FontAwesome::PushSolid();
+                ImGuiMCP::TextColored(kGold, "%s", Icon(kIconCross, ("Pivot: " + a_pivot).c_str()).c_str());
+                FontAwesome::Pop();
+                ImGuiMCP::SameLine();
+                if (Small(kIconCross, "Pick", "cpick")) CamPath::RequestPickPivot(a_i);
+                Tip("This camera's pivot: what the middle of the screen points at");
+                ImGuiMCP::SameLine();
+                if (Small(kIconUser, "Me", "cme")) CamPath::RequestPivotMe(a_i);
+                ImGuiMCP::SameLine();
+                if (Small(kIconTerminal, "Console", "cconsole")) CamPath::RequestPivotConsole(a_i);
+                Tip("This camera's pivot: the person or thing you clicked in the console");
 
                 ImGuiMCP::Text("Looks at:");
                 ImGuiMCP::SameLine();
@@ -121,21 +141,44 @@ namespace CamPathWindow {
                     changed |= ImGuiMCP::RadioButton("curve##move", &a_c.move, CamPath::kMoveCurve);
                     ImGuiMCP::SameLine();
                     changed |= ImGuiMCP::RadioButton("around the pivot##move", &a_c.move, CamPath::kMoveAround);
-                    ImGuiMCP::SetNextItemWidth(220.0f);
-                    changed |= ImGuiMCP::SliderFloat("Seconds to get there##time", &a_c.time, 0.5f, 30.0f, "%.1f", 0);
-                    changed |= ImGuiMCP::Checkbox("Slow start and stop##smooth", &a_c.smooth);
-                    ImGuiMCP::SetNextItemWidth(220.0f);
-                    changed |= ImGuiMCP::SliderInt("Extra full turns##turns", &a_c.turns, 0, 10, "%d", 0);
-                    Tip("Around the pivot: circles round it this many more times on the way.\n"
-                        "Straight line or curve with both cameras looking the way you set them: spins in place.");
-                    ImGuiMCP::Text("Which way round:");
                     ImGuiMCP::SameLine();
-                    changed |= ImGuiMCP::RadioButton("shortest##way", &a_c.way, CamPath::kWayShortest);
-                    ImGuiMCP::SameLine();
-                    changed |= ImGuiMCP::RadioButton("left##way", &a_c.way, CamPath::kWayLeft);
-                    ImGuiMCP::SameLine();
-                    changed |= ImGuiMCP::RadioButton("right##way", &a_c.way, CamPath::kWayRight);
-                    changed |= ImGuiMCP::Checkbox("Zoom trick (the pivot keeps its size while the background stretches)##zoom", &a_c.zoomTrick);
+                    changed |= ImGuiMCP::RadioButton("cut (jump there)##move", &a_c.move, CamPath::kMoveCut);
+                    Tip("Cut: the camera jumps to the next camera at once, like a cut in a film");
+                    if (a_c.move == CamPath::kMoveCut) {
+                        ImGuiMCP::TextColored(kGrey, "The camera jumps straight to camera %d.", next);
+                    } else {
+                        ImGuiMCP::SetNextItemWidth(220.0f);
+                        changed |= ImGuiMCP::SliderFloat("Seconds to get there##time", &a_c.time, 0.5f, 30.0f, "%.1f", 0);
+                        changed |= ImGuiMCP::Checkbox("Slow start and stop##smooth", &a_c.smooth);
+                        if (a_c.move != CamPath::kMoveAround) {
+                            int side = static_cast<int>(std::lround(a_c.bendSide * 100.0f));
+                            int up   = static_cast<int>(std::lround(a_c.bendUp * 100.0f));
+                            ImGuiMCP::SetNextItemWidth(220.0f);
+                            if (ImGuiMCP::SliderInt("Bend left (-) / right (+)##bendside", &side, -100, 100, "%d", 0)) {
+                                a_c.bendSide = static_cast<float>(side) / 100.0f;
+                                changed      = true;
+                            }
+                            Tip("Bows the path out to one side - round a person or a tree.\n100 = the middle of the path is half the distance off the line.");
+                            ImGuiMCP::SetNextItemWidth(220.0f);
+                            if (ImGuiMCP::SliderInt("Bend down (-) / up (+)##bendup", &up, -100, 100, "%d", 0)) {
+                                a_c.bendUp = static_cast<float>(up) / 100.0f;
+                                changed    = true;
+                            }
+                            Tip("Bows the path up over something, or down under it");
+                        }
+                        ImGuiMCP::SetNextItemWidth(220.0f);
+                        changed |= ImGuiMCP::SliderInt("Extra full turns##turns", &a_c.turns, 0, 10, "%d", 0);
+                        Tip("Around the pivot: circles round it this many more times on the way.\n"
+                            "Straight line or curve with both cameras looking the way you set them: spins in place.");
+                        ImGuiMCP::Text("Which way round:");
+                        ImGuiMCP::SameLine();
+                        changed |= ImGuiMCP::RadioButton("shortest##way", &a_c.way, CamPath::kWayShortest);
+                        ImGuiMCP::SameLine();
+                        changed |= ImGuiMCP::RadioButton("left##way", &a_c.way, CamPath::kWayLeft);
+                        ImGuiMCP::SameLine();
+                        changed |= ImGuiMCP::RadioButton("right##way", &a_c.way, CamPath::kWayRight);
+                        changed |= ImGuiMCP::Checkbox("Zoom trick (the pivot keeps its size while the background stretches)##zoom", &a_c.zoomTrick);
+                    }
                 }
                 ImGuiMCP::Spacing();
             }
@@ -187,10 +230,13 @@ namespace CamPathWindow {
             if (!s.freeCam) ImGuiMCP::TextColored(kRed, "The free camera is off - turn it on (tfc) to add cameras.");
 
             // ---- the big buttons
-            if (Big(kIconCamera, "Add camera here", "add", 3, s.freeCam && !s.recording)) CamPath::RequestAddCam();
-            Tip("A new camera where the free camera is, looking the way it looks");
+            if (Big(kIconCamera, s.playing ? "Put a camera in here" : "Add camera here", "add", 3, s.freeCam && !s.recording)) {
+                CamPath::RequestAddCam();
+            }
+            Tip(s.playing ? "A new camera goes into the path right here, at this moment (the path carries on from it)"
+                          : "A new camera where the free camera is, looking the way it looks");
             ImGuiMCP::SameLine();
-            if (s.playing && !s.paused) {
+            if (s.playing && !s.paused && !s.rewinding) {
                 if (Big(kIconPause, "Pause", "pause", 0)) CamPath::RequestPause();
             } else {
                 if (Big(kIconPlay, s.paused ? "Go on" : "Play", "play", 1, s.cams.size() >= 2)) {
@@ -201,6 +247,12 @@ namespace CamPathWindow {
             }
             ImGuiMCP::SameLine();
             if (Big(kIconStop, "Stop", "stop", 2, s.playing)) CamPath::RequestPlay(0);
+            ImGuiMCP::SameLine();
+            if (Big(kIconBack, "Rewind", "rewind", s.rewinding ? 3 : 0, s.cams.size() >= 2)) {
+                CamPath::RequestRewind();
+                Close();  // watch it
+            }
+            Tip("Runs the path backwards to camera 1 and waits there (from the end if it is not playing)");
             ImGuiMCP::SameLine();
             if (Big(kIconSnow, s.frozen ? "Unfreeze world" : "Freeze world", "freeze", s.frozen ? 3 : 0)) CamPath::RequestFreezeWorld();
             Tip("Stops everyone in the world (the camera still moves)");
@@ -219,11 +271,12 @@ namespace CamPathWindow {
             }
             if (s.playing) {
                 ImGuiMCP::ProgressBar(s.progress, ImGuiMCP::ImVec2(-1.0f, 0.0f),
-                    std::format("{} - camera {} of {}", s.paused ? "Paused" : "Playing", s.atCam + 1, s.cams.size()).c_str());
+                    std::format("{} - camera {} of {}", s.paused ? "Paused" : (s.rewinding ? "Rewinding" : "Playing"), s.atCam + 1,
+                        s.cams.size()).c_str());
             }
 
             // ---- pivot
-            ImGuiMCP::SeparatorText("Pivot - what the path is about");
+            ImGuiMCP::SeparatorText("Pivot for new cameras - what they are about");
             FontAwesome::PushSolid();
             ImGuiMCP::TextColored(kGold, "%s", Icon(kIconCross, s.pivotName.c_str()).c_str());
             FontAwesome::Pop();
@@ -234,9 +287,11 @@ namespace CamPathWindow {
             ImGuiMCP::SameLine();
             if (Small(kIconTerminal, "Console pick", "console")) CamPath::RequestPivotConsole();
             Tip("The person or thing you clicked in the console");
+            if (Small(kIconCross, "Give every camera this pivot", "toall")) CamPath::RequestPivotToAll();
+            Tip("Every camera you already have looks at / goes round this pivot too.\nOne camera only: use Pick on its own card.");
             bool follow = s.follow;
             FontAwesome::PushSolid();
-            const bool followHit = ImGuiMCP::Checkbox(Icon(kIconWalk, "Follow the pivot (the whole path moves and turns with it)##follow").c_str(), &follow);
+            const bool followHit = ImGuiMCP::Checkbox(Icon(kIconWalk, "Follow the pivots (each camera moves and turns with its pivot)##follow").c_str(), &follow);
             FontAwesome::Pop();
             if (followHit) CamPath::SetFollow(follow);
             ImGuiMCP::SetNextItemWidth(200.0f);
@@ -296,7 +351,8 @@ namespace CamPathWindow {
             const int n = static_cast<int>(s.cams.size());
             for (int i = 0; i < n; ++i) {
                 CamPath::Cam c = s.cams[i];
-                if (CamCard(i, n, s.loop, s.playing && s.atCam == i, c)) CamPath::EditCam(i, c);
+                const std::string& pivot = i < static_cast<int>(s.camPivotNames.size()) ? s.camPivotNames[i] : s.pivotName;
+                if (CamCard(i, n, s.loop, s.playing && s.atCam == i, pivot, c)) CamPath::EditCam(i, c);
             }
             if (!s.lastEvent.empty()) {
                 ImGuiMCP::Spacing();

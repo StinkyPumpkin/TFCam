@@ -8,17 +8,21 @@
 // 0.18.0: Camera Path - film anything. Fly TFCam's free camera to a spot and add it as a camera (1, 2, 3 ... no
 // limit). Every camera says how it looks and how the camera travels on to the next one; Play runs them in order.
 //
-// The pivot is what the path is about: you (or your SexLab scene) by default, or any object / NPC - picked by
-// pointing the free camera at it, or in the console. "Follow the pivot" makes the whole path move and turn with it
-// (a walking NPC), otherwise the cameras stay where they were put.
+// The pivot is what a camera is about: you (or your SexLab scene) by default, or any object / NPC - picked by
+// pointing the free camera at it, or in the console. Every camera has its own pivot (new cameras take the "pivot for
+// new cameras"). "Follow the pivot" makes the cameras move and turn with their pivots (a walking NPC), otherwise
+// the cameras stay where they were put; "around the pivot" always circles where the pivot is now.
 //
 // At each camera:   Look at the pivot / the way it was set / where it is going (the look blends between cameras),
 //                   wait there N seconds, background blur on/off (+ strength).
 // On to the next:   Straight line / smooth Curve through the cameras / Around the pivot (distance, height and angle
-//                   round the pivot blend - a big circle at one camera and a small one at the next is a spiral), extra
-//                   full turns (round the pivot, or turning in place when both cameras keep their own view), which
-//                   way round, seconds, slow start + stop, zoom trick (dolly zoom: the FOV changes so the pivot keeps
-//                   its size).
+//                   round the pivot blend - a big circle at one camera and a small one at the next is a spiral) / Cut
+//                   (jump there at once), extra full turns (round the pivot, or turning in place when both cameras
+//                   keep their own view), which way round, seconds, slow start + stop, bend left / right and up /
+//                   down (straight line and curve), zoom trick (dolly zoom: the FOV changes so the pivot keeps its
+//                   size).
+// Play from any camera, rewind (the path runs backwards to camera 1), and a camera added while the path plays goes
+// into the path at that moment.
 // Motion smoothness takes the edge off sudden turns and speed changes. Record manual path: fly by hand and the
 // flight becomes cameras.
 //
@@ -28,7 +32,7 @@
 namespace CamPath {
 
     enum Look : int { kLookPivot = 0, kLookSet = 1, kLookAhead = 2 };
-    enum Move : int { kMoveStraight = 0, kMoveCurve = 1, kMoveAround = 2 };
+    enum Move : int { kMoveStraight = 0, kMoveCurve = 1, kMoveAround = 2, kMoveCut = 3 };
     enum Way : int { kWayShortest = 0, kWayLeft = 1, kWayRight = 2 };
 
     struct Cam {
@@ -41,6 +45,9 @@ namespace CamPath {
         RE::NiPoint3 pivotPos{};
         float        pivotHeading = 0.0f;
         bool         havePivot    = false;
+        // this camera's pivot: 0 = you / your scene, 1 = a reference
+        int          pivotKind = 0;
+        RE::FormID   pivotRef  = 0;
         // at this camera
         int   look         = kLookPivot;
         float wait         = 0.0f;  // seconds
@@ -53,6 +60,8 @@ namespace CamPath {
         int   turns     = 0;     // extra full turns
         int   way       = kWayShortest;
         bool  zoomTrick = false;
+        float bendSide  = 0.0f;  // -1..1: bends left / right (1 = the middle sits half the distance off the line)
+        float bendUp    = 0.0f;  // -1..1: bends down / up
     };
 
     struct Settings {
@@ -87,8 +96,10 @@ namespace CamPath {
         bool             pivotIsMe    = true;
         bool             follow       = false;
         bool             loop         = false;
+        std::vector<std::string> camPivotNames;  // per camera
         bool             playing      = false;
         bool             paused       = false;
+        bool             rewinding    = false;
         bool             recording    = false;
         bool             freeCam      = false;  // TFCam drives a free camera (cameras can be added)
         bool             frozen       = false;
@@ -104,16 +115,20 @@ namespace CamPath {
     void SetLoop(bool a_on);
 
     // queued to the main thread
-    void RequestAddCam();          // at the free camera, after the last one
+    void RequestAddCam();          // at the free camera, after the last one (while a path plays: into it, at that moment)
     void RequestSetCamHere(int a_index);
     void RequestGoToCam(int a_index);
     void RequestDeleteCam(int a_index);
     void RequestClear();
     void RequestPlay(int a_state);  // 1 play (from the start, or go on after a pause), 0 stop, -1 play / pause
+    void RequestPlayFrom(int a_index);
+    void RequestRewind();           // run the path backwards to camera 1 (from the end when it is not playing)
     void RequestPause();
-    void RequestPickPivot();        // what the free camera points at
-    void RequestPivotConsole();     // the console's selected reference
-    void RequestPivotMe();
+    // The pivot for new cameras (a_cam = -1), every camera (a_cam = -2) or one camera.
+    void RequestPickPivot(int a_cam = -1);     // what the free camera points at
+    void RequestPivotConsole(int a_cam = -1);  // the console's selected reference
+    void RequestPivotMe(int a_cam = -1);
+    void RequestPivotToAll();                  // every camera takes the pivot for new cameras
     void RequestFreezeWorld();
     void RequestRecord(int a_state);  // 1 start, 0 stop, -1 toggle
     void RequestSaveAs(std::string a_name);

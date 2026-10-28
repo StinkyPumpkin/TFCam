@@ -66,6 +66,17 @@ namespace CamFocus {
     std::string Describe(RE::TESObjectREFR* a_ref) {
         if (!a_ref) return "nothing";
         const char* name = a_ref->GetDisplayFullName();
-        return std::format("{} ({:08X})", name && *name ? name : "unnamed", a_ref->GetFormID());
+        if (name && *name) return std::format("{} ({:08X})", name, a_ref->GetFormID());
+        // 0.18.0: no name (a rock, a tree): its mesh's file name says what it is
+        std::string what = "unnamed";
+        auto*       base  = a_ref->GetBaseObject();
+        auto*       model = base ? base->As<RE::TESModel>() : nullptr;
+        if (const char* path = model ? model->GetModel() : nullptr; path && *path) {
+            std::string m = path;
+            if (const auto slash = m.find_last_of("\\/"); slash != std::string::npos) m.erase(0, slash + 1);
+            if (const auto dot = m.rfind('.'); dot != std::string::npos) m.erase(dot);
+            if (!m.empty()) what = m;
+        }
+        return std::format("{} ({:08X})", what, a_ref->GetFormID());
     }
 }
