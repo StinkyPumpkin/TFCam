@@ -399,7 +399,12 @@ namespace FreeCam {
     }
 
     void SetApiRoll(float a_roll) {
-        if (std::isfinite(a_roll)) s_apiRoll = a_roll;
+        if (!std::isfinite(a_roll)) return;
+        if ((a_roll != 0.0f) != (s_apiRoll != 0.0f)) {
+            SKSE::log::info("FreeCam: another mod's camera roll {} ({:.1f} degrees)", a_roll != 0.0f ? "set" : "cleared",
+                a_roll * 57.29578f);
+        }
+        s_apiRoll = a_roll;
     }
 
     void SetRollRadians(float a_roll) {
@@ -440,6 +445,12 @@ namespace FreeCam {
             // site and keeps its own post-layer rotation (its log: baseRot/finalRot + roll). This multiply touches
             // only the returned quaternion, after all of them, so nothing feeds back and nothing is fought over.
             const float roll = s_rollAngle + s_extraRoll + s_apiRoll;  // 0.17.0: + the orbit's / a path's / an API roll
+            static bool s_apiRollSeen = false;  // 0.17.0: one log line the first time another mod's roll reaches the camera
+            if (s_apiRoll != 0.0f && !s_apiRollSeen) {
+                s_apiRollSeen = true;
+                SKSE::log::info("FreeCam: another mod's roll ({:.1f} degrees) applied to the free camera's rotation",
+                    s_apiRoll * 57.29578f);
+            }
             if (roll != 0.0f) {
                 float halfAngle = roll * 0.5f;
                 float cH = std::cos(halfAngle);
@@ -615,8 +626,8 @@ namespace FreeCam {
                     SKSE::log::info("FreeCam: roll cleared - an FCFW timeline / SLCC {} the camera without a free cam exit",
                         driving ? "released" : "took");
                     s_rollAngle = 0.0f;
-            s_extraRoll = 0.0f;
-            s_apiRoll   = 0.0f;
+                    s_extraRoll = 0.0f;
+                    s_apiRoll   = 0.0f;
                 }
                 s_prevDriving = driving;
             }
