@@ -279,8 +279,7 @@ namespace CamBlur {
         // a_on: a TFCam camera the blur applies to is running at all.
         bool Subject(RE::NiPoint3& a_out, const char*& a_what, bool& a_on) {
             a_on = false;
-            if (CamPath::FocusPoint(a_out, a_what, a_on)) return true;
-            if (a_on) return false;  // a path that looks where its points looked: centre autofocus
+            if (CamPath::Playing()) return false;  // 0.18.0: a playing path decides the blur per camera itself
             if (SceneCam::BlurSubject(a_out, a_what, a_on)) return true;
             if (a_on) return false;
             if (ConvoCam::OwnsMotion()) {

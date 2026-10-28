@@ -1,6 +1,9 @@
 #include "CamPath.h"
+#include "CamBlur.h"
 #include "CamFocus.h"
+#include "CamPathWindow.h"
 #include "FreeCamController.h"
+#include "FreezeTime.h"
 #include "SceneCam.h"
 #include "SlccBridge.h"
 
@@ -10,6 +13,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <functional>
@@ -21,43 +25,84 @@
 namespace CamPath {
 
     namespace {
-        constexpr float  kPi            = 3.14159265358979f;
-        constexpr float  kLn2           = 0.69314718f;
-        constexpr float  kPitchLimit    = 1.55f;  // ~89 degrees, no flip
-        constexpr float  kStartBlend    = 1.0f;   // glide: seconds from where the camera is to the path's start
-        constexpr float  kFocusHalfLife = 0.2f;   // focus point / heading smoothing
-        constexpr int    kMaxPoints     = 32;
-        constexpr int    kSamples       = 48;     // per curved segment, for the even-speed (arc length) table
-        constexpr double kPendingTimeout = 1.5;   // Play waits this long for TFCam free-fly
+        constexpr float  kPi             = 3.14159265358979f;
+        constexpr float  kTwoPi          = 2.0f * kPi;
+        constexpr float  kLn2            = 0.69314718f;
+        constexpr float  kPitchLimit     = 1.55f;  // ~89 degrees, no flip
+        constexpr float  kStartGlide     = 1.0f;   // seconds from where the camera is to camera 1
+        constexpr float  kPivotHalfLife  = 0.2f;   // live pivot position / heading smoothing
+        constexpr int    kSamples        = 32;     // per curved move, for the even-speed table
+        constexpr double kPendingTimeout = 1.5;    // Play waits this long for TFCam free-fly
+        constexpr float  kRecordStep     = 0.4f;   // record manual path: a camera at most this often (seconds)
+        constexpr float  kRecordMove     = 3.0f;   // ... once the camera moved this many units
+        constexpr float  kRecordTurn     = 0.02f;  // ... or turned this many radians
 
         Settings s_settings;
 
         // ---- math --------------------------------------------------------------------------------------------------
-        float WrapPi(float a_angle) { return std::remainder(a_angle, 2.0f * kPi); }
-
+        float WrapPi(float a_angle) { return std::remainder(a_angle, kTwoPi); }
+        float Clamp01(float a_x) { return std::clamp(a_x, 0.0f, 1.0f); }
         float SmoothStep(float a_x) {
-            a_x = std::clamp(a_x, 0.0f, 1.0f);
+            a_x = Clamp01(a_x);
             return a_x * a_x * (3.0f - 2.0f * a_x);
         }
-
-        float ExpWeight(float a_dt, float a_halfLife) { return a_dt <= 0.0f ? 0.0f : 1.0f - std::exp(-kLn2 * a_dt / a_halfLife); }
-
-        float Length(const RE::NiPoint3& a_v) { return std::sqrt(a_v.x * a_v.x + a_v.y * a_v.y + a_v.z * a_v.z); }
-
-        RE::NiPoint3 Mix(const RE::NiPoint3& a_a, const RE::NiPoint3& a_b, float a_w) {
-            return { a_a.x + (a_b.x - a_a.x) * a_w, a_a.y + (a_b.y - a_a.y) * a_w, a_a.z + (a_b.z - a_a.z) * a_w };
+        float ExpWeight(float a_dt, float a_halfLife) {
+            if (a_halfLife <= 0.0001f) return 1.0f;
+            return a_dt <= 0.0f ? 0.0f : 1.0f - std::exp(-kLn2 * a_dt / a_halfLife);
         }
+        float        Dot(const RE::NiPoint3& a, const RE::NiPoint3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+        float        Length(const RE::NiPoint3& a_v) { return std::sqrt(Dot(a_v, a_v)); }
+        RE::NiPoint3 Mix(const RE::NiPoint3& a, const RE::NiPoint3& b, float w) {
+            return { a.x + (b.x - a.x) * w, a.y + (b.y - a.y) * w, a.z + (b.z - a.z) * w };
+        }
+        bool Finite(const RE::NiPoint3& p) { return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z); }
 
-        // Turn a_v by heading a_h (Skyrim's angle Z: clockwise from +Y, the way an actor's heading turns).
+        // Turn a_v by heading a_h (Skyrim's angle Z: clockwise from +Y).
         RE::NiPoint3 RotZ(const RE::NiPoint3& a_v, float a_h) {
             const float c = std::cos(a_h), s = std::sin(a_h);
             return { a_v.x * c + a_v.y * s, -a_v.x * s + a_v.y * c, a_v.z };
         }
 
-        // TFCam's camera convention: forward = (sin yaw * cos pitch, cos yaw * cos pitch, -sin pitch).
+        // TFCam's camera convention: forward = (sin yaw cos pitch, cos yaw cos pitch, -sin pitch); + pitch looks down.
+        RE::NiPoint3 Forward(float a_yaw, float a_pitch) {
+            return { std::sin(a_yaw) * std::cos(a_pitch), std::cos(a_yaw) * std::cos(a_pitch), -std::sin(a_pitch) };
+        }
+
+        // Yaw / pitch looking along a_dir; a_yaw is left alone when a_dir is (almost) straight up or down.
         void LookAngles(const RE::NiPoint3& a_dir, float& a_yaw, float& a_pitch) {
-            a_yaw   = std::atan2(a_dir.x, a_dir.y);
-            a_pitch = std::atan2(-a_dir.z, std::hypot(a_dir.x, a_dir.y));
+            const float flat = std::hypot(a_dir.x, a_dir.y);
+            if (flat > 1e-4f) a_yaw = std::atan2(a_dir.x, a_dir.y);
+            a_pitch = std::atan2(-a_dir.z, flat);
+        }
+
+        RE::NiPoint3 Normalized(const RE::NiPoint3& a_v, const RE::NiPoint3& a_fallback) {
+            const float len = Length(a_v);
+            return len > 1e-5f && std::isfinite(len) ? a_v * (1.0f / len) : a_fallback;
+        }
+
+        // Spherical blend of two unit directions.
+        RE::NiPoint3 SlerpDir(const RE::NiPoint3& a_a, const RE::NiPoint3& a_b, float a_w) {
+            const float d = std::clamp(Dot(a_a, a_b), -1.0f, 1.0f);
+            if (d > 0.9995f) return Normalized(Mix(a_a, a_b, a_w), a_b);
+            RE::NiPoint3 b = a_b;
+            if (d < -0.9995f) {  // opposite: go round through the side
+                b = Normalized(RE::NiPoint3{ -a_a.y, a_a.x, 0.0f }, RE::NiPoint3{ 1.0f, 0.0f, 0.0f });
+                return a_w < 0.5f ? SlerpDir(a_a, b, a_w * 2.0f) : SlerpDir(b, a_b, (a_w - 0.5f) * 2.0f);
+            }
+            const float th = std::acos(d);
+            const float s  = std::sin(th);
+            const float wa = std::sin((1.0f - a_w) * th) / s;
+            const float wb = std::sin(a_w * th) / s;
+            return Normalized(a_a * wa + b * wb, b);
+        }
+
+        // 0..1 progress with a slow start (a_in) and / or a slow stop (a_out) - cubic Hermite, speed 0 or 1 at each end.
+        float Ease(float a_f, bool a_in, bool a_out) {
+            const float f  = Clamp01(a_f);
+            const float v0 = a_in ? 0.0f : 1.0f;
+            const float v1 = a_out ? 0.0f : 1.0f;
+            const float f2 = f * f, f3 = f2 * f;
+            return v0 * (f3 - 2.0f * f2 + f) + (-2.0f * f3 + 3.0f * f2) + v1 * (f3 - f2);
         }
 
         double Now() {
@@ -90,7 +135,7 @@ namespace CamPath {
 
         void SetFOV(float a_fov) {
             auto* cam = RE::PlayerCamera::GetSingleton();
-            if (cam && a_fov > 0.0f && std::isfinite(a_fov)) cam->GetRuntimeData2().worldFOV = a_fov;
+            if (cam && a_fov > 0.0f && std::isfinite(a_fov)) cam->GetRuntimeData2().worldFOV = std::clamp(a_fov, 5.0f, 150.0f);
         }
 
         RE::FreeCameraState* CurrentFreeCam() {
@@ -100,92 +145,160 @@ namespace CamPath {
             return state ? static_cast<RE::FreeCameraState*>(state) : nullptr;
         }
 
-        // ---- status ------------------------------------------------------------------------------------------------
-        std::mutex s_statusLock;
-        MenuStatus s_status;
+        // ---- the path (s_lock) ---------------------------------------------------------------------------------------
+        std::mutex       s_lock;
+        std::vector<Cam> s_cams;
+        std::string      s_name      = "Current";
+        int              s_pivotKind = 0;  // 0 = you / your scene, 1 = a reference
+        RE::FormID       s_pivotRef  = 0;
+        bool             s_follow    = false;
+        bool             s_loop      = false;
+        std::string      s_lastEvent;
+        std::vector<std::string> s_savedPaths;
+        // play state copied for the window (s_lock)
+        bool  s_pubPlaying = false, s_pubPaused = false, s_pubRecording = false, s_pubFreeCam = false;
+        int   s_pubAt      = -1;
+        float s_pubProgress = 0.0f;
+        std::string s_pubPivotName = "you";
+        bool  s_loaded = false;
+
+        void EventLocked(std::string a_text) {
+            SKSE::log::info("CamPath: {}", a_text);
+            s_lastEvent = std::move(a_text);
+        }
 
         void Event(std::string a_text) {
-            SKSE::log::info("CamPath: {}", a_text);
-            std::scoped_lock lock(s_statusLock);
-            std::snprintf(s_status.lastEvent, sizeof(s_status.lastEvent), "%s", a_text.c_str());
+            std::scoped_lock lock(s_lock);
+            EventLocked(std::move(a_text));
         }
 
-        void Notify(const char* a_hud, std::string_view a_log) {
-            RE::SendHUDMessage::ShowHUDMessage(a_hud);
-            Event(std::string(a_log));
+        void Notify(const std::string& a_hud) { RE::SendHUDMessage::ShowHUDMessage(a_hud.c_str()); }
+
+        void Queue(std::function<void()> a_fn) {
+            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(std::move(a_fn));
         }
 
-        // ---- points ------------------------------------------------------------------------------------------------
-        struct Point {
-            RE::NiPoint3 pos{};
-            float        yaw   = 0.0f;
-            float        pitch = 0.0f;
-            float        roll  = 0.0f;
-            float        fov   = 70.0f;
-            bool         haveRel = false;  // the focus was known when it was added
-            RE::NiPoint3 rel{};            // offset from the focus, in the focus's own frame
-            float        relYaw = 0.0f;    // yaw minus the focus's heading
-        };
-        std::vector<Point> s_points;  // main thread (SKSE tasks included)
-        bool               s_loaded = false;
-
-        std::wstring FilePath() {
+        // ---- files -------------------------------------------------------------------------------------------------
+        std::filesystem::path PathsDir() {
             wchar_t     buf[MAX_PATH] = {};
-            const DWORD len = ::GetFullPathNameW(L"Data\\SKSE\\Plugins\\TFCam\\CameraPath.tsv", MAX_PATH, buf, nullptr);
-            return len > 0 && len < MAX_PATH ? std::wstring(buf, len) : std::wstring(L"Data\\SKSE\\Plugins\\TFCam\\CameraPath.tsv");
+            const DWORD len = ::GetFullPathNameW(L"Data\\SKSE\\Plugins\\TFCam\\Paths", MAX_PATH, buf, nullptr);
+            return len > 0 && len < MAX_PATH ? std::filesystem::path(std::wstring(buf, len)) : std::filesystem::path(L"Data\\SKSE\\Plugins\\TFCam\\Paths");
         }
 
-        void Save() {
-            wchar_t     dir[MAX_PATH] = {};
-            const DWORD len = ::GetFullPathNameW(L"Data\\SKSE\\Plugins\\TFCam", MAX_PATH, dir, nullptr);
-            if (len > 0 && len < MAX_PATH) ::CreateDirectoryW(dir, nullptr);
-            const std::wstring file = FilePath();
-            const std::wstring tmp  = file + L".tmp";
+        std::string CleanName(std::string a_name) {
+            std::string out;
+            for (char c : a_name) {
+                if (std::isalnum(static_cast<unsigned char>(c)) || c == ' ' || c == '-' || c == '_') out.push_back(c);
+            }
+            while (!out.empty() && out.back() == ' ') out.pop_back();
+            while (!out.empty() && out.front() == ' ') out.erase(out.begin());
+            if (out.size() > 40) out.resize(40);
+            return out;
+        }
+
+        void RefreshSavedLocked() {
+            s_savedPaths.clear();
+            std::error_code ec;
+            for (const auto& e : std::filesystem::directory_iterator(PathsDir(), ec)) {
+                if (!e.is_regular_file() || e.path().extension() != ".tsv") continue;
+                const auto stem = e.path().stem().string();
+                if (stem != "Current") s_savedPaths.push_back(stem);
+            }
+            std::sort(s_savedPaths.begin(), s_savedPaths.end());
+        }
+
+        bool WriteLocked(const std::string& a_name) {
+            std::error_code ec;
+            std::filesystem::create_directories(PathsDir(), ec);
+            const auto file = PathsDir() / (a_name + ".tsv");
+            const auto tmp  = PathsDir() / (a_name + ".tsv.tmp");
             {
                 std::ofstream out(tmp, std::ios::out | std::ios::binary | std::ios::trunc);
                 if (!out) {
-                    SKSE::log::error("CamPath: cannot write the camera path file (Windows error {})", ::GetLastError());
-                    return;
+                    SKSE::log::error("CamPath: cannot write {}", file.string());
+                    return false;
                 }
-                out << "# TFCam camera path v1: x y z yaw pitch roll fov (radians / degrees) | focus known, offset in the "
-                       "focus's frame, yaw minus its heading\n";
-                for (const auto& p : s_points) {
-                    out << std::format("pt\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{:.5f}\t{:.5f}\t{:.2f}\t{}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\n",
-                        p.pos.x, p.pos.y, p.pos.z, p.yaw, p.pitch, p.roll, p.fov, p.haveRel ? 1 : 0, p.rel.x, p.rel.y,
-                        p.rel.z, p.relYaw);
+                out << "# TFCam camera path v2 - tab separated. pivot: kind (0 you, 1 reference) formID follow loop\n"
+                       "# cam: x y z yaw pitch roll fov | pivot x y z heading known | look wait blur strength | move time "
+                       "smooth turns way zoom\n";
+                out << std::format("pivot\t{}\t{:08X}\t{}\t{}\n", s_pivotKind, s_pivotRef, s_follow ? 1 : 0, s_loop ? 1 : 0);
+                for (const auto& c : s_cams) {
+                    out << std::format("cam\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{:.5f}\t{:.5f}\t{:.2f}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{}"
+                                       "\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{}\t{}\t{}\n",
+                        c.pos.x, c.pos.y, c.pos.z, c.yaw, c.pitch, c.roll, c.fov, c.pivotPos.x, c.pivotPos.y, c.pivotPos.z,
+                        c.pivotHeading, c.havePivot ? 1 : 0, c.look, c.wait, c.blur ? 1 : 0, c.blurStrength, c.move, c.time,
+                        c.smooth ? 1 : 0, c.turns, c.way, c.zoomTrick ? 1 : 0);
                 }
             }
-            if (!::MoveFileExW(tmp.c_str(), file.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-                SKSE::log::error("CamPath: replacing the camera path file failed (Windows error {})", ::GetLastError());
+            std::filesystem::rename(tmp, file, ec);
+            if (ec) {
+                std::filesystem::remove(file, ec);
+                std::filesystem::rename(tmp, file, ec);
             }
+            return !ec;
         }
 
-        void Load() {
+        bool ReadLocked(const std::string& a_name) {
+            std::ifstream in(PathsDir() / (a_name + ".tsv"), std::ios::in | std::ios::binary);
+            if (!in) return false;
+            std::vector<Cam> cams;
+            int              kind = 0, follow = 0, loop = 0;
+            unsigned         ref  = 0;
+            std::string      line;
+            while (std::getline(in, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (line.starts_with("pivot\t")) {
+                    std::sscanf(line.c_str() + 6, "%d %x %d %d", &kind, &ref, &follow, &loop);
+                    continue;
+                }
+                if (!line.starts_with("cam\t")) continue;
+                Cam c;
+                int have = 0, blur = 0, smooth = 1, zoom = 0;
+                const int n = std::sscanf(line.c_str() + 4, "%f %f %f %f %f %f %f %f %f %f %f %d %d %f %d %f %d %f %d %d %d %d",
+                    &c.pos.x, &c.pos.y, &c.pos.z, &c.yaw, &c.pitch, &c.roll, &c.fov, &c.pivotPos.x, &c.pivotPos.y,
+                    &c.pivotPos.z, &c.pivotHeading, &have, &c.look, &c.wait, &blur, &c.blurStrength, &c.move, &c.time,
+                    &smooth, &c.turns, &c.way, &zoom);
+                if (n < 22 || !Finite(c.pos) || !std::isfinite(c.yaw) || !std::isfinite(c.pitch)) continue;
+                c.havePivot = have != 0;
+                c.blur      = blur != 0;
+                c.smooth    = smooth != 0;
+                c.zoomTrick = zoom != 0;
+                cams.push_back(c);
+            }
+            s_cams      = std::move(cams);
+            s_pivotKind = kind == 1 ? 1 : 0;
+            s_pivotRef  = ref;
+            s_follow    = follow != 0;
+            s_loop      = loop != 0;
+            return true;
+        }
+
+        void LoadOnce() {
+            std::scoped_lock lock(s_lock);
             if (s_loaded) return;
             s_loaded = true;
-            std::ifstream in(FilePath(), std::ios::in | std::ios::binary);
-            if (!in) return;
-            std::string line;
-            while (std::getline(in, line) && static_cast<int>(s_points.size()) < kMaxPoints) {
-                if (!line.starts_with("pt\t")) continue;
-                Point p;
-                int   rel = 0;
-                const int n = std::sscanf(line.c_str() + 3, "%f %f %f %f %f %f %f %d %f %f %f %f", &p.pos.x, &p.pos.y, &p.pos.z,
-                    &p.yaw, &p.pitch, &p.roll, &p.fov, &rel, &p.rel.x, &p.rel.y, &p.rel.z, &p.relYaw);
-                if (n < 7 || !std::isfinite(p.pos.x) || !std::isfinite(p.yaw) || !std::isfinite(p.fov)) continue;
-                p.haveRel = n >= 12 && rel != 0;
-                s_points.push_back(p);
-            }
-            SKSE::log::info("CamPath: loaded {} camera path point(s)", s_points.size());
+            if (ReadLocked("Current")) SKSE::log::info("CamPath: loaded the current path - {} camera(s)", s_cams.size());
+            RefreshSavedLocked();
         }
 
-        // ---- focus -------------------------------------------------------------------------------------------------
-        // The focus as it is right now: its point and heading. a_what: what it is, for the menu.
-        bool FocusRaw(RE::NiPoint3& a_out, float& a_heading, std::string* a_what) {
-            if (s_settings.focus == 1) {
-                if (auto ref = CamFocus::ConsoleRef(); ref && CamFocus::RefPoint(ref.get(), a_out)) {
+        std::atomic<bool> s_dirty{ false };
+        void SaveCurrentSoon() {
+            if (s_dirty.exchange(true)) return;
+            Queue([] {
+                s_dirty = false;
+                std::scoped_lock lock(s_lock);
+                WriteLocked("Current");
+            });
+        }
+
+        // ---- pivot -------------------------------------------------------------------------------------------------
+        // The pivot as it is right now: its middle (where the camera looks), heading and name.
+        bool PivotRaw(int a_kind, RE::FormID a_ref, RE::NiPoint3& a_out, float& a_heading, std::string* a_name) {
+            if (a_kind == 1 && a_ref) {
+                auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_ref);
+                if (ref && !ref->IsDeleted() && ref->Get3D() && CamFocus::RefPoint(ref, a_out)) {
                     a_heading = ref->GetAngleZ();
-                    if (a_what) *a_what = "console selection: " + CamFocus::Describe(ref.get());
+                    if (a_name) *a_name = CamFocus::Describe(ref);
                     return true;
                 }
             }
@@ -193,88 +306,83 @@ namespace CamPath {
             if (!SceneCam::SubjectPoint(a_out, &what)) return false;
             auto* player = RE::PlayerCharacter::GetSingleton();
             a_heading    = player ? player->GetAngleZ() : 0.0f;
-            if (a_what) *a_what = s_settings.focus == 1 ? "nothing selected in the console - " + what : what;
+            if (a_name) *a_name = a_kind == 1 ? "you (the picked one is not here)" : "you";
             return true;
         }
 
-        // ---- playback ----------------------------------------------------------------------------------------------
-        struct Pose {
-            RE::NiPoint3 pos{};
-            float        yaw   = 0.0f;
-            float        pitch = 0.0f;
-            float        roll  = 0.0f;
-            float        fov   = 70.0f;
-        };
-
-        enum Channel : int { kYaw = 0, kPitch, kRoll, kFov, kChannels };
-
+        // ---- playback (main thread) --------------------------------------------------------------------------------
         struct Play {
             bool                      on       = false;
-            bool                      blending = false;
-            float                     blendT   = 0.0f;
-            Pose                      from;
-            float                     t        = 0.0f;
-            bool                      closed   = false;
+            bool                      paused   = false;
+            bool                      gliding  = false;
+            float                     glideT   = 0.0f;
+            RE::NiPoint3              fromPos{};
+            RE::NiPoint3              fromFwd{ 0.0f, 1.0f, 0.0f };
+            float                     fromRoll = 0.0f;
+            float                     fromFov  = 70.0f;
+            std::vector<Cam>          cams;
+            std::vector<RE::NiPoint3> base;     // per camera: world position, or offset in the pivot's frame (follow)
+            std::vector<float>        baseYaw;  // per camera: yaw, or yaw minus the pivot's heading (follow)
+            std::vector<RE::NiPoint3> centre;   // per camera: the pivot then (world), or the origin (follow)
+            std::vector<std::vector<float>> arc; // per camera: curved move's arc-length table (kSamples + 1)
             bool                      follow   = false;
-            bool                      snap     = false;
-            bool                      curved   = true;
-            int                       loop     = 0;
-            float                     duration = 12.0f;
-            std::vector<RE::NiPoint3> base;  // positions played: world, or offsets in the focus's frame (follow)
-            std::vector<float>        ang[kChannels];
-            float                     lap[kChannels] = {};  // closed paths: what one lap adds to an unwrapped angle
-            // curved: the arc length table (segment, u, cumulative length); straight: cumulative length per point
-            std::vector<int>          tabSeg;
-            std::vector<float>        tabU;
-            std::vector<float>        tabLen;
-            float                     length  = 0.0f;
-            RE::NiPoint3              focus{};
-            float                     heading = 0.0f;
-            bool                      haveFocus = false;
-            std::string               focusWhat;
-            float                     progress = 0.0f;
+            bool                      loop     = false;
+            int                       pivotKind = 0;
+            RE::FormID                pivotRef  = 0;
+            int                       k        = 0;   // camera
+            int                       phase    = 0;   // 0 = waiting at camera k, 1 = moving on from it
+            float                     t        = 0.0f;
+            float                     fovCarry = 70.0f;  // the FOV the camera arrived with (zoom trick)
+            float                     segFov   = 70.0f;  // the FOV / pivot distance a move started with
+            float                     segDist  = 100.0f;
+            RE::NiPoint3              pivot{};
+            float                     heading  = 0.0f;
+            bool                      havePivot = false;
+            std::string               pivotName;
+            bool                      haveOut  = false;
+            RE::NiPoint3              outPos{};
+            RE::NiPoint3              outFwd{ 0.0f, 1.0f, 0.0f };
+            float                     outYaw   = 0.0f;
+            float                     outRoll  = 0.0f;
+            float                     outFov   = 70.0f;
+            float                     blur     = 0.0f;
+            bool                      blurOn   = false;
+            float                     total    = 0.0f;
+            float                     elapsed  = 0.0f;
         };
-        Play s_play;
-
+        Play   s_play;
         bool   s_pendingPlay  = false;
         double s_pendingUntil = 0.0;
 
-        // Main thread: what the menu page shows (it runs on the render thread and reads only s_status).
-        void PublishCounts() {
-            std::scoped_lock lock(s_statusLock);
-            s_status.points  = static_cast<int>(s_points.size());
-            s_status.playing = s_play.on;
-            s_status.length  = s_play.on ? s_play.length : 0.0f;
-            if (!s_play.on) s_status.progress = 0.0f;
+        // Record manual path (main thread).
+        struct Record {
+            bool         on = false;
+            float        sinceLast = 0.0f;
+            RE::NiPoint3 lastPos{};
+            float        lastYaw = 0.0f, lastPitch = 0.0f;
+        };
+        Record s_rec;
+
+        int Count() { return static_cast<int>(s_play.cams.size()); }
+        int Next(int a_k) {
+            const int n = Count();
+            if (a_k + 1 < n) return a_k + 1;
+            return s_play.loop && n > 1 ? 0 : -1;
         }
 
-        int Count() { return static_cast<int>(s_play.base.size()); }
-        int Segments() { return s_play.closed ? Count() : Count() - 1; }
-
-        RE::NiPoint3 P(int a_i) {
+        RE::NiPoint3 BaseAt(int a_i) {
             const int n = Count();
-            if (s_play.closed) return s_play.base[((a_i % n) + n) % n];
-            if (a_i < 0) return s_play.base[0] * 2.0f - s_play.base[1];
-            if (a_i >= n) return s_play.base[n - 1] * 2.0f - s_play.base[n - 2];
+            if (s_play.loop) return s_play.base[((a_i % n) + n) % n];
+            if (a_i < 0) return s_play.base[0] * 2.0f - s_play.base[std::min(1, n - 1)];
+            if (a_i >= n) return s_play.base[n - 1] * 2.0f - s_play.base[std::max(n - 2, 0)];
             return s_play.base[a_i];
         }
 
-        float V(int a_ch, int a_i) {
-            const auto& a = s_play.ang[a_ch];
-            const int   n = Count();
-            if (s_play.closed) {
-                const int k    = ((a_i % n) + n) % n;
-                const int laps = (a_i - k) / n;
-                return a[k] + static_cast<float>(laps) * s_play.lap[a_ch];
-            }
-            if (a_i < 0) return 2.0f * a[0] - a[1];
-            if (a_i >= n) return 2.0f * a[n - 1] - a[n - 2];
-            return a[a_i];
-        }
-
-        // Centripetal Catmull-Rom (Barry-Goldman), segment a_seg from point a_seg to a_seg + 1.
-        RE::NiPoint3 Curve(int a_seg, float a_u) {
-            const RE::NiPoint3 p0 = P(a_seg - 1), p1 = P(a_seg), p2 = P(a_seg + 1), p3 = P(a_seg + 2);
+        // Centripetal Catmull-Rom between base positions a_k and a_next.
+        RE::NiPoint3 CurvePos(int a_k, int a_next, float a_u) {
+            const RE::NiPoint3 p1 = s_play.base[a_k], p2 = s_play.base[a_next];
+            const RE::NiPoint3 p0 = (s_play.loop || a_k > 0) ? BaseAt(a_k - 1) : p1 * 2.0f - p2;
+            const RE::NiPoint3 p3 = (s_play.loop || a_next + 1 < Count()) ? BaseAt(a_next + 1) : p2 * 2.0f - p1;
             auto knot = [](const RE::NiPoint3& a, const RE::NiPoint3& b) { return (std::max)(std::sqrt(Length(b - a)), 1e-3f); };
             const float t0 = 0.0f, t1 = t0 + knot(p0, p1), t2 = t1 + knot(p1, p2), t3 = t2 + knot(p2, p3);
             const float t  = t1 + (t2 - t1) * a_u;
@@ -286,174 +394,217 @@ namespace CamPath {
             return b1 * ((t2 - t) / (t2 - t1)) + b2 * ((t - t1) / (t2 - t1));
         }
 
-        // Uniform Catmull-Rom on one angle / FOV channel.
-        float CurveV(int a_ch, int a_seg, float a_u) {
-            const float v0 = V(a_ch, a_seg - 1), v1 = V(a_ch, a_seg), v2 = V(a_ch, a_seg + 1), v3 = V(a_ch, a_seg + 2);
-            const float u2 = a_u * a_u, u3 = u2 * a_u;
-            return 0.5f * (2.0f * v1 + (-v0 + v2) * a_u + (2.0f * v0 - 5.0f * v1 + 4.0f * v2 - v3) * u2 +
-                              (-v0 + 3.0f * v1 - 3.0f * v2 + v3) * u3);
+        // Even speed along a curve: progress a_u (0..1 of the length) -> the curve's own parameter.
+        float CurveParam(int a_k, float a_u) {
+            const auto& L = s_play.arc[a_k];
+            if (L.size() < 2 || L.back() <= 1e-3f) return a_u;
+            const float s  = Clamp01(a_u) * L.back();
+            auto        it = std::lower_bound(L.begin(), L.end(), s);
+            const auto  i  = static_cast<std::size_t>(std::distance(L.begin(), it));
+            if (i == 0) return 0.0f;
+            if (i >= L.size()) return 1.0f;
+            const float span = L[i] - L[i - 1];
+            const float w    = span > 1e-4f ? (s - L[i - 1]) / span : 1.0f;
+            return (static_cast<float>(i - 1) + w) / kSamples;
         }
 
-        void BuildTable() {
-            s_play.tabSeg.clear();
-            s_play.tabU.clear();
-            s_play.tabLen.clear();
-            float total = 0.0f;
-            if (s_play.curved) {
-                RE::NiPoint3 prev = Curve(0, 0.0f);
-                s_play.tabSeg.push_back(0);
-                s_play.tabU.push_back(0.0f);
-                s_play.tabLen.push_back(0.0f);
-                for (int seg = 0; seg < Segments(); ++seg) {
-                    for (int k = 1; k <= kSamples; ++k) {
-                        const float        u = static_cast<float>(k) / kSamples;
-                        const RE::NiPoint3 p = Curve(seg, u);
-                        total += Length(p - prev);
-                        prev = p;
-                        s_play.tabSeg.push_back(seg);
-                        s_play.tabU.push_back(u);
-                        s_play.tabLen.push_back(total);
-                    }
-                }
-            } else {
-                s_play.tabLen.push_back(0.0f);
-                for (int seg = 0; seg < Segments(); ++seg) {
-                    total += Length(P(seg + 1) - P(seg));
-                    s_play.tabLen.push_back(total);
-                }
-            }
-            s_play.length = total;
+        // Signed angle for "which way round" + extra turns (a_d = the shortest signed difference).
+        float WayAngle(float a_d, int a_way, int a_turns) {
+            float d = a_d;
+            if (a_way == kWayRight && d < 0.0f) d += kTwoPi;   // right = clockwise = the angle grows
+            if (a_way == kWayLeft && d > 0.0f) d -= kTwoPi;
+            const float sign = a_way == kWayLeft ? -1.0f : (a_way == kWayRight ? 1.0f : (d < 0.0f ? -1.0f : 1.0f));
+            return d + sign * kTwoPi * static_cast<float>(std::max(a_turns, 0));
         }
 
-        // The pose a_g (0..1) of the way along the path, in the base frame (world, or the focus's frame).
-        Pose Along(float a_g) {
-            Pose        out;
-            const int   segs = Segments();
-            const float s    = std::clamp(a_g, 0.0f, 1.0f) * s_play.length;
-            int         seg  = 0;
-            float       u    = 0.0f;
-            if (s_play.curved) {
-                const auto& L  = s_play.tabLen;
-                auto        it = std::lower_bound(L.begin(), L.end(), s);
-                std::size_t i  = static_cast<std::size_t>(std::distance(L.begin(), it));
-                if (i == 0) {
-                    seg = 0;
-                    u   = 0.0f;
-                } else if (i >= L.size()) {
-                    seg = segs - 1;
-                    u   = 1.0f;
-                } else {
-                    const float span = L[i] - L[i - 1];
-                    const float w    = span > 1e-4f ? (s - L[i - 1]) / span : 1.0f;
-                    seg              = s_play.tabSeg[i];
-                    const float u0   = s_play.tabSeg[i - 1] == seg ? s_play.tabU[i - 1] : 0.0f;
-                    u                = u0 + (s_play.tabU[i] - u0) * w;
-                }
-                if (s_play.length <= 1e-3f) {  // all points in one spot: move through them by time instead
-                    const float f = std::clamp(a_g, 0.0f, 1.0f) * static_cast<float>(segs);
-                    seg           = std::clamp(static_cast<int>(f), 0, segs - 1);
-                    u             = f - static_cast<float>(seg);
-                }
-                out.pos   = Curve(seg, u);
-                out.yaw   = CurveV(kYaw, seg, u);
-                out.pitch = CurveV(kPitch, seg, u);
-                out.roll  = CurveV(kRoll, seg, u);
-                out.fov   = CurveV(kFov, seg, u);
-            } else {
-                const auto& L = s_play.tabLen;
-                if (s_play.length <= 1e-3f) {
-                    const float f = std::clamp(a_g, 0.0f, 1.0f) * static_cast<float>(segs);
-                    seg           = std::clamp(static_cast<int>(f), 0, segs - 1);
-                    u             = SmoothStep(f - static_cast<float>(seg));
-                } else {
-                    while (seg < segs - 1 && s > L[seg + 1]) ++seg;
-                    const float span = L[seg + 1] - L[seg];
-                    u                = SmoothStep(span > 1e-4f ? (s - L[seg]) / span : 1.0f);  // eases in and out at each point
-                }
-                out.pos   = Mix(P(seg), P(seg + 1), u);
-                out.yaw   = V(kYaw, seg) + (V(kYaw, seg + 1) - V(kYaw, seg)) * u;
-                out.pitch = V(kPitch, seg) + (V(kPitch, seg + 1) - V(kPitch, seg)) * u;
-                out.roll  = V(kRoll, seg) + (V(kRoll, seg + 1) - V(kRoll, seg)) * u;
-                out.fov   = V(kFov, seg) + (V(kFov, seg + 1) - V(kFov, seg)) * u;
+        // Base-frame position along move a_k -> a_next at eased progress a_u.
+        RE::NiPoint3 MovePos(int a_k, int a_next, float a_u) {
+            const auto& c = s_play.cams[a_k];
+            switch (c.move) {
+            case kMoveStraight:
+                return Mix(s_play.base[a_k], s_play.base[a_next], a_u);
+            case kMoveAround: {
+                const RE::NiPoint3 c0 = s_play.centre[a_k], c1 = s_play.centre[a_next];
+                const RE::NiPoint3 o0 = s_play.base[a_k] - c0, o1 = s_play.base[a_next] - c1;
+                const float r0 = std::hypot(o0.x, o0.y), r1 = std::hypot(o1.x, o1.y);
+                const float a0 = std::atan2(o0.x, o0.y), a1 = std::atan2(o1.x, o1.y);
+                const float da = WayAngle(WrapPi(a1 - a0), c.way, c.turns);
+                const float r  = r0 + (r1 - r0) * a_u;
+                const float a  = a0 + da * a_u;
+                const float h  = o0.z + (o1.z - o0.z) * a_u;
+                return Mix(c0, c1, a_u) + RE::NiPoint3{ std::sin(a) * r, std::cos(a) * r, h };
             }
+            default:
+                return CurvePos(a_k, a_next, CurveParam(a_k, a_u));
+            }
+        }
+
+        RE::NiPoint3 ToWorld(const RE::NiPoint3& a_base) {
+            return s_play.follow ? s_play.pivot + RotZ(a_base, s_play.heading) : a_base;
+        }
+
+        RE::NiPoint3 AimPoint() { return s_play.pivot + RE::NiPoint3{ 0.0f, 0.0f, s_settings.aimHeight }; }
+
+        float SetYaw(int a_i) { return s_play.baseYaw[a_i] + (s_play.follow ? s_play.heading : 0.0f); }
+
+        // The way camera a_i looks from a_pos (a_motion = the direction of travel for "where it is going").
+        RE::NiPoint3 LookDir(int a_i, const RE::NiPoint3& a_pos, const RE::NiPoint3& a_motion) {
+            const auto& c = s_play.cams[a_i];
+            switch (c.look) {
+            case kLookPivot:
+                if (s_play.havePivot) return Normalized(AimPoint() - a_pos, Forward(SetYaw(a_i), c.pitch));
+                [[fallthrough]];
+            case kLookSet:
+                return Forward(SetYaw(a_i), c.pitch);
+            default:
+                return Normalized(a_motion, s_play.haveOut ? s_play.outFwd : Forward(SetYaw(a_i), c.pitch));
+            }
+        }
+
+        float CamBlurOf(int a_i) {
+            const auto& c = s_play.cams[a_i];
+            return c.blur ? std::clamp(c.blurStrength, 0.0f, 1.0f) : 0.0f;
+        }
+
+        struct Target {
+            RE::NiPoint3 pos{};
+            RE::NiPoint3 fwd{ 0.0f, 1.0f, 0.0f };
+            float        roll = 0.0f;
+            float        fov  = 70.0f;
+            float        blur = 0.0f;
+        };
+
+        bool EaseIn(int a_k) {
+            const auto& c = s_play.cams[a_k];
+            return c.smooth || c.wait > 0.0f || (!s_play.loop && a_k == 0);
+        }
+        bool EaseOut(int a_k, int a_next) {
+            const auto& c = s_play.cams[a_k];
+            return c.smooth || s_play.cams[a_next].wait > 0.0f || (!s_play.loop && Next(a_next) < 0);
+        }
+
+        Target Evaluate() {
+            Target out;
+            const int k = s_play.k;
+            const auto& ck = s_play.cams[k];
+            const int next = Next(k);
+            if (s_play.phase == 0 || next < 0) {
+                out.pos  = ToWorld(s_play.base[k]);
+                out.fwd  = LookDir(k, out.pos, s_play.haveOut ? s_play.outFwd : Forward(SetYaw(k), ck.pitch));
+                out.roll = ck.roll;
+                out.fov  = s_play.fovCarry;
+                out.blur = CamBlurOf(k);
+                return out;
+            }
+            const auto& cn = s_play.cams[next];
+            const float f  = Clamp01(ck.time > 0.0f ? s_play.t / ck.time : 1.0f);
+            const float u  = Ease(f, EaseIn(k), EaseOut(k, next));
+            const RE::NiPoint3 basePos = MovePos(k, next, u);
+            out.pos = ToWorld(basePos);
+            const RE::NiPoint3 ahead = ToWorld(MovePos(k, next, Ease(std::min(f + 0.02f, 1.0f), EaseIn(k), EaseOut(k, next)))) - out.pos;
+            if (ck.look == kLookSet && cn.look == kLookSet) {
+                // both keep their own view: turn from one to the other (extra turns spin in place unless the move goes
+                // round the pivot, which has them already)
+                const float y0 = SetYaw(k), y1 = SetYaw(next);
+                const float d  = ck.move == kMoveAround ? WrapPi(y1 - y0) : WayAngle(WrapPi(y1 - y0), ck.way, ck.turns);
+                out.fwd = Forward(y0 + d * u, ck.pitch + (cn.pitch - ck.pitch) * u);
+            } else {
+                // Leaving a look at the pivot: keep it in view and turn in the last 40% (a spiral stays on the pivot).
+                // Arriving into one: lock onto the pivot in the first 60% and keep it there. Otherwise over the whole move.
+                float w = SmoothStep(f);
+                if (ck.look == kLookPivot && cn.look != kLookPivot) w = SmoothStep((f - 0.6f) / 0.4f);
+                if (ck.look != kLookPivot && cn.look == kLookPivot) w = SmoothStep(f / 0.6f);
+                out.fwd = SlerpDir(LookDir(k, out.pos, ahead), LookDir(next, out.pos, ahead), w);
+            }
+            out.roll = ck.roll + WrapPi(cn.roll - ck.roll) * u;
+            if (ck.zoomTrick && s_play.havePivot) {
+                const float d = (std::max)(Length(AimPoint() - out.pos), 1.0f);
+                const float half = std::atan(std::tan(s_play.segFov * 0.5f * kPi / 180.0f) * s_play.segDist / d);
+                out.fov = std::clamp(2.0f * half * 180.0f / kPi, 5.0f, 150.0f);
+            } else {
+                out.fov = s_play.segFov + (cn.fov - s_play.segFov) * u;
+            }
+            out.blur = CamBlurOf(k) + (CamBlurOf(next) - CamBlurOf(k)) * u;
             return out;
         }
 
-        Pose PointPose(int a_i) {
-            Pose p;
-            p.pos   = s_play.base[a_i];
-            p.yaw   = s_play.ang[kYaw][a_i];
-            p.pitch = s_play.ang[kPitch][a_i];
-            p.roll  = s_play.ang[kRoll][a_i];
-            p.fov   = s_play.ang[kFov][a_i];
-            return p;
+        void StartMove() {
+            s_play.segFov  = s_play.fovCarry;
+            s_play.segDist = s_play.havePivot ? (std::max)(Length(AimPoint() - ToWorld(s_play.base[s_play.k])), 1.0f) : 100.0f;
         }
 
-        // Base frame -> world (follow mode), then the look at the focus when the path looks there.
-        Pose ToWorld(Pose a_p) {
-            if (s_play.follow) {
-                a_p.pos = s_play.focus + RotZ(a_p.pos, s_play.heading);
-                a_p.yaw += s_play.heading;
-            }
-            if (s_settings.look == 0 && s_play.haveFocus) {
-                const RE::NiPoint3 aim = s_play.focus + RE::NiPoint3{ 0.0f, 0.0f, s_settings.focusHeight };
-                LookAngles(aim - a_p.pos, a_p.yaw, a_p.pitch);
-            }
-            a_p.pitch = std::clamp(a_p.pitch, -kPitchLimit, kPitchLimit);
-            a_p.fov   = std::clamp(a_p.fov, 5.0f, 150.0f);
-            return a_p;
-        }
-
-        // Where the path is at time a_t; a_done = a "once" path is over (the pose is its end).
-        Pose AtTime(float a_t, bool& a_done) {
-            a_done        = false;
-            const float T = (std::max)(s_play.duration, 0.1f);
-            const int   n = Count();
-            if (s_play.snap) {
-                const float hold = T / static_cast<float>(n);
-                int         idx  = static_cast<int>(a_t / hold);
-                if (s_play.loop == 0) {
-                    if (idx >= n) {
-                        a_done = true;
-                        idx    = n - 1;
-                    }
-                } else if (s_play.loop == 1) {
-                    idx %= n;
+        // Advance the clock; false = a "once" path is over.
+        bool Advance(float a_dt) {
+            s_play.t += a_dt;
+            s_play.elapsed += a_dt;
+            for (int guard = 0; guard < 4 * Count() + 4; ++guard) {
+                const auto& c = s_play.cams[s_play.k];
+                if (s_play.phase == 0) {
+                    if (s_play.t < c.wait) return true;
+                    s_play.t -= c.wait;
+                    if (Next(s_play.k) < 0) return false;
+                    s_play.phase = 1;
+                    StartMove();
                 } else {
-                    const int period = 2 * n - 2;
-                    const int k      = idx % period;
-                    idx              = k < n ? k : period - k;
+                    if (s_play.t < c.time) return true;
+                    s_play.t -= c.time;
+                    // the FOV the camera arrives with (a zoom trick keeps its result)
+                    const int next = Next(s_play.k);
+                    s_play.fovCarry = c.zoomTrick ? s_play.outFov : s_play.cams[next].fov;
+                    s_play.k     = next;
+                    s_play.phase = 0;
+                    if (s_play.k == 0) s_play.elapsed = 0.0f;  // a new lap
                 }
-                s_play.progress = std::clamp(static_cast<float>(idx) / static_cast<float>((std::max)(n - 1, 1)), 0.0f, 1.0f);
-                return PointPose(std::clamp(idx, 0, n - 1));
             }
-            float g = 0.0f;
-            if (s_play.loop == 0) {
-                g = a_t / T;
-                if (g >= 1.0f) {
-                    g      = 1.0f;
-                    a_done = true;
-                }
-                if (s_play.curved) g = SmoothStep(g);  // straight lines ease at every point already
-            } else if (s_play.loop == 1 && s_play.closed) {
-                g = std::fmod(a_t / T, 1.0f);
-            } else {  // back and forth (also "loop" with only two points)
-                const float legs = a_t / T;
-                const int   leg  = static_cast<int>(legs);
-                g                = legs - static_cast<float>(leg);
-                if (s_play.curved) g = SmoothStep(g);
-                if (leg % 2 == 1) g = 1.0f - g;
-            }
-            s_play.progress = g;
-            return Along(g);
+            return true;
         }
 
-        void WritePose(RE::FreeCameraState* a_fcs, const Pose& a_p) {
-            a_fcs->translation = a_p.pos;
-            a_fcs->rotation.x  = a_p.pitch;
-            a_fcs->rotation.y  = WrapPi(a_p.yaw);
-            SetFOV(a_p.fov);
-            FreeCam::SetExtraRoll(WrapPi(a_p.roll - FreeCam::GetRollRadians()));
+        void UpdatePivot(float a_dt, bool a_snap) {
+            RE::NiPoint3 raw{};
+            float        heading = 0.0f;
+            std::string  name;
+            if (!PivotRaw(s_play.pivotKind, s_play.pivotRef, raw, heading, &name)) {
+                s_play.havePivot = false;
+                return;
+            }
+            if (!s_play.havePivot || a_snap) {
+                s_play.pivot   = raw;
+                s_play.heading = heading;
+            } else {
+                const float w = ExpWeight(a_dt, kPivotHalfLife);
+                s_play.pivot  = Mix(s_play.pivot, raw, w);
+                s_play.heading += WrapPi(heading - s_play.heading) * w;
+            }
+            s_play.havePivot = true;
+            s_play.pivotName = std::move(name);
+        }
+
+        void WritePose(RE::FreeCameraState* a_fcs) {
+            float yaw = s_play.outYaw, pitch = 0.0f;
+            LookAngles(s_play.outFwd, yaw, pitch);
+            s_play.outYaw     = yaw;
+            a_fcs->translation = s_play.outPos;
+            a_fcs->rotation.x  = std::clamp(pitch, -kPitchLimit, kPitchLimit);
+            a_fcs->rotation.y  = WrapPi(yaw);
+            SetFOV(s_play.outFov);
+            FreeCam::SetExtraRoll(WrapPi(s_play.outRoll - FreeCam::GetRollRadians()));
+        }
+
+        void Publish() {
+            std::scoped_lock lock(s_lock);
+            s_pubPlaying  = s_play.on;
+            s_pubPaused   = s_play.on && s_play.paused;
+            s_pubAt       = s_play.on ? s_play.k : -1;
+            s_pubProgress = s_play.on && s_play.total > 0.0f ? Clamp01(s_play.elapsed / s_play.total) : 0.0f;
+            s_pubRecording = s_rec.on;
+            if (s_play.on) s_pubPivotName = s_play.pivotName;
+        }
+
+        void BlurOff() {
+            if (s_play.blurOn) {
+                CamBlur::External(false, {}, -1.0f);
+                s_play.blurOn = false;
+            }
         }
 
         // The camera stays where the path left it; its roll becomes the free camera's own.
@@ -461,141 +612,101 @@ namespace CamPath {
             if (!s_play.on) return;
             FreeCam::SetRollRadians(WrapPi(FreeCam::GetRollRadians() + FreeCam::GetExtraRoll()));
             FreeCam::SetExtraRoll(0.0f);
-            s_play.on       = false;
-            s_play.blending = false;
-            PublishCounts();
+            BlurOff();
+            s_play.on      = false;
+            s_play.paused  = false;
+            s_play.gliding = false;
             Event(std::format("camera path stopped ({}) - the camera stays where it is", a_why));
-        }
-
-        void UpdateFocus(float a_dt, bool a_snap) {
-            RE::NiPoint3 raw{};
-            float        heading = 0.0f;
-            std::string  what;
-            if (!FocusRaw(raw, heading, &what)) return;
-            if (!s_play.haveFocus || a_snap) {
-                s_play.focus   = raw;
-                s_play.heading = heading;
-            } else {
-                const float w = ExpWeight(a_dt, kFocusHalfLife);
-                s_play.focus  = Mix(s_play.focus, raw, w);
-                s_play.heading += WrapPi(heading - s_play.heading) * w;
-            }
-            s_play.haveFocus = true;
-            s_play.focusWhat = std::move(what);
+            Publish();
         }
 
         bool StartPlay(RE::FreeCameraState* a_fcs, std::string_view a_source) {
-            Load();
-            const int n = static_cast<int>(s_points.size());
-            if (n < 2) {
-                Notify("Camera path: add at least 2 points first", std::format("play refused ({}): {} point(s)", a_source, n));
-                return false;
+            LoadOnce();
+            {
+                std::scoped_lock lock(s_lock);
+                if (s_cams.size() < 2) {
+                    EventLocked(std::format("play refused ({}): {} camera(s)", a_source, s_cams.size()));
+                    Notify("Camera path: add at least 2 cameras first");
+                    return false;
+                }
+                s_play           = Play{};
+                s_play.cams      = s_cams;
+                s_play.follow    = s_follow;
+                s_play.loop      = s_loop;
+                s_play.pivotKind = s_pivotKind;
+                s_play.pivotRef  = s_pivotRef;
             }
-            bool follow = s_settings.followFocus;
-            if (follow && std::any_of(s_points.begin(), s_points.end(), [](const Point& p) { return !p.haveRel; })) {
-                follow = false;
-                Event("some points were added without a focus - the path plays fixed in the world");
-            }
+            if (s_rec.on) s_rec.on = false;
             SceneCam::StandDown("camera path plays");
-            s_play          = Play{};
-            s_play.follow   = follow;
-            s_play.snap     = s_settings.snap;
-            s_play.curved   = s_settings.curved;
-            s_play.loop     = s_settings.loop;
-            s_play.duration = s_settings.duration;
-            s_play.closed   = s_play.loop == 1 && n >= (s_play.curved ? 3 : 2);
-            for (const auto& p : s_points) {
-                s_play.base.push_back(follow ? p.rel : p.pos);
-                const float yaw = follow ? p.relYaw : p.yaw;
-                auto&       ya  = s_play.ang[kYaw];
-                ya.push_back(ya.empty() ? yaw : ya.back() + WrapPi(yaw - ya.back()));
-                auto& ra = s_play.ang[kRoll];
-                ra.push_back(ra.empty() ? p.roll : ra.back() + WrapPi(p.roll - ra.back()));
-                s_play.ang[kPitch].push_back(p.pitch);
-                s_play.ang[kFov].push_back(p.fov);
+            UpdatePivot(0.0f, true);
+            const int n = Count();
+            for (int i = 0; i < n; ++i) {
+                const auto& c = s_play.cams[i];
+                if (s_play.follow && c.havePivot) {
+                    s_play.base.push_back(RotZ(c.pos - c.pivotPos, -c.pivotHeading));
+                    s_play.baseYaw.push_back(WrapPi(c.yaw - c.pivotHeading));
+                    s_play.centre.push_back({});
+                } else {
+                    s_play.base.push_back(c.pos);
+                    s_play.baseYaw.push_back(c.yaw);
+                    s_play.centre.push_back(c.havePivot ? c.pivotPos : (s_play.havePivot ? s_play.pivot : c.pos));
+                }
             }
-            for (const int ch : { static_cast<int>(kYaw), static_cast<int>(kRoll) }) {
-                const auto& a  = s_play.ang[ch];
-                s_play.lap[ch] = (a.back() + WrapPi(a.front() - a.back())) - a.front();
+            // even speed along curved moves
+            s_play.arc.assign(n, {});
+            for (int k = 0; k < n; ++k) {
+                const int next = Next(k);
+                if (next < 0 || s_play.cams[k].move != kMoveCurve) continue;
+                auto& L = s_play.arc[k];
+                L.push_back(0.0f);
+                RE::NiPoint3 prev = CurvePos(k, next, 0.0f);
+                float        acc  = 0.0f;
+                for (int i = 1; i <= kSamples; ++i) {
+                    const RE::NiPoint3 p = CurvePos(k, next, static_cast<float>(i) / kSamples);
+                    acc += Length(p - prev);
+                    prev = p;
+                    L.push_back(acc);
+                }
             }
-            BuildTable();
-            UpdateFocus(0.0f, true);
-
-            Pose cur;
-            cur.pos         = a_fcs->translation;
-            cur.pitch       = WrapPi(a_fcs->rotation.x);  // the vanilla free camera keeps its pitch in 0..2 pi
-            cur.yaw         = a_fcs->rotation.y;
-            cur.roll        = FreeCam::GetRollRadians() + FreeCam::GetExtraRoll();
-            cur.fov         = GetFOV();
-            s_play.from     = cur;
-            s_play.blending = !s_play.snap;
+            for (int k = 0; k < n; ++k) {
+                s_play.total += s_play.cams[k].wait;
+                if (Next(k) >= 0) s_play.total += s_play.cams[k].time;
+            }
+            s_play.fovCarry = s_play.cams[0].fov;
+            s_play.fromPos  = a_fcs->translation;
+            s_play.fromFwd  = Forward(a_fcs->rotation.y, WrapPi(a_fcs->rotation.x));
+            s_play.fromRoll = FreeCam::GetRollRadians() + FreeCam::GetExtraRoll();
+            s_play.fromFov  = GetFOV();
+            s_play.outYaw   = a_fcs->rotation.y;
+            s_play.gliding  = true;
             s_play.on       = true;
-            PublishCounts();
-            static const char* loops[] = { "once", "loop", "back and forth" };
-            Event(std::format("camera path plays ({}) - {} points, {}, {}, {:.0f} s, {}, looking {}{}, focus {}", a_source, n,
-                s_play.snap ? "cut" : "glide", s_play.curved ? "curved" : "straight", s_play.duration,
-                loops[std::clamp(s_play.loop, 0, 2)], s_settings.look == 0 ? "at the focus" : "the way each point looked",
-                follow ? ", moving with the focus" : "", s_play.haveFocus ? s_play.focusWhat : "not found"));
+            Event(std::format("camera path plays ({}) - {} cameras, {:.0f} s{}, pivot {}{}", a_source, n, s_play.total,
+                s_play.loop ? " (loop)" : "", s_play.havePivot ? s_play.pivotName : "not found", s_play.follow ? ", following it" : ""));
+            Publish();
             return true;
         }
 
-        void AddPoint(RE::FreeCameraState* a_fcs) {
-            Load();
-            if (static_cast<int>(s_points.size()) >= kMaxPoints) {
-                Notify("Camera path: 32 points is the most", "add refused: 32 points already");
-                return;
-            }
-            Point p;
-            p.pos   = a_fcs->translation;
-            p.pitch = WrapPi(a_fcs->rotation.x);
-            p.yaw   = WrapPi(a_fcs->rotation.y);
-            p.roll  = WrapPi(FreeCam::GetRollRadians() + FreeCam::GetExtraRoll());
-            p.fov   = GetFOV();
-            RE::NiPoint3 focus{};
-            float        heading = 0.0f;
-            std::string  what;
-            if (FocusRaw(focus, heading, &what)) {
-                p.haveRel = true;
-                p.rel     = RotZ(p.pos - focus, -heading);
-                p.relYaw  = WrapPi(p.yaw - heading);
-            }
-            s_points.push_back(p);
-            Save();
-            PublishCounts();
-            const char letter = static_cast<char>('A' + (std::min)(static_cast<int>(s_points.size()) - 1, 25));
-            const auto hud    = std::format("Camera path: point {} added ({} in all)", letter, s_points.size());
-            Notify(hud.c_str(), std::format("point {} added at ({:.0f}, {:.0f}, {:.0f}), FOV {:.0f}{}", letter, p.pos.x, p.pos.y,
-                                    p.pos.z, p.fov, p.haveRel ? std::format(", {:.0f} units from {}", Length(p.rel), what) : ", no focus"));
-        }
-
-        void RemoveLast() {
-            Load();
-            if (s_points.empty()) return;
-            if (s_play.on) EndPlay("a point was removed");
-            s_points.pop_back();
-            Save();
-            PublishCounts();
-            const auto hud = std::format("Camera path: last point removed ({} left)", s_points.size());
-            Notify(hud.c_str(), hud);
-        }
-
-        void Clear() {
-            Load();
-            if (s_play.on) EndPlay("the path was cleared");
-            s_points.clear();
-            Save();
-            PublishCounts();
-            Notify("Camera path: cleared", "all points cleared");
-        }
-
         void Toggle(int a_state, std::string_view a_source) {
-            const bool on = a_state < 0 ? !(s_play.on || s_pendingPlay) : a_state != 0;
+            const bool on = a_state < 0 ? !(s_play.on && !s_play.paused) && !s_pendingPlay : a_state != 0;
             if (!on) {
+                if (a_state < 0 && s_play.on) {  // play / pause key: pause
+                    s_play.paused = true;
+                    Event(std::format("paused ({})", a_source));
+                    Publish();
+                    return;
+                }
                 s_pendingPlay = false;
                 EndPlay(a_source);
                 return;
             }
-            if (s_play.on) return;
+            if (s_play.on) {
+                if (s_play.paused) {
+                    s_play.paused = false;
+                    Event(std::format("going on ({})", a_source));
+                    Publish();
+                }
+                return;
+            }
             if (auto* fcs = CurrentFreeCam()) {
                 StartPlay(fcs, a_source);
                 return;
@@ -606,8 +717,239 @@ namespace CamPath {
             SlccBridge::RequestEnterFreeFly("Camera path");
         }
 
-        void Queue(std::function<void()> a_fn) {
-            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(std::move(a_fn));
+        // ---- editing (main thread) ---------------------------------------------------------------------------------
+        Cam CamFromFreeCam(RE::FreeCameraState* a_fcs, int a_kind, RE::FormID a_ref) {
+            Cam c;
+            c.pos   = a_fcs->translation;
+            c.pitch = WrapPi(a_fcs->rotation.x);  // the vanilla free camera keeps its pitch in 0..2 pi
+            c.yaw   = WrapPi(a_fcs->rotation.y);
+            c.roll  = WrapPi(FreeCam::GetRollRadians() + FreeCam::GetExtraRoll());
+            c.fov   = GetFOV();
+            RE::NiPoint3 p{};
+            float        h = 0.0f;
+            if (PivotRaw(a_kind, a_ref, p, h, nullptr)) {
+                c.pivotPos     = p;
+                c.pivotHeading = h;
+                c.havePivot    = true;
+            }
+            c.look   = kLookSet;  // plays back the view you set
+            c.move   = kMoveCurve;
+            c.time   = 3.0f;
+            c.smooth = false;
+            return c;
+        }
+
+        void PivotNow(int& a_kind, RE::FormID& a_ref) {
+            std::scoped_lock lock(s_lock);
+            a_kind = s_pivotKind;
+            a_ref  = s_pivotRef;
+        }
+
+        void AddCam(RE::FreeCameraState* a_fcs) {
+            LoadOnce();
+            int        kind;
+            RE::FormID ref;
+            PivotNow(kind, ref);
+            const Cam   c = CamFromFreeCam(a_fcs, kind, ref);
+            std::size_t n;
+            {
+                std::scoped_lock lock(s_lock);
+                s_cams.push_back(c);
+                n = s_cams.size();
+                EventLocked(std::format("camera {} added at ({:.0f}, {:.0f}, {:.0f}), FOV {:.0f}", n, c.pos.x, c.pos.y, c.pos.z, c.fov));
+            }
+            SaveCurrentSoon();
+            Notify(std::format("Camera {} added", n));
+        }
+
+        void SetCamHere(int a_i, RE::FreeCameraState* a_fcs) {
+            int        kind;
+            RE::FormID ref;
+            PivotNow(kind, ref);
+            const Cam fresh = CamFromFreeCam(a_fcs, kind, ref);
+            {
+                std::scoped_lock lock(s_lock);
+                if (a_i < 0 || a_i >= static_cast<int>(s_cams.size())) return;
+                auto& c        = s_cams[a_i];
+                c.pos          = fresh.pos;
+                c.yaw          = fresh.yaw;
+                c.pitch        = fresh.pitch;
+                c.roll         = fresh.roll;
+                c.fov          = fresh.fov;
+                c.pivotPos     = fresh.pivotPos;
+                c.pivotHeading = fresh.pivotHeading;
+                c.havePivot    = fresh.havePivot;
+                EventLocked(std::format("camera {} moved to the camera's spot", a_i + 1));
+            }
+            SaveCurrentSoon();
+            Notify(std::format("Camera {} moved here", a_i + 1));
+        }
+
+        void GoToCam(int a_i, RE::FreeCameraState* a_fcs) {
+            Cam        c;
+            bool       follow;
+            int        kind;
+            RE::FormID ref;
+            {
+                std::scoped_lock lock(s_lock);
+                if (a_i < 0 || a_i >= static_cast<int>(s_cams.size())) return;
+                c      = s_cams[a_i];
+                follow = s_follow;
+                kind   = s_pivotKind;
+                ref    = s_pivotRef;
+            }
+            if (s_play.on) EndPlay("go to a camera");
+            RE::NiPoint3 pos = c.pos;
+            float        yaw = c.yaw;
+            RE::NiPoint3 p{};
+            float        h = 0.0f;
+            if (follow && c.havePivot && PivotRaw(kind, ref, p, h, nullptr)) {
+                pos = p + RotZ(RotZ(c.pos - c.pivotPos, -c.pivotHeading), h);
+                yaw = c.yaw - c.pivotHeading + h;
+            }
+            a_fcs->translation = pos;
+            a_fcs->rotation.x  = std::clamp(c.pitch, -kPitchLimit, kPitchLimit);
+            a_fcs->rotation.y  = WrapPi(yaw);
+            SetFOV(c.fov);
+            FreeCam::SetRollRadians(c.roll);
+            FreeCam::SetExtraRoll(0.0f);
+            Event(std::format("the camera went to camera {}", a_i + 1));
+        }
+
+        // What the free camera points at: an actor within a few degrees of the middle of the screen (nearest to the
+        // aim line), else the first object a ray from the camera hits.
+        RE::NiPointer<RE::TESObjectREFR> PickAhead(RE::FreeCameraState* a_fcs) {
+            const RE::NiPoint3 from = a_fcs->translation;
+            const RE::NiPoint3 dir  = Forward(a_fcs->rotation.y, WrapPi(a_fcs->rotation.x));
+            RE::NiPointer<RE::TESObjectREFR> best;
+            float bestScore = 0.06f;  // radians off the aim line
+            auto consider = [&](RE::Actor* a_actor) {
+                if (!a_actor || !a_actor->Get3D()) return;
+                RE::NiPoint3 p{};
+                if (!CamFocus::RefPoint(a_actor, p)) return;
+                const RE::NiPoint3 d    = p - from;
+                const float        dist = Length(d);
+                if (dist < 1.0f || dist > 6000.0f) return;
+                const float off = std::acos(std::clamp(Dot(d * (1.0f / dist), dir), -1.0f, 1.0f));
+                if (off < bestScore) {
+                    bestScore = off;
+                    best      = RE::NiPointer<RE::TESObjectREFR>(a_actor);
+                }
+            };
+            if (auto* lists = RE::ProcessLists::GetSingleton()) {
+                for (auto& h : lists->highActorHandles) {
+                    if (auto a = h.get()) consider(a.get());
+                }
+            }
+            consider(RE::PlayerCharacter::GetSingleton());
+            if (best) return best;
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* cell   = player ? player->GetParentCell() : nullptr;
+            auto* world  = cell ? cell->GetbhkWorld() : nullptr;
+            if (!world) return nullptr;
+            const float     scale = RE::bhkWorld::GetWorldScale();
+            RE::bhkPickData pick{};
+            pick.rayInput.from                        = RE::hkVector4(from * scale);
+            pick.rayInput.to                          = RE::hkVector4((from + dir * 6000.0f) * scale);
+            pick.rayInput.enableShapeCollectionFilter = true;
+            pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kLOS);
+            world->PickObject(pick);
+            if (!pick.rayOutput.HasHit() || !pick.rayOutput.rootCollidable) return nullptr;
+            auto* ref = RE::TESHavokUtilities::FindCollidableRef(*pick.rayOutput.rootCollidable);
+            return ref ? RE::NiPointer<RE::TESObjectREFR>(ref) : nullptr;
+        }
+
+        void SetPivot(int a_kind, RE::NiPointer<RE::TESObjectREFR> a_ref, std::string_view a_how) {
+            std::string name = "you";
+            {
+                std::scoped_lock lock(s_lock);
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                if (a_kind == 1 && a_ref && a_ref.get() != player) {
+                    s_pivotKind = 1;
+                    s_pivotRef  = a_ref->GetFormID();
+                    name        = CamFocus::Describe(a_ref.get());
+                } else {
+                    s_pivotKind = 0;
+                    s_pivotRef  = 0;
+                }
+                s_pubPivotName = name;
+                EventLocked(std::format("pivot: {} ({})", name, a_how));
+            }
+            SaveCurrentSoon();
+            Notify("Pivot: " + name);
+        }
+
+        // ---- record manual path ------------------------------------------------------------------------------------
+        void RecordFrame(RE::FreeCameraState* a_fcs, float a_dt) {
+            const RE::NiPoint3 pos   = a_fcs->translation;
+            const float        yaw   = WrapPi(a_fcs->rotation.y);
+            const float        pitch = WrapPi(a_fcs->rotation.x);
+            s_rec.sinceLast += a_dt;
+            if (s_rec.sinceLast < kRecordStep) return;
+            const bool moved = Length(pos - s_rec.lastPos) > kRecordMove || std::fabs(WrapPi(yaw - s_rec.lastYaw)) > kRecordTurn ||
+                               std::fabs(pitch - s_rec.lastPitch) > kRecordTurn;
+            std::scoped_lock lock(s_lock);
+            if (s_cams.empty()) return;
+            if (!moved) {  // standing still: the last camera waits
+                s_cams.back().wait += s_rec.sinceLast;
+                s_rec.sinceLast = 0.0f;
+                return;
+            }
+            s_cams.back().time = s_rec.sinceLast;
+            Cam c   = s_cams.back();
+            c.pos   = pos;
+            c.yaw   = yaw;
+            c.pitch = pitch;
+            c.roll  = WrapPi(FreeCam::GetRollRadians() + FreeCam::GetExtraRoll());
+            c.fov   = GetFOV();
+            c.wait  = 0.0f;
+            s_cams.push_back(c);
+            s_rec.sinceLast = 0.0f;
+            s_rec.lastPos   = pos;
+            s_rec.lastYaw   = yaw;
+            s_rec.lastPitch = pitch;
+        }
+
+        void StartRecord(RE::FreeCameraState* a_fcs) {
+            LoadOnce();
+            if (s_play.on) EndPlay("recording");
+            int        kind;
+            RE::FormID ref;
+            {
+                std::scoped_lock lock(s_lock);
+                if (!s_cams.empty()) WriteLocked("Before recording");  // the old path is kept
+                kind = s_pivotKind;
+                ref  = s_pivotRef;
+            }
+            const Cam first = CamFromFreeCam(a_fcs, kind, ref);
+            {
+                std::scoped_lock lock(s_lock);
+                s_cams.clear();
+                s_cams.push_back(first);
+                RefreshSavedLocked();
+                EventLocked("recording a manual path - fly the camera, then stop the recording");
+            }
+            s_rec           = Record{};
+            s_rec.on        = true;
+            s_rec.lastPos   = first.pos;
+            s_rec.lastYaw   = first.yaw;
+            s_rec.lastPitch = first.pitch;
+            Notify("Recording - fly the camera. Press record again to stop.");
+            Publish();
+        }
+
+        void StopRecord(std::string_view a_why) {
+            if (!s_rec.on) return;
+            s_rec.on = false;
+            std::size_t n;
+            {
+                std::scoped_lock lock(s_lock);
+                n = s_cams.size();
+                EventLocked(std::format("recording stopped ({}) - {} camera(s)", a_why, n));
+            }
+            SaveCurrentSoon();
+            Notify(std::format("Recorded {} cameras", n));
+            Publish();
         }
     }
 
@@ -615,20 +957,22 @@ namespace CamPath {
 
     void Clamp() {
         auto& s = s_settings;
-        if (!std::isfinite(s.duration)) s.duration = 12.0f;
-        if (!std::isfinite(s.focusHeight)) s.focusHeight = 0.0f;
-        s.duration    = std::clamp(s.duration, 1.0f, 300.0f);
-        s.focusHeight = std::clamp(s.focusHeight, -60.0f, 60.0f);
-        s.loop        = std::clamp(s.loop, 0, 2);
-        s.look        = std::clamp(s.look, 0, 1);
-        s.focus       = std::clamp(s.focus, 0, 1);
-        if (s.addKey < 0 || s.addKey > 0xFF) s.addKey = 0;
-        if (s.playKey < 0 || s.playKey > 0xFF) s.playKey = 0;
+        if (!std::isfinite(s.smoothness)) s.smoothness = 0.3f;
+        if (!std::isfinite(s.aimHeight)) s.aimHeight = 0.0f;
+        s.smoothness = std::clamp(s.smoothness, 0.0f, 1.0f);
+        s.aimHeight  = std::clamp(s.aimHeight, -60.0f, 60.0f);
+        for (int* k : { &s.openKey, &s.addKey, &s.playKey, &s.recordKey }) {
+            if (*k < 0 || *k > 0xFF) *k = 0;
+        }
     }
 
     void Drive(RE::FreeCameraState* a_fcs, bool a_driving) {
         const float dt = FrameDt();
         if (!a_fcs) return;
+        {
+            std::scoped_lock lock(s_lock);
+            s_pubFreeCam = a_driving;
+        }
         if (s_pendingPlay) {
             if (a_driving) {
                 s_pendingPlay = false;
@@ -638,40 +982,61 @@ namespace CamPath {
                 Event("play: TFCam free-fly did not start in time");
             }
         }
-        {
-            std::scoped_lock lock(s_statusLock);
-            s_status.freeCam = a_driving;
+        if (s_rec.on) {
+            if (!a_driving) {
+                StopRecord("another camera took the free camera");
+            } else {
+                RecordFrame(a_fcs, dt);
+            }
         }
         if (!s_play.on) return;
         if (!a_driving) {
             EndPlay("another camera (FCFW timeline / SLCC) took the free camera");
             return;
         }
-        UpdateFocus(dt, false);
-        if (s_play.blending) {
-            s_play.blendT += dt;
-            const float w      = SmoothStep(s_play.blendT / kStartBlend);
-            bool        done   = false;
-            const Pose  target = ToWorld(AtTime(0.0f, done));
-            Pose        p;
-            p.pos   = Mix(s_play.from.pos, target.pos, w);
-            p.yaw   = s_play.from.yaw + WrapPi(target.yaw - s_play.from.yaw) * w;
-            p.pitch = s_play.from.pitch + (target.pitch - s_play.from.pitch) * w;
-            p.roll  = s_play.from.roll + WrapPi(target.roll - s_play.from.roll) * w;
-            p.fov   = s_play.from.fov + (target.fov - s_play.from.fov) * w;
-            WritePose(a_fcs, p);
-            if (s_play.blendT >= kStartBlend) s_play.blending = false;
-            s_play.progress = 0.0f;
-        } else {
-            s_play.t += dt;
-            bool       done = false;
-            const Pose p    = ToWorld(AtTime(s_play.t, done));
-            WritePose(a_fcs, p);
-            if (done) EndPlay("the path ended");
+        UpdatePivot(dt, false);
+        bool finished = false;
+        if (s_play.gliding) {
+            s_play.glideT += s_play.paused ? 0.0f : dt;
+        } else if (!s_play.paused) {
+            finished = !Advance(dt);
         }
-        std::scoped_lock lock(s_statusLock);
-        s_status.progress = s_play.progress;
-        std::snprintf(s_status.focus, sizeof(s_status.focus), "%s", s_play.haveFocus ? s_play.focusWhat.c_str() : "not found");
+        const Target tg = Evaluate();
+        if (s_play.gliding) {
+            const float w  = SmoothStep(s_play.glideT / kStartGlide);
+            s_play.outPos  = Mix(s_play.fromPos, tg.pos, w);
+            s_play.outFwd  = SlerpDir(s_play.fromFwd, tg.fwd, w);
+            s_play.outRoll = s_play.fromRoll + WrapPi(tg.roll - s_play.fromRoll) * w;
+            s_play.outFov  = s_play.fromFov + (tg.fov - s_play.fromFov) * w;
+            s_play.blur    = tg.blur * w;
+            s_play.haveOut = true;
+            if (s_play.glideT >= kStartGlide) s_play.gliding = false;
+        } else {
+            // motion smoothness: the camera chases the path, taking the edge off sudden turns and speed changes
+            if (!s_play.haveOut || s_settings.smoothness <= 0.001f) {
+                s_play.outPos  = tg.pos;
+                s_play.outFwd  = tg.fwd;
+                s_play.outRoll = tg.roll;
+                s_play.outFov  = tg.fov;
+            } else {
+                const float w = ExpWeight(s_play.paused ? 0.0f : dt, s_settings.smoothness * 0.5f);
+                s_play.outPos  = Mix(s_play.outPos, tg.pos, w);
+                s_play.outFwd  = SlerpDir(s_play.outFwd, tg.fwd, w);
+                s_play.outRoll += WrapPi(tg.roll - s_play.outRoll) * w;
+                s_play.outFov += (tg.fov - s_play.outFov) * w;
+            }
+            s_play.blur    = tg.blur;
+            s_play.haveOut = true;
+        }
+        WritePose(a_fcs);
+        if (s_play.blur > 0.01f && s_play.havePivot) {
+            CamBlur::External(true, AimPoint(), s_play.blur);
+            s_play.blurOn = true;
+        } else {
+            BlurOff();
+        }
+        Publish();
+        if (finished) EndPlay("the path ended");
     }
 
     bool OwnsMotion() { return s_play.on; }
@@ -684,69 +1049,275 @@ namespace CamPath {
 
     bool OnHotkey(std::uint32_t a_code) {
         if (a_code == 0) return false;
-        if (s_settings.addKey != 0 && a_code == static_cast<std::uint32_t>(s_settings.addKey)) {
+        auto is = [&](int a_key) { return a_key != 0 && a_code == static_cast<std::uint32_t>(a_key); };
+        if (is(s_settings.openKey)) {
+            CamPathWindow::Toggle();
+            return true;
+        }
+        if (is(s_settings.addKey)) {
             if (auto* fcs = CurrentFreeCam()) {
-                AddPoint(fcs);
+                AddCam(fcs);
             } else {
-                Notify("Camera path: turn the free camera on to add points", "add refused: no TFCam free camera");
+                Notify("Camera path: turn the free camera on to add cameras");
             }
             return true;
         }
-        if (s_settings.playKey != 0 && a_code == static_cast<std::uint32_t>(s_settings.playKey)) {
+        if (is(s_settings.playKey)) {
             Toggle(-1, "play key");
+            return true;
+        }
+        if (is(s_settings.recordKey)) {
+            if (s_rec.on) {
+                StopRecord("record key");
+            } else if (auto* fcs = CurrentFreeCam()) {
+                StartRecord(fcs);
+            } else {
+                Notify("Camera path: turn the free camera on to record");
+            }
             return true;
         }
         return false;
     }
 
     void OnFreeCamEnd() {
+        if (s_rec.on) StopRecord("the free camera ended");
         {
-            std::scoped_lock lock(s_statusLock);
-            s_status.freeCam = false;
+            std::scoped_lock lock(s_lock);
+            s_pubFreeCam = false;
         }
         if (s_play.on) {
             FreeCam::SetExtraRoll(0.0f);
+            BlurOff();
             s_play.on = false;
-            PublishCounts();
             Event("camera path stopped (the free camera ended)");
+            Publish();
         }
     }
 
     void OnGameLoad() {
         s_pendingPlay = false;
         s_play.on     = false;
-        Load();
-        PublishCounts();
+        s_rec.on      = false;
+        LoadOnce();
+        Publish();
     }
 
-    bool FocusPoint(RE::NiPoint3& a_out, const char*& a_what, bool& a_on) {
-        a_on = s_play.on;
-        if (!s_play.on) return false;
-        if (s_settings.look != 0 || !s_play.haveFocus) {
-            a_what = "camera path: screen centre";
-            return false;
+    bool FocusPoint(RE::NiPoint3&, const char*&, bool& a_on) {
+        a_on = false;  // a playing path drives the blur itself (CamBlur::External)
+        return false;
+    }
+
+    // ---- window / menu ------------------------------------------------------------------------------------------------
+    Snapshot GetSnapshot() {
+        LoadOnce();
+        Snapshot         s;
+        std::scoped_lock lock(s_lock);
+        s.cams       = s_cams;
+        s.name       = s_name;
+        s.pivotIsMe  = s_pivotKind == 0;
+        s.pivotName  = s_pubPivotName;
+        s.follow     = s_follow;
+        s.loop       = s_loop;
+        s.playing    = s_pubPlaying;
+        s.paused     = s_pubPaused;
+        s.recording  = s_pubRecording;
+        s.freeCam    = s_pubFreeCam;
+        s.frozen     = FreezeTime::IsFrozen();
+        s.atCam      = s_pubAt;
+        s.progress   = s_pubProgress;
+        s.lastEvent  = s_lastEvent;
+        s.savedPaths = s_savedPaths;
+        return s;
+    }
+
+    bool EditCam(int a_index, const Cam& a_o) {
+        {
+            std::scoped_lock lock(s_lock);
+            if (a_index < 0 || a_index >= static_cast<int>(s_cams.size())) return false;
+            auto& c        = s_cams[a_index];
+            c.look         = std::clamp(a_o.look, 0, 2);
+            c.wait         = std::clamp(std::isfinite(a_o.wait) ? a_o.wait : 0.0f, 0.0f, 600.0f);
+            c.blur         = a_o.blur;
+            c.blurStrength = std::clamp(std::isfinite(a_o.blurStrength) ? a_o.blurStrength : 0.6f, 0.0f, 1.0f);
+            c.move         = std::clamp(a_o.move, 0, 2);
+            c.time         = std::clamp(std::isfinite(a_o.time) ? a_o.time : 3.0f, 0.1f, 600.0f);
+            c.smooth       = a_o.smooth;
+            c.turns        = std::clamp(a_o.turns, 0, 20);
+            c.way          = std::clamp(a_o.way, 0, 2);
+            c.zoomTrick    = a_o.zoomTrick;
         }
-        a_out  = s_play.focus + RE::NiPoint3{ 0.0f, 0.0f, s_settings.focusHeight };
-        a_what = "camera path: the focus";
+        SaveCurrentSoon();
         return true;
     }
 
-    void RequestAddPoint() {
+    void SetFollow(bool a_on) {
+        {
+            std::scoped_lock lock(s_lock);
+            s_follow = a_on;
+        }
+        SaveCurrentSoon();
+    }
+
+    void SetLoop(bool a_on) {
+        {
+            std::scoped_lock lock(s_lock);
+            s_loop = a_on;
+        }
+        SaveCurrentSoon();
+    }
+
+    void RequestAddCam() {
         Queue([] {
             if (auto* fcs = CurrentFreeCam()) {
-                AddPoint(fcs);
+                AddCam(fcs);
             } else {
-                Event("add refused: no TFCam free camera");
+                Notify("Camera path: turn the free camera on to add cameras");
             }
         });
     }
 
-    void RequestRemoveLast() { Queue([] { RemoveLast(); }); }
-    void RequestClear() { Queue([] { Clear(); }); }
-    void RequestPlay(int a_state) { Queue([a_state] { Toggle(a_state, "menu"); }); }
+    void RequestSetCamHere(int a_index) {
+        Queue([a_index] {
+            if (auto* fcs = CurrentFreeCam()) SetCamHere(a_index, fcs);
+        });
+    }
 
-    MenuStatus GetMenuStatus() {
-        std::scoped_lock lock(s_statusLock);
-        return s_status;
+    void RequestGoToCam(int a_index) {
+        Queue([a_index] {
+            if (auto* fcs = CurrentFreeCam()) GoToCam(a_index, fcs);
+        });
+    }
+
+    void RequestDeleteCam(int a_index) {
+        Queue([a_index] {
+            if (s_play.on) EndPlay("a camera was deleted");
+            {
+                std::scoped_lock lock(s_lock);
+                if (a_index < 0 || a_index >= static_cast<int>(s_cams.size())) return;
+                s_cams.erase(s_cams.begin() + a_index);
+                EventLocked(std::format("camera {} deleted", a_index + 1));
+            }
+            SaveCurrentSoon();
+        });
+    }
+
+    void RequestClear() {
+        Queue([] {
+            if (s_play.on) EndPlay("the path was cleared");
+            {
+                std::scoped_lock lock(s_lock);
+                if (!s_cams.empty()) WriteLocked("Before clearing");
+                s_cams.clear();
+                RefreshSavedLocked();
+                EventLocked("all cameras cleared (the old path is saved as \"Before clearing\")");
+            }
+            SaveCurrentSoon();
+        });
+    }
+
+    void RequestPlay(int a_state) {
+        Queue([a_state] { Toggle(a_state, "window"); });
+    }
+
+    void RequestPause() {
+        Queue([] {
+            if (!s_play.on) return;
+            s_play.paused = !s_play.paused;
+            Event(s_play.paused ? "paused" : "going on");
+            Publish();
+        });
+    }
+
+    void RequestPickPivot() {
+        Queue([] {
+            auto* fcs = CurrentFreeCam();
+            if (!fcs) {
+                Notify("Camera path: turn the free camera on and point it at something");
+                return;
+            }
+            auto ref = PickAhead(fcs);
+            if (!ref) {
+                Notify("Camera path: nothing there to pick - point the middle of the screen at it");
+                Event("pick pivot: nothing under the middle of the screen");
+                return;
+            }
+            SetPivot(1, ref, "picked with the camera");
+        });
+    }
+
+    void RequestPivotConsole() {
+        Queue([] {
+            auto ref = CamFocus::ConsoleRef();
+            if (!ref) {
+                Notify("Camera path: nothing selected in the console");
+                return;
+            }
+            SetPivot(1, ref, "the console's selection");
+        });
+    }
+
+    void RequestPivotMe() {
+        Queue([] { SetPivot(0, nullptr, "you"); });
+    }
+
+    void RequestFreezeWorld() {
+        Queue([] {
+            FreezeTime::Toggle();
+            Event(FreezeTime::IsFrozen() ? "the world is frozen" : "the world runs again");
+        });
+    }
+
+    void RequestRecord(int a_state) {
+        Queue([a_state] {
+            const bool on = a_state < 0 ? !s_rec.on : a_state != 0;
+            if (!on) {
+                StopRecord("window");
+                return;
+            }
+            if (s_rec.on) return;
+            if (auto* fcs = CurrentFreeCam()) {
+                StartRecord(fcs);
+            } else {
+                Notify("Camera path: turn the free camera on to record");
+            }
+        });
+    }
+
+    void RequestSaveAs(std::string a_name) {
+        Queue([name = CleanName(std::move(a_name))] {
+            if (name.empty() || name == "Current") {
+                Notify("Camera path: type a name first");
+                return;
+            }
+            std::scoped_lock lock(s_lock);
+            const bool ok = WriteLocked(name);
+            if (ok) s_name = name;
+            RefreshSavedLocked();
+            EventLocked(ok ? std::format("saved as \"{}\"", name) : std::format("saving \"{}\" failed", name));
+            RE::SendHUDMessage::ShowHUDMessage(ok ? std::format("Camera path saved: {}", name).c_str() : "Camera path: saving failed");
+        });
+    }
+
+    void RequestLoad(std::string a_name) {
+        Queue([name = CleanName(std::move(a_name))] {
+            if (s_play.on) EndPlay("another path was opened");
+            if (s_rec.on) StopRecord("another path was opened");
+            {
+                std::scoped_lock lock(s_lock);
+                if (!ReadLocked(name)) {
+                    EventLocked(std::format("opening \"{}\" failed", name));
+                    return;
+                }
+                s_name = name;
+                std::string pivot = "you";
+                if (s_pivotKind == 1) {
+                    auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(s_pivotRef);
+                    pivot     = ref ? CamFocus::Describe(ref) : "you (the saved pivot is not loaded)";
+                }
+                s_pubPivotName = pivot;
+                EventLocked(std::format("opened \"{}\" - {} camera(s)", name, s_cams.size()));
+            }
+            SaveCurrentSoon();
+        });
     }
 }

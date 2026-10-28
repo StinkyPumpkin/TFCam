@@ -6,6 +6,7 @@
 #include "CellEntryCam.h"
 #include "CamBlur.h"
 #include "CamPath.h"
+#include "CamPathWindow.h"
 #include "SceneCam.h"
 #include "AmbientCam.h"
 #include "ConvoCam.h"
@@ -268,16 +269,12 @@ namespace FreeCamMenu {
         WriteINIFloat("Blur", "fStrength", b.strength);
         WriteINIInt("Blur", "bInFreeFly", b.inFreeFly ? 1 : 0);
         const auto& c = CamPath::Get();
-        WriteINIInt("CameraPath", "bCurved", c.curved ? 1 : 0);
-        WriteINIInt("CameraPath", "bCut", c.snap ? 1 : 0);
-        WriteINIFloat("CameraPath", "fDuration", c.duration);
-        WriteINIInt("CameraPath", "iLoop", c.loop);
-        WriteINIInt("CameraPath", "iLook", c.look);
-        WriteINIInt("CameraPath", "iFocus", c.focus);
-        WriteINIFloat("CameraPath", "fFocusHeight", c.focusHeight);
-        WriteINIInt("CameraPath", "bFollowFocus", c.followFocus ? 1 : 0);
-        WriteINIInt("CameraPath", "iAddPointKey", c.addKey);
+        WriteINIInt("CameraPath", "iOpenWindowKey", c.openKey);
+        WriteINIInt("CameraPath", "iAddCameraKey", c.addKey);
         WriteINIInt("CameraPath", "iPlayKey", c.playKey);
+        WriteINIInt("CameraPath", "iRecordKey", c.recordKey);
+        WriteINIFloat("CameraPath", "fSmoothness", c.smoothness);
+        WriteINIFloat("CameraPath", "fAimHeight", c.aimHeight);
     }
 
     // 0.16.0 conversation camera, TFCam.ini [Conversation].
@@ -388,6 +385,16 @@ namespace FreeCamMenu {
             SKSE::log::error("FreeCamMenu: saving the Scene Camera settings to {} FAILED (Windows error {}) - they only last "
                              "until the game closes", GetINIPath(), s_saveWriteErr);
         }
+    }
+
+    void SaveCamPathSettings() { SaveINI(); }
+
+    // Never null: a key without a name in GetKeyName shows as "Key <code>" (a null went into std::format and threw).
+    const char* KeyName(int a_dxScanCode) {
+        if (const char* name = GetKeyName(a_dxScanCode)) return name;
+        static thread_local char buf[24];
+        std::snprintf(buf, sizeof(buf), "Key %d", a_dxScanCode);
+        return buf;
     }
 
     static void ApplyToController() {
@@ -914,96 +921,28 @@ namespace FreeCamMenu {
         }
     }
 
-    // 0.17.0: FreeCam > Camera Path page.
+    // 0.18.0: FreeCam > Camera Path page - the window does the work; this page opens it and binds its keys.
     static void __stdcall RenderCamPath() {
         auto&                  cp      = CamPath::Get();
         bool                   changed = false;
         const ImGuiMCP::ImVec4 grey{ 0.5f, 0.5f, 0.5f, 1.0f };
-        const auto             ms = CamPath::GetMenuStatus();
 
         ImGuiMCP::SeparatorText("Camera path");
-        ImGuiMCP::TextColored(grey,
-            "Fly the free camera to a spot and add it as a point (A, B, C ...), then the next spot, and so on. Play moves "
-            "the camera through the points - during a SexLab scene, a pose, or anywhere else.");
-        ImGuiMCP::Text("Points: %d%s", ms.points, ms.playing ? "   - playing" : "");
-        if (ms.playing) {
-            ImGuiMCP::Text("Progress: %.0f%%   (%.0f units along the path)", ms.progress * 100.0f, ms.length);
-            ImGuiMCP::Text("Focus: %s", ms.focus);
-        }
-        if (ms.lastEvent[0]) ImGuiMCP::TextColored(grey, "Last: %s", ms.lastEvent);
-        ImGuiMCP::BeginDisabled(!ms.freeCam);
-        if (ImGuiMCP::Button("Add point (where the camera is)##cpAdd")) CamPath::RequestAddPoint();
-        ImGuiMCP::EndDisabled();
-        ImGuiMCP::SameLine();
-        ImGuiMCP::BeginDisabled(ms.points == 0);
-        if (ImGuiMCP::Button("Remove last##cpDel")) CamPath::RequestRemoveLast();
-        ImGuiMCP::SameLine();
-        if (ImGuiMCP::Button("Clear##cpClear")) CamPath::RequestClear();
-        ImGuiMCP::EndDisabled();
-        ImGuiMCP::SameLine();
-        ImGuiMCP::BeginDisabled(ms.points < 2 && !ms.playing);
-        if (ImGuiMCP::Button(ms.playing ? "Stop##cpPlay" : "Play##cpPlay")) CamPath::RequestPlay(ms.playing ? 0 : 1);
-        ImGuiMCP::EndDisabled();
-        if (!ms.freeCam) ImGuiMCP::TextColored(grey, "Turn the free camera on to add points.");
+        ImGuiMCP::TextWrapped(
+            "Film anything: put cameras around a person or a thing, press Play, and the camera travels from one to the "
+            "next - straight, in a curve, or circling round it.");
+        if (ImGuiMCP::Button("Open the camera path window##cpOpen")) CamPathWindow::Toggle();
+        ImGuiMCP::TextColored(grey, "1. Turn the free camera on (tfc) and fly to a spot.  2. Open the window (its key below) - "
+                                    "the mouse comes back.  3. Add camera here.  4. Close the window, fly somewhere else, "
+                                    "add another.  5. Play.");
 
-        ImGuiMCP::SeparatorText("Movement");
-        {
-            static const char* shapes[] = { "Curved through the points", "Straight lines (eases in and out at each point)" };
-            int k = cp.curved ? 0 : 1;
-            ImGuiMCP::SetNextItemWidth(320.0f);
-            if (ImGuiMCP::Combo("Path##cpShape", &k, shapes, 2)) {
-                cp.curved = k == 0;
-                changed   = true;
-            }
-            static const char* moves[] = { "Glide", "Cut from point to point" };
-            k = cp.snap ? 1 : 0;
-            ImGuiMCP::SetNextItemWidth(320.0f);
-            if (ImGuiMCP::Combo("Move##cpMove", &k, moves, 2)) {
-                cp.snap = k == 1;
-                changed = true;
-            }
-            ImGuiMCP::SetNextItemWidth(200.0f);
-            changed |= ImGuiMCP::SliderFloat("Time for the whole path (s)##cpTime", &cp.duration, 1.0f, 120.0f, "%.0f");
-            static const char* loops[] = { "Once", "Loop", "Back and forth" };
-            k = std::clamp(cp.loop, 0, 2);
-            ImGuiMCP::SetNextItemWidth(200.0f);
-            if (ImGuiMCP::Combo("Repeat##cpLoop", &k, loops, 3)) {
-                cp.loop = k;
-                changed = true;
-            }
-        }
-
-        ImGuiMCP::SeparatorText("Look");
-        {
-            static const char* looks[] = { "At the focus", "The way each point looked (no focus: straight pans and dollies)" };
-            int k = std::clamp(cp.look, 0, 1);
-            ImGuiMCP::SetNextItemWidth(420.0f);
-            if (ImGuiMCP::Combo("Camera looks##cpLook", &k, looks, 2)) {
-                cp.look = k;
-                changed = true;
-            }
-            static const char* focus[] = { "You (your SexLab scene's actors when in one)",
-                "The reference picked in the console (else you)" };
-            k = std::clamp(cp.focus, 0, 1);
-            ImGuiMCP::SetNextItemWidth(420.0f);
-            if (ImGuiMCP::Combo("Focus##cpFocus", &k, focus, 2)) {
-                cp.focus = k;
-                changed  = true;
-            }
-            ImGuiMCP::SetNextItemWidth(200.0f);
-            changed |= ImGuiMCP::SliderFloat("Aim height (units)##cpAim", &cp.focusHeight, -60.0f, 60.0f, "%.0f");
-            changed |= ImGuiMCP::Checkbox("The path moves with the focus##cpFollow", &cp.followFocus);
-        }
-        ImGuiMCP::TextColored(grey,
-            "Roll (Q / E) and FOV (mouse wheel) are kept with each point. Console focus: open the console, click an NPC or "
-            "object, close it - a walking NPC is followed. 'The path moves with the focus' keeps the points relative to the "
-            "focus, so the path follows a moving NPC and works again for the same pose somewhere else. Background blur "
-            "(Scene Camera page) keeps the focus sharp while a path plays.");
-
-        ImGuiMCP::SeparatorText("Hotkeys");
-        ImGuiMCP::TextColored(grey, "Unset until you bind them.");
-        changed |= KeyBindField("cpAddKey", "Add point", &cp.addKey);
-        changed |= KeyBindField("cpPlayKey", "Play / stop", &cp.playKey);
+        ImGuiMCP::SeparatorText("Keys");
+        ImGuiMCP::TextColored(grey, "Unset until you bind them. Bind the window key first - it opens and closes the window "
+                                    "while you fly.");
+        changed |= KeyBindField("cpOpenKey", "Open / close the window", &cp.openKey);
+        changed |= KeyBindField("cpAddKey", "Add camera here", &cp.addKey);
+        changed |= KeyBindField("cpPlayKey", "Play / pause", &cp.playKey);
+        changed |= KeyBindField("cpRecordKey", "Record manual path (start / stop)", &cp.recordKey);
 
         if (changed) {
             CamPath::Clamp();
@@ -1459,16 +1398,12 @@ namespace FreeCamMenu {
             CamBlur::Clamp();
             auto&                  c = CamPath::Get();
             const CamPath::Settings cd{};
-            c.curved      = readInt("CameraPath", "bCurved", cd.curved ? 1 : 0) != 0;
-            c.snap        = readInt("CameraPath", "bCut", cd.snap ? 1 : 0) != 0;
-            c.duration    = readFloat("CameraPath", "fDuration", cd.duration);
-            c.loop        = readInt("CameraPath", "iLoop", cd.loop);
-            c.look        = readInt("CameraPath", "iLook", cd.look);
-            c.focus       = readInt("CameraPath", "iFocus", cd.focus);
-            c.focusHeight = readFloat("CameraPath", "fFocusHeight", cd.focusHeight);
-            c.followFocus = readInt("CameraPath", "bFollowFocus", cd.followFocus ? 1 : 0) != 0;
-            c.addKey      = readInt("CameraPath", "iAddPointKey", cd.addKey);
-            c.playKey     = readInt("CameraPath", "iPlayKey", cd.playKey);
+            c.openKey    = readInt("CameraPath", "iOpenWindowKey", cd.openKey);
+            c.addKey     = readInt("CameraPath", "iAddCameraKey", cd.addKey);
+            c.playKey    = readInt("CameraPath", "iPlayKey", cd.playKey);
+            c.recordKey  = readInt("CameraPath", "iRecordKey", cd.recordKey);
+            c.smoothness = readFloat("CameraPath", "fSmoothness", cd.smoothness);
+            c.aimHeight  = readFloat("CameraPath", "fAimHeight", cd.aimHeight);
             CamPath::Clamp();
             SKSE::log::info("CamBlur: background blur {} (strength {:.2f}{})", b.enabled ? "on" : "off", b.strength,
                 b.inFreeFly ? ", also in free-fly" : "");
@@ -1579,6 +1514,7 @@ namespace FreeCamMenu {
     }
 
     static bool __stdcall OnSMFInput(RE::InputEvent* a_event) {
+        if (CamPathWindow::OnMenuInput(a_event)) return true;  // 0.18.0: the window's own key closes it
         if (!s_capturing.load()) return false;
 
         for (auto* evt = a_event; evt; evt = evt->next) {
@@ -1624,6 +1560,7 @@ namespace FreeCamMenu {
         SKSEMenuFramework::AddSectionItem("Idle & Furniture", RenderAmbient);  // 0.11.0
         SKSEMenuFramework::AddSectionItem("Camera Path", RenderCamPath);       // 0.17.0
         SKSEMenuFramework::AddInputEvent(OnSMFInput);
+        CamPathWindow::Register();  // 0.18.0
 
         SKSE::log::info("FreeCamMenu: settings section registered");
     }
