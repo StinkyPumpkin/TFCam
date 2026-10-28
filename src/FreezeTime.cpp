@@ -25,9 +25,15 @@ namespace FreezeTime {
 
     void Restore() {
         if (!s_frozen) return;
+        // 0.18.0: the CURRENT multiplier (RELOCATION_ID(511882, 388442)) is written too. The engine eases it toward the
+        // target; a long freeze takes it down to exactly 0.0 and from there it never eases back up. User 2026-10-28: the
+        // world stayed frozen after Unfreeze, through a fast travel - DevBench read target 1.0, current 0.0; "sgtm 1" freed it.
+        REL::Relocation<float*> current{ RELOCATION_ID(511882, 388442) };
         REL::Relocation<float*> timeMult{ RELOCATION_ID(511883, 388443) };
+        const float was = *current;
         *timeMult = s_savedTimeMult;
+        *current  = s_savedTimeMult;
         s_frozen = false;
-        SKSE::log::info("FreezeTime: restored (mult={:.2f})", s_savedTimeMult);
+        SKSE::log::info("FreezeTime: restored (mult={:.2f}, the current value was {:g})", s_savedTimeMult, was);
     }
 }
