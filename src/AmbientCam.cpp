@@ -110,7 +110,7 @@ namespace AmbientCam {
         Pose ReadPose(const RE::FreeCameraState* fcs) {
             Pose p;
             p.pos   = fcs->translation;
-            p.pitch = fcs->rotation.x;
+            p.pitch = WrapPi(fcs->rotation.x);  // 0.17.1: the vanilla free camera keeps its pitch in 0..2 pi
             p.yaw   = fcs->rotation.y;
             p.roll  = FreeCam::GetRollRadians();
             p.fov   = GetFOV();

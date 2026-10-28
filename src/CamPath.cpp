@@ -523,7 +523,7 @@ namespace CamPath {
 
             Pose cur;
             cur.pos         = a_fcs->translation;
-            cur.pitch       = a_fcs->rotation.x;
+            cur.pitch       = WrapPi(a_fcs->rotation.x);  // the vanilla free camera keeps its pitch in 0..2 pi
             cur.yaw         = a_fcs->rotation.y;
             cur.roll        = FreeCam::GetRollRadians() + FreeCam::GetExtraRoll();
             cur.fov         = GetFOV();
@@ -547,7 +547,7 @@ namespace CamPath {
             }
             Point p;
             p.pos   = a_fcs->translation;
-            p.pitch = a_fcs->rotation.x;
+            p.pitch = WrapPi(a_fcs->rotation.x);
             p.yaw   = WrapPi(a_fcs->rotation.y);
             p.roll  = WrapPi(FreeCam::GetRollRadians() + FreeCam::GetExtraRoll());
             p.fov   = GetFOV();
