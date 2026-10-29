@@ -16,11 +16,13 @@ namespace FovFx {
         bool  shouts      = true;   // shouts warp out
         bool  speedPlayer = true;   // your speed stretches it (sprint, Whirlwind Sprint)
         bool  speedCamera = false;  // the free camera's speed stretches it (flying, camera paths)
-        // archer camera: while the string is drawn the third-person camera comes in close behind your head, eye high
+        // archer camera: while the string is drawn the third-person camera comes in close round your head (a side-on
+        // shot that shows your face, the drawn bow and where the arrow flies - user's Horizon reference, 10-29)
         bool  aimCam  = true;
-        float aimBack = 25.0f;  // units behind the eyes
-        float aimSide = 20.0f;  // units to the right (the aim point clear of hair / a helmet)
-        float aimUp   = 5.0f;   // units above the eyes
+        float aimTurn = 65.0f;  // degrees round your head from straight behind (90 = side-on), to your right
+        float aimBack = 40.0f;  // units from the eyes
+        float aimUp   = 2.0f;   // units above the eyes
+        float aimLook = 60.0f;  // looks at a point this far ahead on the arrow's line: near = more face, far = easier aim
     };
 
     Settings& Get();

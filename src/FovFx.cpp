@@ -208,12 +208,14 @@ namespace FovFx {
         if (!std::isfinite(s.strength)) s.strength = 1.0f;
         s.strength   = std::clamp(s.strength, 0.0f, 2.0f);
         s.spellLevel = std::clamp(s.spellLevel, 0, 100);
-        if (!std::isfinite(s.aimBack)) s.aimBack = 25.0f;
-        if (!std::isfinite(s.aimSide)) s.aimSide = 20.0f;
-        if (!std::isfinite(s.aimUp)) s.aimUp = 5.0f;
-        s.aimBack = std::clamp(s.aimBack, 10.0f, 80.0f);
-        s.aimSide = std::clamp(s.aimSide, -30.0f, 30.0f);
-        s.aimUp   = std::clamp(s.aimUp, -15.0f, 20.0f);
+        if (!std::isfinite(s.aimTurn)) s.aimTurn = 65.0f;
+        if (!std::isfinite(s.aimBack)) s.aimBack = 40.0f;
+        if (!std::isfinite(s.aimUp)) s.aimUp = 2.0f;
+        if (!std::isfinite(s.aimLook)) s.aimLook = 60.0f;
+        s.aimTurn = std::clamp(s.aimTurn, -110.0f, 110.0f);
+        s.aimBack = std::clamp(s.aimBack, 10.0f, 120.0f);
+        s.aimUp   = std::clamp(s.aimUp, -20.0f, 30.0f);
+        s.aimLook = std::clamp(s.aimLook, 0.0f, 600.0f);
     }
 
     void Install() {
@@ -223,8 +225,10 @@ namespace FovFx {
         }
     }
 
-    // The archer camera: the view the game made, moved to just behind the eyes (its own aim direction is kept, so the
-    // crosshair still aims where you look). In over ~0.12 s as the string comes back, out over ~0.2 s.
+    // The archer camera: round the head from behind toward your right side (aimTurn), looking at a point ahead on the
+    // arrow's line (aimLook) - the face, the drawn bow and where the arrow goes in one shot. The game's own aim is
+    // unchanged; with the view turned, the screen's middle is no longer exactly where the arrow flies (more aimLook /
+    // less aimTurn = closer). In over ~0.12 s as the string comes back, out over ~0.2 s.
     void ApplyAimCam() {
         static double s_aimLast = 0.0;
         static float  s_aimW    = 0.0f;
@@ -248,18 +252,32 @@ namespace FovFx {
         auto* body = player->Get3D2();
         auto* head = body ? body->GetObjectByName("NPC Head [Head]") : nullptr;
         if (!head) return;
-        auto*           root = cam->cameraRoot.get();
-        RE::NiTransform t    = root->world;
-        const auto&     m    = t.rotate.entry;
-        const RE::NiPoint3 right{ m[0][0], m[1][0], m[2][0] };
-        const RE::NiPoint3 fwd{ m[0][1], m[1][1], m[2][1] };
-        const RE::NiPoint3 up{ m[0][2], m[1][2], m[2][2] };
-        const float        h = player->GetAngleZ();
-        RE::NiPoint3       eye = head->world.translate + RE::NiPoint3{ std::sin(h) * 4.0f, std::cos(h) * 4.0f, 7.0f };
-        const RE::NiPoint3 want = eye - fwd * s_settings.aimBack + right * s_settings.aimSide + up * s_settings.aimUp;
+        auto*              root = cam->cameraRoot.get();
+        RE::NiTransform    t    = root->world;
+        const auto&        m    = t.rotate.entry;
+        const RE::NiPoint3 aim{ m[0][1], m[1][1], m[2][1] };  // the game's view: where you aim
+        const float        h    = player->GetAngleZ();
+        const float        flat = std::hypot(aim.x, aim.y);
+        const RE::NiPoint3 f    = flat > 1e-4f ? RE::NiPoint3{ aim.x / flat, aim.y / flat, 0.0f } : RE::NiPoint3{ std::sin(h), std::cos(h), 0.0f };
+        const RE::NiPoint3 r{ f.y, -f.x, 0.0f };  // your right
+        const RE::NiPoint3 eye = head->world.translate + RE::NiPoint3{ std::sin(h) * 4.0f, std::cos(h) * 4.0f, 7.0f };
+        const float        th  = s_settings.aimTurn * kDegToRad;
+        const RE::NiPoint3 want = eye + (r * std::sin(th) - f * std::cos(th)) * s_settings.aimBack + RE::NiPoint3{ 0.0f, 0.0f, s_settings.aimUp };
+        RE::NiPoint3       look = eye + aim * s_settings.aimLook - want;
+        look                    = look * (1.0f / (std::max)(look.Length(), 1e-3f));
         const float        w    = SmoothStep(s_aimW);
         t.translate             = t.translate + (want - t.translate) * w;
-        root->local             = root->parent ? root->parent->world.Invert() * t : t;
+        RE::NiPoint3 fwd = aim + (look - aim) * w;
+        fwd              = fwd * (1.0f / (std::max)(fwd.Length(), 1e-3f));
+        RE::NiPoint3 right{ fwd.y, -fwd.x, 0.0f };
+        const float  rl = std::hypot(right.x, right.y);
+        right           = rl > 1e-4f ? right * (1.0f / rl) : RE::NiPoint3{ 1.0f, 0.0f, 0.0f };
+        const RE::NiPoint3 up{ right.y * fwd.z - right.z * fwd.y, right.z * fwd.x - right.x * fwd.z, right.x * fwd.y - right.y * fwd.x };
+        auto& e  = t.rotate.entry;
+        e[0][0] = right.x, e[1][0] = right.y, e[2][0] = right.z;
+        e[0][1] = fwd.x, e[1][1] = fwd.y, e[2][1] = fwd.z;
+        e[0][2] = up.x, e[1][2] = up.y, e[2][2] = up.z;
+        root->local = root->parent ? root->parent->world.Invert() * t : t;
         RE::NiUpdateData data{};
         root->Update(data);
         static bool s_logged = false;
