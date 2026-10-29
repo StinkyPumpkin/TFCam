@@ -514,16 +514,12 @@ float2 PSChroma(VsOut i) : SV_Target {
             const auto&  s   = s_settings;
             if (!rec && s.motionBlur == kWhenOff && s.lens == kWhenOff) return;
             if (!EnsureInit()) return;
-            ComPtr<ID3D11RenderTargetView> rtv;
-            ComPtr<ID3D11DepthStencilView> dsv;
-            g.ctx->OMGetRenderTargets(1, &rtv, &dsv);
+            // The frame buffer, not whatever is bound: the menu draw binds it itself after this hook, so usually
+            // nothing is bound here, and during a load another target can be (seen: 1920x1080 R8).
+            auto& fb = RE::BSGraphics::Renderer::GetSingleton()->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kFRAMEBUFFER];
+            ComPtr<ID3D11RenderTargetView> rtv = reinterpret_cast<ID3D11RenderTargetView*>(fb.RTV);
             if (!rtv) {
-                // Usually nothing is bound here: the menu draw binds the frame buffer itself, after this hook.
-                auto& fb = RE::BSGraphics::Renderer::GetSingleton()->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kFRAMEBUFFER];
-                rtv      = reinterpret_cast<ID3D11RenderTargetView*>(fb.RTV);
-            }
-            if (!rtv) {
-                SetStatus("waiting - no picture bound where the menus draw");
+                SetStatus("waiting - the game's frame buffer is not made yet");
                 return;
             }
             ComPtr<ID3D11Resource> res;
