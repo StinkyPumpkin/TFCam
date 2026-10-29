@@ -290,7 +290,6 @@ namespace FreeCamMenu {
         WriteINIFloat("ActionFOV", "fArcherTurn", f.aimTurn);
         WriteINIFloat("ActionFOV", "fArcherDistance", f.aimBack);
         WriteINIFloat("ActionFOV", "fArcherUp", f.aimUp);
-        WriteINIFloat("ActionFOV", "fArcherLook", f.aimLook);
     }
 
     // 0.16.0 conversation camera, TFCam.ini [Conversation].
@@ -980,17 +979,16 @@ namespace FreeCamMenu {
         changed |= ImGuiMCP::SliderFloat("How strong##afStrength", &f.strength, 0.0f, 2.0f, "%.1f", 0);
         changed |= ImGuiMCP::Checkbox("Bow: drawing pulls in, letting go snaps out##afBow", &f.bow);
         changed |= ImGuiMCP::Checkbox("Archer camera: close round your head while the string is drawn##afAim", &f.aimCam);
-        if (f.aimCam) {
+        if (f.aimCam && ImGuiMCP::TreeNode("Archer camera position##afAimTree")) {
             ImGuiMCP::SetNextItemWidth(220.0f);
             changed |= ImGuiMCP::SliderFloat("Round to your face (0 behind, 90 side-on)##afAimTurn", &f.aimTurn, -110.0f, 110.0f, "%.0f", 0);
             ImGuiMCP::SetNextItemWidth(220.0f);
             changed |= ImGuiMCP::SliderFloat("Distance from your head##afAimBack", &f.aimBack, 10.0f, 120.0f, "%.0f", 0);
             ImGuiMCP::SetNextItemWidth(220.0f);
             changed |= ImGuiMCP::SliderFloat("Up / down##afAimUp", &f.aimUp, -20.0f, 30.0f, "%.0f", 0);
-            ImGuiMCP::SetNextItemWidth(220.0f);
-            changed |= ImGuiMCP::SliderFloat("Look along the arrow (more = easier aim)##afAimLook", &f.aimLook, 0.0f, 600.0f, "%.0f", 0);
-            ImGuiMCP::TextColored(grey, "Turned round, the middle of the screen is not exactly where the arrow flies: less "
-                                        "turn or more look-along brings them closer. Minus turns go round your left side.");
+            ImGuiMCP::TextColored(grey, "The middle of the screen is where the arrow will land: a line from the arrow tip "
+                                        "along your aim. Minus turns go round your left side.");
+            ImGuiMCP::TreePop();
         }
         changed |= ImGuiMCP::Checkbox("Power attacks punch in##afPower", &f.power);
         changed |= ImGuiMCP::Checkbox("Big spells warp out##afSpells", &f.spells);
@@ -1484,7 +1482,6 @@ namespace FreeCamMenu {
             af.aimTurn     = readFloat("ActionFOV", "fArcherTurn", ad.aimTurn);
             af.aimBack     = readFloat("ActionFOV", "fArcherDistance", ad.aimBack);
             af.aimUp       = readFloat("ActionFOV", "fArcherUp", ad.aimUp);
-            af.aimLook     = readFloat("ActionFOV", "fArcherLook", ad.aimLook);
             FovFx::Clamp();
             SKSE::log::info("FovFx: action FOV {}", af.enabled ? "on" : "off");
             SKSE::log::info("CamBlur: background blur {} (strength {:.2f}{})", b.enabled ? "on" : "off", b.strength,

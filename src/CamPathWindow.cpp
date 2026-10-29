@@ -89,8 +89,10 @@ namespace CamPathWindow {
             if (s_window && s_window->IsOpen.exchange(false)) s_closedAt = NowMs();
         }
 
-        // One camera's card. Returns true when the options changed (the caller hands them to CamPath::EditCam).
-        bool CamCard(int a_i, int a_count, bool a_loop, bool a_at, const std::string& a_pivot, CamPath::Cam& a_c) {
+        // One camera's card: the everyday options open, the rest folded away (More, Effects, More about the move).
+        // Returns true when the options changed (the caller hands them to CamPath::EditCam).
+        bool CamCard(int a_i, int a_count, bool a_loop, bool a_at, const std::string& a_pivot, bool a_nextHasPivot,
+            CamPath::Cam& a_c) {
             bool changed = false;
             ImGuiMCP::PushID(a_i);
             const std::string title = std::format("Camera {}{}###cam", a_i + 1, a_at ? "   (the camera is here)" : "");
@@ -124,12 +126,18 @@ namespace CamPathWindow {
                 ImGuiMCP::SameLine();
                 if (Small(kIconTerminal, "Console", "cconsole")) CamPath::RequestPivotConsole(a_i);
                 Tip("This camera's pivot: the person or thing you clicked in the console");
-                static const char* const kBones[] = { CamPath::BoneName(0), CamPath::BoneName(1), CamPath::BoneName(2),
-                    CamPath::BoneName(3), CamPath::BoneName(4), CamPath::BoneName(5), CamPath::BoneName(6),
-                    CamPath::BoneName(7), CamPath::BoneName(8) };
-                ImGuiMCP::SetNextItemWidth(180.0f);
-                changed |= ImGuiMCP::Combo("Aim at its##bone", &a_c.bone, kBones, CamPath::kBoneCount, -1);
-                Tip("A person's head, eyes, chest, hips, bum, groin, hands or feet (things only have a middle)");
+                const bool hasPivot = a_c.pivotKind >= 0;
+                if (hasPivot) {
+                    ImGuiMCP::SameLine();
+                    if (Small(kIconCross, "None", "cnone")) CamPath::RequestPivotNone(a_i);
+                    Tip("This camera has no pivot (it looks the way you set it)");
+                    static const char* const kBones[] = { CamPath::BoneName(0), CamPath::BoneName(1), CamPath::BoneName(2),
+                        CamPath::BoneName(3), CamPath::BoneName(4), CamPath::BoneName(5), CamPath::BoneName(6),
+                        CamPath::BoneName(7), CamPath::BoneName(8) };
+                    ImGuiMCP::SetNextItemWidth(180.0f);
+                    changed |= ImGuiMCP::Combo("Aim at its##bone", &a_c.bone, kBones, CamPath::kBoneCount, -1);
+                    Tip("A person's head, eyes, chest, hips, bum, groin, hands or feet (things only have a middle)");
+                }
 
                 ImGuiMCP::Text("Looks at:");
                 ImGuiMCP::SameLine();
@@ -138,17 +146,23 @@ namespace CamPathWindow {
                 changed |= ImGuiMCP::RadioButton("the way I set it##look", &a_c.look, CamPath::kLookSet);
                 ImGuiMCP::SameLine();
                 changed |= ImGuiMCP::RadioButton("where it is going##look", &a_c.look, CamPath::kLookAhead);
+                if (!hasPivot && a_c.look == CamPath::kLookPivot) {
+                    ImGuiMCP::TextColored(kGrey, "No pivot yet - it looks the way you set it. Pick one above.");
+                }
 
-                ImGuiMCP::SetNextItemWidth(220.0f);
-                changed |= ImGuiMCP::SliderFloat("Wait here (seconds)##wait", &a_c.wait, 0.0f, 10.0f, "%.1f", 0);
-                ImGuiMCP::SetNextItemWidth(220.0f);
-                changed |= ImGuiMCP::SliderFloat("Zoom (field of view)##fov", &a_c.fov, 10.0f, 120.0f, "%.0f", 0);
-                Tip("Smaller = zoomed in. Two cameras on the same spot with different zoom + Crash zoom = a crash zoom.");
-                changed |= ImGuiMCP::Checkbox("Blur the background##blur", &a_c.blur);
-                if (a_c.blur) {
-                    ImGuiMCP::SameLine();
-                    ImGuiMCP::SetNextItemWidth(160.0f);
-                    changed |= ImGuiMCP::SliderFloat("How much##blurs", &a_c.blurStrength, 0.1f, 1.0f, "%.1f", 0);
+                if (ImGuiMCP::TreeNode("More (wait, zoom, blur)##more")) {
+                    ImGuiMCP::SetNextItemWidth(220.0f);
+                    changed |= ImGuiMCP::SliderFloat("Wait here (seconds)##wait", &a_c.wait, 0.0f, 10.0f, "%.1f", 0);
+                    ImGuiMCP::SetNextItemWidth(220.0f);
+                    changed |= ImGuiMCP::SliderFloat("Zoom (field of view)##fov", &a_c.fov, 10.0f, 120.0f, "%.0f", 0);
+                    Tip("Smaller = zoomed in. Two cameras on the same spot with different zoom + Crash zoom = a crash zoom.");
+                    changed |= ImGuiMCP::Checkbox("Blur the background##blur", &a_c.blur);
+                    if (a_c.blur) {
+                        ImGuiMCP::SameLine();
+                        ImGuiMCP::SetNextItemWidth(160.0f);
+                        changed |= ImGuiMCP::SliderFloat("How much##blurs", &a_c.blurStrength, 0.1f, 1.0f, "%.1f", 0);
+                    }
+                    ImGuiMCP::TreePop();
                 }
 
                 const bool hasNext = a_i + 1 < a_count || (a_loop && a_count > 1);
@@ -180,7 +194,7 @@ namespace CamPathWindow {
                         changed |= ImGuiMCP::Checkbox("Slow motion on the way##slow", &a_c.slowMo);
                         if (a_c.slowMo) {
                             int at = static_cast<int>(std::lround(a_c.slowAt * 100.0f));
-                            int sp = static_cast<int>(std::lround(a_c.slowSpeed * 100.0f));
+                            int sd = static_cast<int>(std::lround((1.0f - a_c.slowSpeed) * 100.0f));
                             int ln = static_cast<int>(std::lround(a_c.slowLength * 100.0f));
                             ImGuiMCP::SetNextItemWidth(220.0f);
                             if (ImGuiMCP::SliderInt("Where (% of the way)##slowat", &at, 0, 100, "%d", 0)) {
@@ -188,10 +202,12 @@ namespace CamPathWindow {
                                 changed    = true;
                             }
                             ImGuiMCP::SetNextItemWidth(220.0f);
-                            if (ImGuiMCP::SliderInt("How slow (% of normal speed)##slowsp", &sp, 5, 100, "%d", 0)) {
-                                a_c.slowSpeed = static_cast<float>(sp) / 100.0f;
+                            if (ImGuiMCP::SliderInt("Slow down by (%)##slowsd", &sd, 0, 95, "%d", 0)) {
+                                a_c.slowSpeed = 1.0f - static_cast<float>(sd) / 100.0f;
                                 changed       = true;
                             }
+                            Tip("80 = a crawl at a fifth of normal speed. The slow part adds time: the move takes longer\n"
+                                "than its seconds (the total shows under Seconds to get there).");
                             ImGuiMCP::SetNextItemWidth(220.0f);
                             if (ImGuiMCP::SliderInt("How much of the way (%)##slowln", &ln, 5, 100, "%d", 0)) {
                                 a_c.slowLength = static_cast<float>(ln) / 100.0f;
@@ -224,11 +240,21 @@ namespace CamPathWindow {
                     ImGuiMCP::SameLine();
                     changed |= ImGuiMCP::RadioButton("cut (jump there)##move", &a_c.move, CamPath::kMoveCut);
                     Tip("Cut: the camera jumps to the next camera at once, like a cut in a film");
+                    if (a_c.move == CamPath::kMoveAround && !hasPivot && !a_nextHasPivot) {
+                        ImGuiMCP::TextColored(kGrey, "No pivot here or at camera %d to go round - it curves there instead.", next);
+                    }
                     if (a_c.move == CamPath::kMoveCut) {
                         ImGuiMCP::TextColored(kGrey, "The camera jumps straight to camera %d.", next);
                     } else {
                         ImGuiMCP::SetNextItemWidth(220.0f);
                         changed |= ImGuiMCP::SliderFloat("Seconds to get there##time", &a_c.time, 0.5f, 30.0f, "%.1f", 0);
+                        const float total = CamPath::MoveSeconds(a_c);
+                        if (total > a_c.time + 0.05f) {
+                            ImGuiMCP::TextColored(kGrey, "With its effects this move takes %.1f s in all (%.1f s more).", total,
+                                total - a_c.time);
+                        }
+                    }
+                    if (a_c.move != CamPath::kMoveCut && ImGuiMCP::TreeNode("More about the move##moremove")) {
                         changed |= ImGuiMCP::Checkbox("Slow start and stop##smooth", &a_c.smooth);
                         if (a_c.move != CamPath::kMoveAround) {
                             int side = static_cast<int>(std::lround(a_c.bendSide * 100.0f));
@@ -258,6 +284,7 @@ namespace CamPathWindow {
                         ImGuiMCP::SameLine();
                         changed |= ImGuiMCP::RadioButton("right##way", &a_c.way, CamPath::kWayRight);
                         changed |= ImGuiMCP::Checkbox("Zoom trick (the pivot keeps its size while the background stretches)##zoom", &a_c.zoomTrick);
+                        ImGuiMCP::TreePop();
                     }
                 }
                 ImGuiMCP::Spacing();
@@ -368,88 +395,79 @@ namespace CamPathWindow {
                         s.atCam + 1, s.cams.size()).c_str());
             }
 
-            // ---- pivot
-            ImGuiMCP::SeparatorText("Pivot for new cameras - what they are about");
-            FontAwesome::PushSolid();
-            ImGuiMCP::TextColored(kGold, "%s", Icon(kIconCross, s.pivotName.c_str()).c_str());
-            FontAwesome::Pop();
-            if (Small(kIconCross, "Pick what the camera points at", "pick")) CamPath::RequestPickPivot();
-            Tip("Point the middle of the screen at a person or a thing first");
-            ImGuiMCP::SameLine();
-            if (Small(kIconUser, "Me", "me")) CamPath::RequestPivotMe();
-            ImGuiMCP::SameLine();
-            if (Small(kIconTerminal, "Console pick", "console")) CamPath::RequestPivotConsole();
-            Tip("The person or thing you clicked in the console");
-            if (Small(kIconCross, "Give every camera this pivot", "toall")) CamPath::RequestPivotToAll();
-            Tip("Every camera you already have looks at / goes round this pivot too.\nOne camera only: use Pick on its own card.");
-            bool follow = s.follow;
-            FontAwesome::PushSolid();
-            const bool followHit = ImGuiMCP::Checkbox(Icon(kIconWalk, "Follow the pivots (each camera moves and turns with its pivot)##follow").c_str(), &follow);
-            FontAwesome::Pop();
-            if (followHit) CamPath::SetFollow(follow);
-            ImGuiMCP::SetNextItemWidth(200.0f);
-            if (ImGuiMCP::SliderFloat("Look a bit higher / lower##aim", &set.aimHeight, -60.0f, 60.0f, "%.0f", 0)) {
-                CamPath::Clamp();
-                FreeCamMenu::SaveCamPathSettings();
-            }
-
             // ---- fixed camera (0.18.0)
-            ImGuiMCP::SeparatorText("Fixed camera - you play on, the camera stays");
-            if (FixedCam::IsOn()) {
-                if (Big(kIconThumbtack, "Let the camera go", "unfix", 3)) FixedCam::RequestRelease("window");
-                Tip("The camera follows you again");
-            } else {
-                if (Big(kIconThumbtack, "Fix camera here", "fix", 0, s.freeCam)) {
-                    FixedCam::RequestFixHere();
-                    Close();  // play
+            if (ImGuiMCP::CollapsingHeader("Fixed camera - you play on, the camera stays##secfixed", 0)) {
+                if (FixedCam::IsOn()) {
+                    if (Big(kIconThumbtack, "Let the camera go", "unfix", 3)) FixedCam::RequestRelease("window");
+                    Tip("The camera follows you again");
+                } else {
+                    if (Big(kIconThumbtack, "Fix camera here", "fix", 0, s.freeCam)) {
+                        FixedCam::RequestFixHere();
+                        Close();  // play
+                    }
+                    Tip("Keeps this free-camera view and gives you your character back: walk, fight, run through the shot.\n"
+                        "Open this window again to let the camera go (or turn the free camera on to move it).");
                 }
-                Tip("Keeps this free-camera view and gives you your character back: walk, fight, run through the shot.\n"
-                    "Open this window again to let the camera go (or turn the free camera on to move it).");
+                bool watch = FixedCam::Watching();
+                if (ImGuiMCP::Checkbox("Turn to watch me##fixwatch", &watch)) FixedCam::SetWatch(watch);
+                Tip("The fixed camera stays where it is but turns to follow you");
+                ImGuiMCP::TextColored(kGrey, "Walking goes by the view: forward = away from the camera.");
             }
-            bool watch = FixedCam::Watching();
-            if (ImGuiMCP::Checkbox("Turn to watch me##fixwatch", &watch)) FixedCam::SetWatch(watch);
-            Tip("The fixed camera stays where it is but turns to follow you");
 
             // ---- the path
-            ImGuiMCP::SeparatorText("The path");
-            bool loop = s.loop;
-            FontAwesome::PushSolid();
-            const bool loopHit = ImGuiMCP::Checkbox(Icon(kIconRepeat, "Loop (start again at camera 1)##loop").c_str(), &loop);
-            FontAwesome::Pop();
-            if (loopHit) CamPath::SetLoop(loop);
-            ImGuiMCP::SetNextItemWidth(200.0f);
-            if (ImGuiMCP::SliderFloat("Smoothness##smooth", &set.smoothness, 0.0f, 1.0f, "%.2f", 0)) {
-                CamPath::Clamp();
-                FreeCamMenu::SaveCamPathSettings();
-            }
-            Tip("Takes the edge off sudden turns and speed changes (0 = exactly on the path)");
-            ImGuiMCP::SetNextItemWidth(200.0f);
-            ImGuiMCP::InputText("##savename", s_saveName, sizeof(s_saveName), 0, nullptr, nullptr);
-            ImGuiMCP::SameLine();
-            if (Small(kIconSave, "Save as", "saveas")) CamPath::RequestSaveAs(s_saveName);
-            ImGuiMCP::SameLine();
-            ImGuiMCP::SetNextItemWidth(180.0f);
-            if (ImGuiMCP::BeginCombo("##open", "Open a saved path", 0)) {
-                for (const auto& name : s.savedPaths) {
-                    if (ImGuiMCP::Selectable(name.c_str(), false, 0, ImGuiMCP::ImVec2(0.0f, 0.0f))) {
-                        CamPath::RequestLoad(name);
-                        std::snprintf(s_saveName, sizeof(s_saveName), "%s", name.c_str());
+            if (ImGuiMCP::CollapsingHeader("The path - follow, loop, smoothness, save##secpath", ImGuiMCP::ImGuiTreeNodeFlags_DefaultOpen)) {
+                bool follow = s.follow;
+                FontAwesome::PushSolid();
+                const bool followHit = ImGuiMCP::Checkbox(Icon(kIconWalk, "Follow (camera follows selected pivot)##follow").c_str(), &follow);
+                FontAwesome::Pop();
+                if (followHit) CamPath::SetFollow(follow);
+                Tip("Each camera moves and turns with its own pivot (a walking NPC). Off: the cameras stay where you put them.");
+                bool loop = s.loop;
+                FontAwesome::PushSolid();
+                const bool loopHit = ImGuiMCP::Checkbox(Icon(kIconRepeat, "Loop (start again at camera 1)##loop").c_str(), &loop);
+                FontAwesome::Pop();
+                if (loopHit) CamPath::SetLoop(loop);
+                ImGuiMCP::SetNextItemWidth(200.0f);
+                if (ImGuiMCP::SliderFloat("Smoothness##smooth", &set.smoothness, 0.0f, 1.0f, "%.2f", 0)) {
+                    CamPath::Clamp();
+                    FreeCamMenu::SaveCamPathSettings();
+                }
+                Tip("Takes the edge off sudden turns and speed changes (0 = exactly on the path)");
+                ImGuiMCP::SetNextItemWidth(200.0f);
+                if (ImGuiMCP::SliderFloat("Aim point higher / lower##aim", &set.aimHeight, -60.0f, 60.0f, "%.0f", 0)) {
+                    CamPath::Clamp();
+                    FreeCamMenu::SaveCamPathSettings();
+                }
+                Tip("Every camera that looks at or goes round a pivot aims this many units above (+) or below (-) the\n"
+                    "pivot's middle or chosen body part. 0 = exactly on it.");
+                ImGuiMCP::SetNextItemWidth(200.0f);
+                ImGuiMCP::InputText("##savename", s_saveName, sizeof(s_saveName), 0, nullptr, nullptr);
+                ImGuiMCP::SameLine();
+                if (Small(kIconSave, "Save as", "saveas")) CamPath::RequestSaveAs(s_saveName);
+                ImGuiMCP::SameLine();
+                ImGuiMCP::SetNextItemWidth(180.0f);
+                if (ImGuiMCP::BeginCombo("##open", "Open a saved path", 0)) {
+                    for (const auto& name : s.savedPaths) {
+                        if (ImGuiMCP::Selectable(name.c_str(), false, 0, ImGuiMCP::ImVec2(0.0f, 0.0f))) {
+                            CamPath::RequestLoad(name);
+                            std::snprintf(s_saveName, sizeof(s_saveName), "%s", name.c_str());
+                        }
                     }
+                    if (s.savedPaths.empty()) ImGuiMCP::TextColored(kGrey, "Nothing saved yet");
+                    ImGuiMCP::EndCombo();
                 }
-                if (s.savedPaths.empty()) ImGuiMCP::TextColored(kGrey, "Nothing saved yet");
-                ImGuiMCP::EndCombo();
-            }
-            if (!s_confirmClear) {
-                if (Small(kIconTrash, "Clear all cameras", "clear")) s_confirmClear = true;
-            } else {
-                ImGuiMCP::TextColored(kRed, "Clear all %d cameras?", static_cast<int>(s.cams.size()));
-                ImGuiMCP::SameLine();
-                if (ImGuiMCP::Button("Yes, clear##clearyes")) {
-                    CamPath::RequestClear();
-                    s_confirmClear = false;
+                if (!s_confirmClear) {
+                    if (Small(kIconTrash, "Clear all cameras", "clear")) s_confirmClear = true;
+                } else {
+                    ImGuiMCP::TextColored(kRed, "Clear all %d cameras?", static_cast<int>(s.cams.size()));
+                    ImGuiMCP::SameLine();
+                    if (ImGuiMCP::Button("Yes, clear##clearyes")) {
+                        CamPath::RequestClear();
+                        s_confirmClear = false;
+                    }
+                    ImGuiMCP::SameLine();
+                    if (ImGuiMCP::Button("No##clearno")) s_confirmClear = false;
                 }
-                ImGuiMCP::SameLine();
-                if (ImGuiMCP::Button("No##clearno")) s_confirmClear = false;
             }
 
             // ---- the cameras
@@ -461,8 +479,11 @@ namespace CamPathWindow {
             const int n = static_cast<int>(s.cams.size());
             for (int i = 0; i < n; ++i) {
                 CamPath::Cam c = s.cams[i];
-                const std::string& pivot = i < static_cast<int>(s.camPivotNames.size()) ? s.camPivotNames[i] : s.pivotName;
-                if (CamCard(i, n, s.loop, s.playing && s.atCam == i, pivot, c)) CamPath::EditCam(i, c);
+                static const std::string kNone = "none";
+                const std::string& pivot = i < static_cast<int>(s.camPivotNames.size()) ? s.camPivotNames[i] : kNone;
+                const int          nx    = i + 1 < n ? i + 1 : (s.loop ? 0 : -1);
+                const bool nextHasPivot  = nx >= 0 && s.cams[nx].pivotKind >= 0;
+                if (CamCard(i, n, s.loop, s.playing && s.atCam == i, pivot, nextHasPivot, c)) CamPath::EditCam(i, c);
             }
             if (!s.lastEvent.empty()) {
                 ImGuiMCP::Spacing();

@@ -8,10 +8,11 @@
 // 0.18.0: Camera Path - film anything. Fly TFCam's free camera to a spot and add it as a camera (1, 2, 3 ... no
 // limit). Every camera says how it looks and how the camera travels on to the next one; Play runs them in order.
 //
-// The pivot is what a camera is about: you (or your SexLab scene) by default, or any object / NPC - picked by
-// pointing the free camera at it, or in the console. Every camera has its own pivot (new cameras take the "pivot for
-// new cameras"). "Follow the pivot" makes the cameras move and turn with their pivots (a walking NPC), otherwise
-// the cameras stay where they were put; "around the pivot" always circles where the pivot is now.
+// The pivot is what a camera is about: none until you give it one (10-29: no pivot for new cameras), then you (or
+// your SexLab scene) or any object / NPC - picked by pointing the free camera at it, or in the console. Every camera
+// has its own. "Follow" makes the cameras move and turn with their pivots (a walking NPC), otherwise the cameras stay
+// where they were put; "around the pivot" circles where the pivot is now - one middle for the whole move (the
+// leaving camera's pivot, else the next one's), so the distance blends smoothly. No pivot at either end: a curve.
 //
 // At each camera:   Look at the pivot / the way it was set / where it is going (the look blends between cameras),
 //                   wait there N seconds, background blur on/off (+ strength).
@@ -62,8 +63,8 @@ namespace CamPath {
         RE::NiPoint3 pivotPos{};
         float        pivotHeading = 0.0f;
         bool         havePivot    = false;
-        // this camera's pivot: 0 = you / your scene, 1 = a reference
-        int          pivotKind = 0;
+        // this camera's pivot: -1 = none, 0 = you / your scene, 1 = a reference
+        int          pivotKind = -1;
         RE::FormID   pivotRef  = 0;
         // at this camera
         int   look         = kLookPivot;
@@ -120,8 +121,6 @@ namespace CamPath {
     struct Snapshot {
         std::vector<Cam> cams;
         std::string      name;
-        std::string      pivotName;
-        bool             pivotIsMe    = true;
         bool             follow       = false;
         bool             loop         = false;
         std::vector<std::string> camPivotNames;  // per camera
@@ -139,6 +138,8 @@ namespace CamPath {
         std::vector<std::string> savedPaths;
     };
     Snapshot GetSnapshot();
+    // Seconds the move on from a camera takes, slow motion (it adds time), slingshot and elastic arrival included.
+    float MoveSeconds(const Cam& a_c);
     // Edits a camera's options (not its position) under the lock; false if a_index is gone.
     bool EditCam(int a_index, const Cam& a_options);
     void SetFollow(bool a_on);
@@ -155,11 +156,11 @@ namespace CamPath {
     void RequestRewind();           // run the path backwards to camera 1 (from the end when it is not playing)
     void RequestPlayBackwards();    // the same at normal speed
     void RequestPause();
-    // The pivot for new cameras (a_cam = -1), every camera (a_cam = -2) or one camera.
-    void RequestPickPivot(int a_cam = -1);     // what the free camera points at
-    void RequestPivotConsole(int a_cam = -1);  // the console's selected reference
-    void RequestPivotMe(int a_cam = -1);
-    void RequestPivotToAll();                  // every camera takes the pivot for new cameras
+    // Camera a_cam's pivot.
+    void RequestPickPivot(int a_cam);     // what the free camera points at
+    void RequestPivotConsole(int a_cam);  // the console's selected reference
+    void RequestPivotMe(int a_cam);
+    void RequestPivotNone(int a_cam);
     // Clean screen: all game UI hidden (the console's tm - SMF HUD elements follow it); off when the free camera ends.
     void SetCleanScreen(bool a_on);
     bool CleanScreen();

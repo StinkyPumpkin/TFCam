@@ -208,14 +208,12 @@ namespace FovFx {
         if (!std::isfinite(s.strength)) s.strength = 1.0f;
         s.strength   = std::clamp(s.strength, 0.0f, 2.0f);
         s.spellLevel = std::clamp(s.spellLevel, 0, 100);
-        if (!std::isfinite(s.aimTurn)) s.aimTurn = 65.0f;
-        if (!std::isfinite(s.aimBack)) s.aimBack = 40.0f;
-        if (!std::isfinite(s.aimUp)) s.aimUp = 2.0f;
-        if (!std::isfinite(s.aimLook)) s.aimLook = 60.0f;
+        if (!std::isfinite(s.aimTurn)) s.aimTurn = 22.0f;
+        if (!std::isfinite(s.aimBack)) s.aimBack = 61.0f;
+        if (!std::isfinite(s.aimUp)) s.aimUp = -1.0f;
         s.aimTurn = std::clamp(s.aimTurn, -110.0f, 110.0f);
         s.aimBack = std::clamp(s.aimBack, 10.0f, 120.0f);
         s.aimUp   = std::clamp(s.aimUp, -20.0f, 30.0f);
-        s.aimLook = std::clamp(s.aimLook, 0.0f, 600.0f);
     }
 
     void Install() {
@@ -225,49 +223,117 @@ namespace FovFx {
         }
     }
 
-    // The archer camera: round the head from behind toward your right side (aimTurn), looking at a point ahead on the
-    // arrow's line (aimLook) - the face, the drawn bow and where the arrow goes in one shot. The game's own aim is
-    // unchanged; with the view turned, the screen's middle is no longer exactly where the arrow flies (more aimLook /
-    // less aimTurn = closer). In over ~0.12 s as the string comes back, out over ~0.2 s.
+    namespace {
+        constexpr float kArrowFar = 6000.0f;  // nothing in the way: the aim point is this far out
+
+        // How far the arrow's line runs from a_from along a_dir before it meets something - you and your bow are passed
+        // through. Main thread.
+        float ArrowReach(RE::PlayerCharacter* a_player, const RE::NiPoint3& a_from, const RE::NiPoint3& a_dir) {
+            auto* cell  = a_player->GetParentCell();
+            auto* world = cell ? cell->GetbhkWorld() : nullptr;
+            if (!world) return kArrowFar;
+            const float scale = RE::bhkWorld::GetWorldScale();
+            float       start = 0.0f;
+            for (int pass = 0; pass < 4; ++pass) {
+                RE::bhkPickData pick{};
+                pick.rayInput.from                        = RE::hkVector4((a_from + a_dir * start) * scale);
+                pick.rayInput.to                          = RE::hkVector4((a_from + a_dir * kArrowFar) * scale);
+                pick.rayInput.enableShapeCollectionFilter = true;
+                pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kLOS);
+                world->PickObject(pick);
+                if (!pick.rayOutput.HasHit()) return kArrowFar;
+                const float d    = start + (kArrowFar - start) * std::clamp(pick.rayOutput.hitFraction, 0.0f, 1.0f);
+                auto*       coll = pick.rayOutput.rootCollidable;
+                auto*       ref  = coll ? RE::TESHavokUtilities::FindCollidableRef(*coll) : nullptr;
+                if (ref == a_player || d < 5.0f) {
+                    start = d + 1.0f;  // your own body or bow: look again past it
+                    continue;
+                }
+                return d;
+            }
+            return kArrowFar;
+        }
+    }
+
+    // The archer camera: round the head from behind toward your right side (aimTurn), looking at where the arrow will
+    // land - a line from the arrow tip, the way the shot leaves (your aim heading, at the view's height), to the first
+    // thing it meets. So the middle of the screen is the aim point even with the view turned, and Hit Where You Aim
+    // (which aims through the screen's middle) agrees with it. In over ~0.12 s as the string comes back; after the
+    // release the view holds on the aim point kAimHold seconds (the arrow flies in), then goes out over ~0.2 s.
     void ApplyAimCam() {
-        static double s_aimLast = 0.0;
-        static float  s_aimW    = 0.0f;
-        const double  now       = Now();
-        const float   dt        = s_aimLast > 0.0 ? static_cast<float>(std::clamp(now - s_aimLast, 0.0, 0.1)) : 0.0f;
-        s_aimLast               = now;
+        constexpr double kAimHold = 0.5;
+        static double       s_aimLast   = 0.0;
+        static float        s_aimW      = 0.0f;
+        static float        s_reach     = 0.0f;  // the aim point's distance, eased so a branch passing does not jerk the view
+        static bool         s_wasDrawn  = false;
+        static double       s_holdUntil = 0.0;
+        static RE::NiPoint3 s_aimAt{};
+        static bool         s_haveAim   = false;
+        const double        now         = Now();
+        const float         dt          = s_aimLast > 0.0 ? static_cast<float>(std::clamp(now - s_aimLast, 0.0, 0.1)) : 0.0f;
+        s_aimLast                       = now;
         auto* cam    = RE::PlayerCamera::GetSingleton();
         auto* player = RE::PlayerCharacter::GetSingleton();
         auto* ui     = RE::UI::GetSingleton();
         if (!s_settings.enabled || !s_settings.aimCam || !cam || !cam->cameraRoot || !player || cam->IsInFreeCameraMode() ||
             cam->IsInFirstPerson()) {
-            s_aimW = 0.0f;
+            s_aimW     = 0.0f;
+            s_haveAim  = false;
+            s_wasDrawn = false;
             return;
         }
+        if (s_wasDrawn && !s_bowDrawn) s_holdUntil = now + kAimHold;
+        s_wasDrawn = s_bowDrawn;
         if (!(ui && ui->GameIsPaused())) {
-            const float target = s_bowDrawn ? 1.0f : 0.0f;
+            const float target = s_bowDrawn || now < s_holdUntil ? 1.0f : 0.0f;
             const float tau    = target > s_aimW ? 0.12f : 0.2f;
             s_aimW += (target - s_aimW) * (dt > 0.0f ? 1.0f - std::exp(-dt / tau) : 0.0f);
         }
-        if (s_aimW < 0.002f) return;
+        if (s_aimW < 0.002f) {
+            s_haveAim = false;
+            return;
+        }
         auto* body = player->Get3D2();
         auto* head = body ? body->GetObjectByName("NPC Head [Head]") : nullptr;
         if (!head) return;
         auto*              root = cam->cameraRoot.get();
         RE::NiTransform    t    = root->world;
         const auto&        m    = t.rotate.entry;
-        const RE::NiPoint3 aim{ m[0][1], m[1][1], m[2][1] };  // the game's view: where you aim
-        const float        h    = player->GetAngleZ();
-        const float        flat = std::hypot(aim.x, aim.y);
-        const RE::NiPoint3 f    = flat > 1e-4f ? RE::NiPoint3{ aim.x / flat, aim.y / flat, 0.0f } : RE::NiPoint3{ std::sin(h), std::cos(h), 0.0f };
+        const RE::NiPoint3 view{ m[0][1], m[1][1], m[2][1] };  // the game's view (your mouse)
+        const float        h  = player->GetAngleZ();
+        const float        ah = player->GetAimHeading();  // the way the shot leaves the bow
+        const RE::NiPoint3 f{ std::sin(ah), std::cos(ah), 0.0f };
         const RE::NiPoint3 r{ f.y, -f.x, 0.0f };  // your right
+        const float        flat = std::hypot(view.x, view.y);
+        const RE::NiPoint3 dir{ f.x * flat, f.y * flat, view.z };  // the aim heading at the view's height (unit length)
         const RE::NiPoint3 eye = head->world.translate + RE::NiPoint3{ std::sin(h) * 4.0f, std::cos(h) * 4.0f, 7.0f };
-        const float        th  = s_settings.aimTurn * kDegToRad;
-        const RE::NiPoint3 want = eye + (r * std::sin(th) - f * std::cos(th)) * s_settings.aimBack + RE::NiPoint3{ 0.0f, 0.0f, s_settings.aimUp };
-        RE::NiPoint3       look = eye + aim * s_settings.aimLook - want;
-        look                    = look * (1.0f / (std::max)(look.Length(), 1e-3f));
-        const float        w    = SmoothStep(s_aimW);
-        t.translate             = t.translate + (want - t.translate) * w;
-        RE::NiPoint3 fwd = aim + (look - aim) * w;
+        if (s_bowDrawn || !s_haveAim) {  // after the release the aim point stays put
+            // the arrow tip: just past the bow hand, on the line from the string hand
+            RE::NiPoint3 tip  = eye + dir * 40.0f;
+            auto*        grip = body->GetObjectByName("NPC L Hand [LHnd]");
+            auto*        nock = body->GetObjectByName("NPC R Hand [RHnd]");
+            if (grip && nock) {
+                const RE::NiPoint3 along = grip->world.translate - nock->world.translate;
+                const float        len   = along.Length();
+                tip = grip->world.translate + (len > 1.0f ? along * (10.0f / len) : dir * 10.0f);
+            }
+            const float reach = ArrowReach(player, tip, dir);
+            if (!s_haveAim || s_reach <= 0.0f) {
+                s_reach = reach;
+            } else if (dt > 0.0f) {  // eased in log space: near and far steps feel the same
+                s_reach = std::exp(std::log(s_reach) + (std::log(reach) - std::log(s_reach)) * (1.0f - std::exp(-dt / 0.12f)));
+            }
+            s_aimAt   = tip + dir * (std::max)(s_reach, 50.0f);
+            s_haveAim = true;
+        }
+        const RE::NiPoint3 aimAt = s_aimAt;
+        const float        th    = s_settings.aimTurn * kDegToRad;
+        const RE::NiPoint3 want  = eye + (r * std::sin(th) - f * std::cos(th)) * s_settings.aimBack + RE::NiPoint3{ 0.0f, 0.0f, s_settings.aimUp };
+        RE::NiPoint3       look  = aimAt - want;
+        look                     = look * (1.0f / (std::max)(look.Length(), 1e-3f));
+        const float        w     = SmoothStep(s_aimW);
+        t.translate              = t.translate + (want - t.translate) * w;
+        RE::NiPoint3 fwd = view + (look - view) * w;
         fwd              = fwd * (1.0f / (std::max)(fwd.Length(), 1e-3f));
         RE::NiPoint3 right{ fwd.y, -fwd.x, 0.0f };
         const float  rl = std::hypot(right.x, right.y);
@@ -283,7 +349,8 @@ namespace FovFx {
         static bool s_logged = false;
         if (!s_logged && s_aimW > 0.95f) {
             s_logged = true;
-            SKSE::log::info("FovFx: archer camera in - {:.0f} units from the eyes", (want - eye).Length());
+            SKSE::log::info("FovFx: archer camera in - {:.0f} units from the eyes, aim point {:.0f} out from the arrow tip",
+                (want - eye).Length(), s_reach);
         }
         if (s_aimW < 0.05f) s_logged = false;
     }

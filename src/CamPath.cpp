@@ -153,8 +153,6 @@ namespace CamPath {
         std::mutex       s_lock;
         std::vector<Cam> s_cams;
         std::string      s_name      = "Current";
-        int              s_pivotKind = 0;  // the pivot for new cameras: 0 = you / your scene, 1 = a reference
-        RE::FormID       s_pivotRef  = 0;
         bool             s_follow    = false;
         bool             s_loop      = false;
         std::string      s_lastEvent;
@@ -164,7 +162,6 @@ namespace CamPath {
         float s_pubRate    = 1.0f;
         int   s_pubAt      = -1;
         float s_pubProgress = 0.0f;
-        std::string s_pubPivotName = "you";
         bool  s_loaded = false;
         std::unordered_map<RE::FormID, std::string> s_refNames;  // pivot names for the window (filled on the main thread)
 
@@ -224,12 +221,11 @@ namespace CamPath {
                     SKSE::log::error("CamPath: cannot write {}", file.string());
                     return false;
                 }
-                out << "# TFCam camera path v3 - tab separated. pivot (for new cameras): kind (0 you, 1 reference) formID "
-                       "follow loop\n"
+                out << "# TFCam camera path v3 - tab separated. pivot: - - follow loop (no pivot for new cameras since 10-29)\n"
                        "# cam: x y z yaw pitch roll fov | pivot x y z heading known | look wait blur strength | move time "
                        "smooth turns way zoom | pivot kind formID | bend side up | bone shake crash | slow at speed "
                        "length world | elastic sling slowCamera\n";
-                out << std::format("pivot\t{}\t{:08X}\t{}\t{}\n", s_pivotKind, s_pivotRef, s_follow ? 1 : 0, s_loop ? 1 : 0);
+                out << std::format("pivot\t-1\t00000000\t{}\t{}\n", s_follow ? 1 : 0, s_loop ? 1 : 0);
                 for (const auto& c : s_cams) {
                     out << std::format("cam\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{:.5f}\t{:.5f}\t{:.2f}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{}"
                                        "\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{}\t{}\t{}\t{}\t{:08X}\t{:.3f}\t{:.3f}"
@@ -280,7 +276,7 @@ namespace CamPath {
                 c.zoomTrick = zoom != 0;
                 c.move      = std::clamp(c.move, 0, 3);
                 // v2 (0.18.0 before the per-camera pivot): every camera has the path's pivot
-                c.pivotKind = n >= 24 ? (ckind == 1 ? 1 : 0) : (kind == 1 ? 1 : 0);
+                c.pivotKind = n >= 24 ? (ckind == 1 ? 1 : (ckind < 0 ? -1 : 0)) : (kind == 1 ? 1 : 0);
                 c.pivotRef  = c.pivotKind == 1 ? (n >= 24 ? cref : ref) : 0;
                 if (n < 26 || !std::isfinite(c.bendSide) || !std::isfinite(c.bendUp)) c.bendSide = c.bendUp = 0.0f;
                 c.bendSide = std::clamp(c.bendSide, -1.0f, 1.0f);
@@ -300,8 +296,6 @@ namespace CamPath {
                 cams.push_back(c);
             }
             s_cams      = std::move(cams);
-            s_pivotKind = kind == 1 ? 1 : 0;
-            s_pivotRef  = ref;
             s_follow    = follow != 0;
             s_loop      = loop != 0;
             return true;
@@ -326,7 +320,6 @@ namespace CamPath {
                     for (const auto& c : s_cams) {
                         if (c.pivotKind == 1 && c.pivotRef && !s_refNames.contains(c.pivotRef)) ids.push_back(c.pivotRef);
                     }
-                    if (s_pivotKind == 1 && s_pivotRef && !s_refNames.contains(s_pivotRef)) ids.push_back(s_pivotRef);
                 }
                 std::vector<std::pair<RE::FormID, std::string>> found;
                 for (const auto id : ids) {
@@ -627,15 +620,6 @@ namespace CamPath {
             return s_play.rides[a_i] && p.have ? s_play.baseYaw[a_i] + p.heading : s_play.cams[a_i].yaw;
         }
 
-        // The middle of the circle for "around the pivot": where camera a_i's pivot is NOW (a pivot picked after the
-        // cameras were put, or one that walked off, is still the one circled).
-        RE::NiPoint3 CentreOf(int a_i) {
-            const auto& p = PivOf(a_i);
-            if (p.have) return p.aim;
-            const auto& c = s_play.cams[a_i];
-            return c.havePivot ? c.pivotPos : c.pos;
-        }
-
         // Camera a_i's spot this frame; one past either end is mirrored (a curve's end tangents).
         RE::NiPoint3 WorldAt(int a_i) {
             const int n = Count();
@@ -715,16 +699,21 @@ namespace CamPath {
         // Position along move a_k -> a_next at eased progress a_u.
         RE::NiPoint3 MovePos(int a_k, int a_next, float a_u) {
             const auto& c = s_play.cams[a_k];
-            if (c.move == kMoveAround) {
-                const RE::NiPoint3 c0 = CentreOf(a_k), c1 = CentreOf(a_next);
-                const RE::NiPoint3 o0 = s_play.world[a_k] - c0, o1 = s_play.world[a_next] - c1;
+            // Around: one middle for the whole move - where the leaving camera's pivot is NOW, else the next one's
+            // (a pivot picked after the cameras were put, or one that walked off, is still the one circled). A middle
+            // per end slid the circle across when the two cameras had different pivots: the camera swung far out and
+            // back in (user 10-29). With one middle the distance blends smoothly. No pivot at either end: a curve.
+            const int ci = c.move == kMoveAround ? (HavePivot(a_k) ? a_k : (HavePivot(a_next) ? a_next : -1)) : -1;
+            if (ci >= 0) {
+                const RE::NiPoint3 mid = PivOf(ci).aim;
+                const RE::NiPoint3 o0 = s_play.world[a_k] - mid, o1 = s_play.world[a_next] - mid;
                 const float r0 = std::hypot(o0.x, o0.y), r1 = std::hypot(o1.x, o1.y);
                 const float a0 = std::atan2(o0.x, o0.y), a1 = std::atan2(o1.x, o1.y);
                 const float da = WayAngle(WrapPi(a1 - a0), c.way, c.turns);
                 const float r  = r0 + (r1 - r0) * a_u;
                 const float a  = a0 + da * a_u;
                 const float h  = o0.z + (o1.z - o0.z) * a_u;
-                return Mix(c0, c1, a_u) + RE::NiPoint3{ std::sin(a) * r, std::cos(a) * r, h };
+                return mid + RE::NiPoint3{ std::sin(a) * r, std::cos(a) * r, h };
             }
             return LinePos(a_k, a_next, EvenParam(a_k, a_next, a_u));
         }
@@ -829,7 +818,8 @@ namespace CamPath {
                 // both keep their own view: turn from one to the other (extra turns spin in place unless the move goes
                 // round the pivot, which has them already)
                 const float y0 = SetYaw(k), y1 = SetYaw(next);
-                const float d  = ck.move == kMoveAround ? WrapPi(y1 - y0) : WayAngle(WrapPi(y1 - y0), ck.way, ck.turns);
+                const bool  orbits = ck.move == kMoveAround && (HavePivot(k) || HavePivot(next));  // no pivot: a curve
+                const float d      = orbits ? WrapPi(y1 - y0) : WayAngle(WrapPi(y1 - y0), ck.way, ck.turns);
                 out.fwd = Forward(y0 + d * u, ck.pitch + (cn.pitch - ck.pitch) * u);
             } else {
                 // Leaving a look at the pivot: keep it in view and turn in the last 40% (a spiral stays on the pivot).
@@ -925,7 +915,7 @@ namespace CamPath {
                 RE::NiPoint3 raw{}, rawAim{};
                 float        heading = 0.0f;
                 std::string  name;
-                if (!PivotRaw(p.kind, p.ref, raw, heading, &name, p.bone, &rawAim)) {
+                if (p.kind < 0 || !PivotRaw(p.kind, p.ref, raw, heading, &name, p.bone, &rawAim)) {
                     p.have = false;
                     continue;
                 }
@@ -1017,7 +1007,7 @@ namespace CamPath {
             const int n = Count();
             for (int i = 0; i < n; ++i) {
                 const auto&      c    = s_play.cams[i];
-                const int        kind = c.pivotKind == 1 && c.pivotRef ? 1 : 0;
+                const int        kind = c.pivotKind < 0 ? -1 : (c.pivotKind == 1 && c.pivotRef ? 1 : 0);
                 const RE::FormID ref  = kind == 1 ? c.pivotRef : 0;
                 const int        bone = std::clamp(c.bone, 0, kBoneCount - 1);
                 int              idx  = -1;
@@ -1069,7 +1059,9 @@ namespace CamPath {
             }
             s_play.on = true;
             std::string pivots;
-            for (const auto& p : s_play.pivots) pivots += (pivots.empty() ? "" : ", ") + (p.have ? p.name : std::string("not found"));
+            for (const auto& p : s_play.pivots) {
+                pivots += (pivots.empty() ? "" : ", ") + (p.have ? p.name : std::string(p.kind < 0 ? "none" : "not found"));
+            }
             Event(std::format("camera path {} ({}) - {} cameras, {:.0f} s{}{}, pivot {}{}",
                 a_rate < 0.0f ? (a_rate < -1.5f ? "rewinds" : "plays backwards") : "plays", a_source, n,
                 s_play.total, from > 0 ? std::format(", from camera {}", from + 1) : "", s_play.loop ? " (loop)" : "", pivots,
@@ -1156,11 +1148,11 @@ namespace CamPath {
             c.yaw   = WrapPi(a_fcs->rotation.y);
             c.roll  = WrapPi(FreeCam::GetRollRadians() + FreeCam::GetExtraRoll());
             c.fov   = GetFOV();
-            c.pivotKind = a_kind == 1 && a_ref ? 1 : 0;
+            c.pivotKind = a_kind < 0 ? -1 : (a_kind == 1 && a_ref ? 1 : 0);
             c.pivotRef  = c.pivotKind == 1 ? a_ref : 0;
             RE::NiPoint3 p{};
             float        h = 0.0f;
-            if (PivotRaw(c.pivotKind, c.pivotRef, p, h, nullptr)) {
+            if (c.pivotKind >= 0 && PivotRaw(c.pivotKind, c.pivotRef, p, h, nullptr)) {
                 c.pivotPos     = p;
                 c.pivotHeading = h;
                 c.havePivot    = true;
@@ -1170,12 +1162,6 @@ namespace CamPath {
             c.time   = 3.0f;
             c.smooth = false;
             return c;
-        }
-
-        void PivotNow(int& a_kind, RE::FormID& a_ref) {
-            std::scoped_lock lock(s_lock);
-            a_kind = s_pivotKind;
-            a_ref  = s_pivotRef;
         }
 
         // Add camera while the path plays (or is paused): the new camera goes into the path at this moment - the move
@@ -1239,10 +1225,7 @@ namespace CamPath {
         void AddCam(RE::FreeCameraState* a_fcs) {
             LoadOnce();
             if (s_play.on && !s_play.gliding && InsertWhilePlaying(a_fcs)) return;
-            int        kind;
-            RE::FormID ref;
-            PivotNow(kind, ref);
-            const Cam   c = CamFromFreeCam(a_fcs, kind, ref);
+            const Cam   c = CamFromFreeCam(a_fcs, -1, 0);  // no pivot until you give it one
             std::size_t n;
             {
                 std::scoped_lock lock(s_lock);
@@ -1356,13 +1339,12 @@ namespace CamPath {
             return ref ? RE::NiPointer<RE::TESObjectREFR>(ref) : nullptr;
         }
 
-        // a_cam: -1 = the pivot for new cameras, -2 = that and every camera, 0.. = that camera only. A camera given a
-        // pivot measures from where it is now (what Follow keeps).
-        void SetPivot(int a_kind, RE::NiPointer<RE::TESObjectREFR> a_ref, std::string_view a_how, int a_cam = -1) {
+        // Camera a_cam's pivot (a_kind -1 = none). It measures from where it is now (what Follow keeps).
+        void SetPivot(int a_kind, RE::NiPointer<RE::TESObjectREFR> a_ref, std::string_view a_how, int a_cam) {
             auto*       player = RE::PlayerCharacter::GetSingleton();
-            int         kind   = 0;
+            int         kind   = a_kind < 0 ? -1 : 0;
             RE::FormID  id     = 0;
-            std::string name   = "you";
+            std::string name   = kind < 0 ? "none" : "you";
             if (a_kind == 1 && a_ref && a_ref.get() != player) {
                 kind = 1;
                 id   = a_ref->GetFormID();
@@ -1370,38 +1352,23 @@ namespace CamPath {
             }
             RE::NiPoint3 p{};
             float        h    = 0.0f;
-            const bool   have = PivotRaw(kind, id, p, h, nullptr);
-            std::string  who;
+            const bool   have = kind >= 0 && PivotRaw(kind, id, p, h, nullptr);
             {
                 std::scoped_lock lock(s_lock);
+                if (a_cam < 0 || a_cam >= static_cast<int>(s_cams.size())) return;
                 if (kind == 1) s_refNames[id] = name;
-                auto give = [&](Cam& c) {
-                    c.pivotKind = kind;
-                    c.pivotRef  = id;
-                    if (have) {
-                        c.pivotPos     = p;
-                        c.pivotHeading = h;
-                        c.havePivot    = true;
-                    }
-                };
-                if (a_cam < 0) {
-                    s_pivotKind    = kind;
-                    s_pivotRef     = id;
-                    s_pubPivotName = name;
+                auto& c     = s_cams[a_cam];
+                c.pivotKind = kind;
+                c.pivotRef  = id;
+                c.havePivot = have;
+                if (have) {
+                    c.pivotPos     = p;
+                    c.pivotHeading = h;
                 }
-                if (a_cam == -2) {
-                    for (auto& c : s_cams) give(c);
-                    who = "every camera";
-                } else if (a_cam >= 0 && a_cam < static_cast<int>(s_cams.size())) {
-                    give(s_cams[a_cam]);
-                    who = std::format("camera {}", a_cam + 1);
-                } else {
-                    who = "new cameras";
-                }
-                EventLocked(std::format("pivot for {}: {} ({})", who, name, a_how));
+                EventLocked(std::format("pivot for camera {}: {} ({})", a_cam + 1, name, a_how));
             }
             SaveCurrentSoon();
-            Notify(std::format("Pivot for {}: {}", who, name));
+            Notify(std::format("Pivot for camera {}: {}", a_cam + 1, name));
         }
 
         // ---- record manual path ------------------------------------------------------------------------------------
@@ -1438,15 +1405,11 @@ namespace CamPath {
         void StartRecord(RE::FreeCameraState* a_fcs) {
             LoadOnce();
             if (s_play.on) EndPlay("recording");
-            int        kind;
-            RE::FormID ref;
             {
                 std::scoped_lock lock(s_lock);
                 if (!s_cams.empty()) WriteLocked("Before recording");  // the old path is kept
-                kind = s_pivotKind;
-                ref  = s_pivotRef;
             }
-            const Cam first = CamFromFreeCam(a_fcs, kind, ref);
+            const Cam first = CamFromFreeCam(a_fcs, -1, 0);
             {
                 std::scoped_lock lock(s_lock);
                 s_cams.clear();
@@ -1668,17 +1631,7 @@ namespace CamPath {
         std::scoped_lock lock(s_lock);
         s.cams       = s_cams;
         s.name       = s_name;
-        s.pivotIsMe  = s_pivotKind == 0;
-        s.pivotName  = s_pubPivotName;
         bool missing = false;
-        if (s_pivotKind == 1 && s_pivotRef) {  // the pivot for new cameras as the file has it (a path opened at start too)
-            const auto it = s_refNames.find(s_pivotRef);
-            if (it != s_refNames.end()) {
-                s.pivotName = it->second;
-            } else {
-                missing = true;
-            }
-        }
         s.follow     = s_follow;
         s.loop       = s_loop;
         s.playing    = s_pubPlaying;
@@ -1695,7 +1648,7 @@ namespace CamPath {
         s.savedPaths = s_savedPaths;
         for (const auto& c : s_cams) {
             if (c.pivotKind != 1 || !c.pivotRef) {
-                s.camPivotNames.emplace_back("you");
+                s.camPivotNames.emplace_back(c.pivotKind < 0 ? "none" : "you");
                 continue;
             }
             const auto it = s_refNames.find(c.pivotRef);
@@ -1875,21 +1828,21 @@ namespace CamPath {
         Queue([a_cam] { SetPivot(0, nullptr, "you", a_cam); });
     }
 
-    void RequestPivotToAll() {
-        Queue([] {
-            int        kind;
-            RE::FormID id;
-            PivotNow(kind, id);
-            RE::NiPointer<RE::TESObjectREFR> ref;
-            if (kind == 1) {
-                ref = RE::NiPointer<RE::TESObjectREFR>(RE::TESForm::LookupByID<RE::TESObjectREFR>(id));
-                if (!ref) {
-                    Notify("Camera path: the pivot for new cameras is not here");
-                    return;
-                }
+    void RequestPivotNone(int a_cam) {
+        Queue([a_cam] { SetPivot(-1, nullptr, "cleared", a_cam); });
+    }
+
+    float MoveSeconds(const Cam& a_c) {
+        if (a_c.move == kMoveCut) return 0.0f;
+        float core = a_c.time;
+        if (CamSlows(a_c)) {  // as BuildSlowTables adds it up
+            core = 0.0f;
+            for (int i = 1; i <= kSlowSamples; ++i) {
+                const float mid = (static_cast<float>(i) - 0.5f) / kSlowSamples;
+                core += (a_c.time / kSlowSamples) / (std::max)(SlowSpeed(a_c, mid), 0.05f);
             }
-            SetPivot(kind, ref, "the pivot for new cameras", -2);
-        });
+        }
+        return WindTime(a_c) + core + TailTime(a_c);
     }
 
     void RequestFreezeWorld() {
@@ -1941,12 +1894,6 @@ namespace CamPath {
                     return;
                 }
                 s_name = name;
-                std::string pivot = "you";
-                if (s_pivotKind == 1) {
-                    auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(s_pivotRef);
-                    pivot     = ref ? CamFocus::Describe(ref) : "you (the saved pivot is not loaded)";
-                }
-                s_pubPivotName = pivot;
                 EventLocked(std::format("opened \"{}\" - {} camera(s)", name, s_cams.size()));
             }
             SaveCurrentSoon();

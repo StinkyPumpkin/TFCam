@@ -113,6 +113,22 @@ namespace FixedCam {
             return LookRotation(s_yaw, s_pitch);
         }
 
+        // Walking goes by the view (forward = away from the camera): the hidden third-person camera's free rotation is
+        // turned so its yaw - what the game and True Directional Movement steer by - is the fixed view's. Its own view
+        // is never seen (ours replaces it). 10-29: hard to steer with the keys still going by the camera behind you.
+        void SteerByView(const RE::NiMatrix3& a_view) {
+            auto* cam    = RE::PlayerCamera::GetSingleton();
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!cam || !player || !cam->currentState) return;
+            const auto id = cam->currentState->id;
+            if (id != RE::CameraState::kThirdPerson && id != RE::CameraState::kMount) return;  // a horse's is one too
+            auto*       tps     = static_cast<RE::ThirdPersonState*>(cam->currentState.get());
+            const float viewYaw = std::atan2(a_view.entry[0][1], a_view.entry[1][1]);
+            tps->freeRotationEnabled   = true;
+            tps->freeRotation.x        = std::remainder(viewYaw - player->GetAngleZ(), 6.2831853f);
+            cam->GetRuntimeData2().yaw = viewYaw;
+        }
+
         // The camera root takes the fixed view, after the game has placed it (any camera state but the free camera).
         void ApplyRoot() {
             auto* cam = RE::PlayerCamera::GetSingleton();
@@ -125,6 +141,7 @@ namespace FixedCam {
             root->local = root->parent ? root->parent->world.Invert() * t : t;
             RE::NiUpdateData data{};
             root->Update(data);
+            SteerByView(t.rotate);
         }
 
         // PlayerCamera::Update's call that updates the camera root (Cinematic Mode's site, + 0x1A6 on SE and AE).
