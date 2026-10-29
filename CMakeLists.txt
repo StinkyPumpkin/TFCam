@@ -91,7 +91,13 @@ add_commonlibsse_plugin(${PROJECT_NAME} MINIMUM_SKSE_VERSION 0.0.0 SOURCES
     src/CamPathWindow.cpp
     src/FixedCam.cpp
     src/FovFx.cpp
+    src/FrameFx.cpp
+    src/VideoCapture.cpp
 )
+# 0.18.0 video capture: Media Foundation + process-loopback sound. Delay-loaded, so a Windows without the media framework
+# (Windows N) still loads TFCam - VideoCapture checks for mfplat.dll before it calls anything.
+target_link_libraries(${PROJECT_NAME} PRIVATE mfplat mfreadwrite mfuuid mmdevapi ole32 shell32 delayimp)
+target_link_options(${PROJECT_NAME} PRIVATE /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll /DELAYLOAD:mmdevapi.dll)
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 target_precompile_headers(${PROJECT_NAME} PRIVATE PCH.h)
 

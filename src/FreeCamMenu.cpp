@@ -1,5 +1,7 @@
 #include "FreeCamMenu.h"
 #include "FovFx.h"
+#include "FrameFx.h"
+#include "VideoCapture.h"
 #include "FreeCamController.h"
 #include "FreezeTime.h"
 #include "CameraLight.h"
@@ -291,6 +293,25 @@ namespace FreeCamMenu {
         WriteINIFloat("ActionFOV", "fArcherTurn", f.aimTurn);
         WriteINIFloat("ActionFOV", "fArcherDistance", f.aimBack);
         WriteINIFloat("ActionFOV", "fArcherUp", f.aimUp);
+        const auto& x = FrameFx::Get();  // 0.18.0
+        WriteINIInt("ImageFX", "iMotionBlur", x.motionBlur);
+        WriteINIFloat("ImageFX", "fShutter", x.shutter);
+        WriteINIFloat("ImageFX", "fLongestSmear", x.maxBlur);
+        WriteINIInt("ImageFX", "bZoomBlur", x.zoomBlur ? 1 : 0);
+        WriteINIInt("ImageFX", "iLens", x.lens);
+        WriteINIFloat("ImageFX", "fDistortion", x.distortion);
+        WriteINIFloat("ImageFX", "fFringe", x.fringe);
+        WriteINIFloat("ImageFX", "fVignette", x.vignette);
+        WriteINIFloat("ImageFX", "fStreaks", x.streaks);
+        WriteINIFloat("ImageFX", "fStreakFrom", x.streakFrom);
+        WriteINIInt("ImageFX", "bCinemaBars", x.bars ? 1 : 0);
+        const auto& v = VideoCapture::Get();
+        WriteINIInt("Video", "iHeight", v.height);
+        WriteINIInt("Video", "iFps", v.fps);
+        WriteINIInt("Video", "iQuality", v.quality);
+        WriteINIInt("Video", "bSound", v.audio ? 1 : 0);
+        WriteINIInt("Video", "bWithCameraPath", v.withPath ? 1 : 0);
+        WriteINIInt("Video", "iKey", v.key);
     }
 
     // 0.16.0 conversation camera, TFCam.ini [Conversation].
@@ -966,6 +987,85 @@ namespace FreeCamMenu {
         }
     }
 
+    // 0.18.0: FreeCam > Image & Video page - TFCam's own image pass (FrameFx) and the video recorder (VideoCapture).
+    static void __stdcall RenderImageVideo() {
+        auto&                    fx      = FrameFx::Get();
+        auto&                    vc      = VideoCapture::Get();
+        bool                     changed = false;
+        const ImGuiMCP::ImVec4   grey{ 0.5f, 0.5f, 0.5f, 1.0f };
+        static const char* const kWhen[] = { "Off", "With the free / fixed camera", "Always" };
+
+        ImGuiMCP::SeparatorText("Video");
+        ImGuiMCP::TextWrapped("Records the picture - with the effects below, without the HUD, menus or these windows - as an MP4 "
+                              "(H.264 with the game's own sound) in your Videos folder, under TFCam.");
+        if (ImGuiMCP::Button(VideoCapture::Recording() ? "Stop recording##vcToggle" : "Start recording##vcToggle")) VideoCapture::Toggle("menu");
+        ImGuiMCP::SameLine();
+        ImGuiMCP::TextColored(grey, "%s", VideoCapture::Status().c_str());
+        static const char* const kSizes[] = { "The game's own size", "720p", "1080p", "1440p", "2160p (4K)" };
+        static const int         kHeights[] = { 0, 720, 1080, 1440, 2160 };
+        int si = vc.height <= 0 ? 0 : (vc.height <= 720 ? 1 : (vc.height <= 1080 ? 2 : (vc.height <= 1440 ? 3 : 4)));
+        ImGuiMCP::SetNextItemWidth(220.0f);
+        if (ImGuiMCP::Combo("Size##vcSize", &si, kSizes, 5, -1)) {
+            vc.height = kHeights[si];
+            changed   = true;
+        }
+        static const char* const kFps[]  = { "24", "30", "60" };
+        static const int         kRates[] = { 24, 30, 60 };
+        int fi = vc.fps <= 24 ? 0 : (vc.fps <= 30 ? 1 : 2);
+        ImGuiMCP::SetNextItemWidth(220.0f);
+        if (ImGuiMCP::Combo("Frames per second##vcFps", &fi, kFps, 3, -1)) {
+            vc.fps  = kRates[fi];
+            changed = true;
+        }
+        static const char* const kQuality[] = { "Good", "High", "Very high" };
+        ImGuiMCP::SetNextItemWidth(220.0f);
+        changed |= ImGuiMCP::Combo("Quality##vcQuality", &vc.quality, kQuality, 3, -1);
+        changed |= ImGuiMCP::Checkbox("Record the game's sound##vcSound", &vc.audio);
+        ImGuiMCP::TextColored(grey, "Only Skyrim's own sound (Windows 10 2004 or newer) - not Discord or a music player.");
+        changed |= ImGuiMCP::Checkbox("Start and stop with Camera Path playback##vcPath", &vc.withPath);
+        changed |= KeyBindField("vcKey", "Start / stop recording", &vc.key);
+        ImGuiMCP::TextColored(grey, "Size, rate, quality and sound apply to the next recording.");
+
+        ImGuiMCP::SeparatorText("Motion blur");
+        ImGuiMCP::SetNextItemWidth(260.0f);
+        changed |= ImGuiMCP::Combo("Motion blur##fxBlur", &fx.motionBlur, kWhen, 3, -1);
+        ImGuiMCP::TextColored(grey, "Turning the camera smears the picture like a film camera; moving forward and zooming blur outward "
+                                    "from the middle (crash zoom, Action FOV).");
+        if (fx.motionBlur != FrameFx::kWhenOff) {
+            ImGuiMCP::SetNextItemWidth(220.0f);
+            changed |= ImGuiMCP::SliderFloat("Shutter (how much it smears)##fxShutter", &fx.shutter, 0.05f, 1.0f, "%.2f", 0);
+            ImGuiMCP::SetNextItemWidth(220.0f);
+            changed |= ImGuiMCP::SliderFloat("Longest smear (part of the screen width)##fxMax", &fx.maxBlur, 0.01f, 0.15f, "%.2f", 0);
+            changed |= ImGuiMCP::Checkbox("Zoom blur (moving forward, FOV changes)##fxZoom", &fx.zoomBlur);
+        }
+
+        ImGuiMCP::SeparatorText("Lens");
+        ImGuiMCP::SetNextItemWidth(260.0f);
+        changed |= ImGuiMCP::Combo("Lens effects##fxLens", &fx.lens, kWhen, 3, -1);
+        if (fx.lens != FrameFx::kWhenOff) {
+            ImGuiMCP::SetNextItemWidth(220.0f);
+            changed |= ImGuiMCP::SliderFloat("Distortion (- pincushion / + barrel)##fxDist", &fx.distortion, -1.0f, 1.0f, "%.2f", 0);
+            ImGuiMCP::SetNextItemWidth(220.0f);
+            changed |= ImGuiMCP::SliderFloat("Colour fringes##fxFringe", &fx.fringe, 0.0f, 1.0f, "%.2f", 0);
+            ImGuiMCP::SetNextItemWidth(220.0f);
+            changed |= ImGuiMCP::SliderFloat("Vignette (darker corners)##fxVig", &fx.vignette, 0.0f, 1.0f, "%.2f", 0);
+            ImGuiMCP::SetNextItemWidth(220.0f);
+            changed |= ImGuiMCP::SliderFloat("Anamorphic streaks##fxStreaks", &fx.streaks, 0.0f, 1.0f, "%.2f", 0);
+            if (fx.streaks > 0.0f) {
+                ImGuiMCP::SetNextItemWidth(220.0f);
+                changed |= ImGuiMCP::SliderFloat("Streaks from lights this bright##fxStreakFrom", &fx.streakFrom, 0.3f, 1.0f, "%.2f", 0);
+            }
+            changed |= ImGuiMCP::Checkbox("Cinema bars (2.39:1)##fxBars", &fx.bars);
+        }
+        ImGuiMCP::TextColored(grey, "Image pass: %s", FrameFx::Status().c_str());
+
+        if (changed) {
+            FrameFx::Clamp();
+            VideoCapture::Clamp();
+            SaveINI();
+        }
+    }
+
     // 0.18.0: FreeCam > Action FOV page.
     static void __stdcall RenderActionFov() {
         auto&                  f       = FovFx::Get();
@@ -1485,6 +1585,29 @@ namespace FreeCamMenu {
             af.aimBack     = readFloat("ActionFOV", "fArcherDistance", ad.aimBack);
             af.aimUp       = readFloat("ActionFOV", "fArcherUp", ad.aimUp);
             FovFx::Clamp();
+            auto&                   xf = FrameFx::Get();  // 0.18.0
+            const FrameFx::Settings xd{};
+            xf.motionBlur = readInt("ImageFX", "iMotionBlur", xd.motionBlur);
+            xf.shutter    = readFloat("ImageFX", "fShutter", xd.shutter);
+            xf.maxBlur    = readFloat("ImageFX", "fLongestSmear", xd.maxBlur);
+            xf.zoomBlur   = readInt("ImageFX", "bZoomBlur", xd.zoomBlur ? 1 : 0) != 0;
+            xf.lens       = readInt("ImageFX", "iLens", xd.lens);
+            xf.distortion = readFloat("ImageFX", "fDistortion", xd.distortion);
+            xf.fringe     = readFloat("ImageFX", "fFringe", xd.fringe);
+            xf.vignette   = readFloat("ImageFX", "fVignette", xd.vignette);
+            xf.streaks    = readFloat("ImageFX", "fStreaks", xd.streaks);
+            xf.streakFrom = readFloat("ImageFX", "fStreakFrom", xd.streakFrom);
+            xf.bars       = readInt("ImageFX", "bCinemaBars", xd.bars ? 1 : 0) != 0;
+            FrameFx::Clamp();
+            auto&                        vf = VideoCapture::Get();
+            const VideoCapture::Settings vd{};
+            vf.height   = readInt("Video", "iHeight", vd.height);
+            vf.fps      = readInt("Video", "iFps", vd.fps);
+            vf.quality  = readInt("Video", "iQuality", vd.quality);
+            vf.audio    = readInt("Video", "bSound", vd.audio ? 1 : 0) != 0;
+            vf.withPath = readInt("Video", "bWithCameraPath", vd.withPath ? 1 : 0) != 0;
+            vf.key      = readInt("Video", "iKey", vd.key);
+            VideoCapture::Clamp();
             SKSE::log::info("FovFx: action FOV {}", af.enabled ? "on" : "off");
             SKSE::log::info("CamBlur: background blur {} (strength {:.2f}{})", b.enabled ? "on" : "off", b.strength,
                 b.inFreeFly ? ", also in free-fly" : "");
@@ -1641,6 +1764,7 @@ namespace FreeCamMenu {
         SKSEMenuFramework::AddSectionItem("Idle & Furniture", RenderAmbient);  // 0.11.0
         SKSEMenuFramework::AddSectionItem("Camera Path", RenderCamPath);       // 0.17.0
         SKSEMenuFramework::AddSectionItem("Action FOV", RenderActionFov);      // 0.18.0
+        SKSEMenuFramework::AddSectionItem("Image & Video", RenderImageVideo);  // 0.18.0
         SKSEMenuFramework::AddInputEvent(OnSMFInput);
         CamPathWindow::Register();  // 0.18.0
 

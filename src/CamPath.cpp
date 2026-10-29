@@ -7,6 +7,7 @@
 #include "FreezeTime.h"
 #include "SceneCam.h"
 #include "SlccBridge.h"
+#include "VideoCapture.h"
 
 #include <Windows.h>
 
@@ -1048,9 +1049,12 @@ namespace CamPath {
             }
         }
 
+        bool s_videoByPath = false;  // 0.18.0: the path started the video recording (it stops it at the end)
+
         // The camera stays where the path left it; its roll becomes the free camera's own.
         void EndPlay(std::string_view a_why) {
             if (!s_play.on) return;
+            if (std::exchange(s_videoByPath, false)) VideoCapture::RequestStop("the camera path stopped");
             FreeCam::SetRollRadians(WrapPi(FreeCam::GetRollRadians() + FreeCam::GetExtraRoll()));
             FreeCam::SetExtraRoll(0.0f);
             BlurOff();
@@ -1634,6 +1638,11 @@ namespace CamPath {
         // clean screen: the window steps aside while the path plays, and comes back when it pauses / ends
         CamPathWindow::AutoHide(s_clean && s_play.on && !s_play.paused);
         UpdateView(a_driving);
+        // 0.18.0: "start and stop with Camera Path playback" - once the path really runs (after the glide to camera 1)
+        if (s_play.on && !s_play.paused && !s_play.gliding && !s_videoByPath && VideoCapture::Get().withPath && !VideoCapture::Recording()) {
+            VideoCapture::RequestStart("the camera path plays");
+            s_videoByPath = true;
+        }
         if (!s_play.on) return;
         if (!a_driving) {
             EndPlay("another camera (FCFW timeline / SLCC) took the free camera");
@@ -1727,6 +1736,10 @@ namespace CamPath {
         }
         if (is(s_settings.playKey)) {
             Toggle(-1, "play key");
+            return true;
+        }
+        if (is(VideoCapture::Get().key)) {  // 0.18.0
+            VideoCapture::Toggle("video key");
             return true;
         }
         if (is(s_settings.recordKey)) {

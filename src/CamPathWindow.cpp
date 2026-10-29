@@ -3,6 +3,7 @@
 #include "CamPathView.h"
 #include "FixedCam.h"
 #include "FreeCamMenu.h"
+#include "VideoCapture.h"
 
 #include "SKSEMenuFramework.h"
 
@@ -55,6 +56,7 @@ namespace CamPathWindow {
         constexpr unsigned kIconReverse    = 0xf0d9;
         constexpr unsigned kIconEyeSlash   = 0xf070;
         constexpr unsigned kIconThumbtack  = 0xf08d;
+        constexpr unsigned kIconVideo      = 0xf03d;
 
         const ImGuiMCP::ImVec4 kGrey{ 0.6f, 0.6f, 0.6f, 1.0f };
         const ImGuiMCP::ImVec4 kGold{ 1.0f, 0.82f, 0.35f, 1.0f };
@@ -507,6 +509,11 @@ namespace CamPathWindow {
             Tip("Hides ALL game UI (HUD, widgets, messages) for recording and screenshots.\n"
                 "While the path plays this window steps aside too, and comes back when it pauses or ends.");
             ImGuiMCP::SameLine();
+            const bool recVideo = VideoCapture::Recording();
+            if (Big(kIconVideo, recVideo ? "Stop video" : "Record video", "video", recVideo ? 2 : 0)) VideoCapture::Toggle("window");
+            Tip("Records an MP4 in Videos\\TFCam - the picture with TFCam's image effects, never the HUD, menus or this window.\n"
+                "Size, frame rate, sound and auto-start with the path: FreeCam > Image & Video.");
+            ImGuiMCP::SameLine();
             if (s.recording) {
                 if (Big(kIconStop, "Stop recording", "rec", 2)) CamPath::RequestRecord(0);
                 ImGuiMCP::SameLine();
@@ -710,6 +717,9 @@ namespace CamPathWindow {
                 used = true;
             } else if (set.addKey && code == set.addKey) {
                 CamPath::RequestAddCam();
+                used = true;
+            } else if (const int vk = VideoCapture::Get().key; vk && code == vk) {  // 0.18.0
+                VideoCapture::Toggle("video key");
                 used = true;
             }
         }

@@ -11,6 +11,8 @@
 #include "CamPath.h"
 #include "HUDHider.h"
 #include "FixedCam.h"
+#include "FrameFx.h"
+#include "VideoCapture.h"
 #include "FovFx.h"
 
 #include <spdlog/sinks/basic_file_sink.h>
@@ -135,6 +137,7 @@ namespace {
             CamBlur::Install();        // 0.17.0: no-op when already linked at kPostLoad
             FixedCam::Install();       // 0.18.0: fixed camera (third-person view override) + the full freeze's frame tick
             FovFx::Install();          // 0.18.0: action FOV (its frame tick rides FixedCam's camera hook)
+            FrameFx::Install();        // 0.18.0: image effects + the video recorder's picture, before the UI
             FreeCamMenu::Register();
             FreeCamMenu::ApplyGameSettings();
             break;
@@ -142,6 +145,7 @@ namespace {
             CellEntryCam::OnPreLoadGame();  // the loading screen that follows is a save load, not a door
             FixedCam::OnGameLoad();         // 0.18.0
             FovFx::Reset();                 // 0.18.0
+            VideoCapture::OnGameLoad();     // 0.18.0: a load ends a recording
             // 0.10.0: the scene, orbit / eye view (head cull, near clip) and the active pose end with the old game.
             SceneTracker::Reset("save loading");
             SceneCam::OnGameLoad("save loading");
