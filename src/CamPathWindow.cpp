@@ -161,6 +161,20 @@ namespace CamPathWindow {
                     }
                     Tip("Bumps and sways like a camera on a cart (100 = a rough road). Blends into the next camera's shake.");
                     if (hasNext && a_c.move != CamPath::kMoveCut) {
+                        int el = static_cast<int>(std::lround(a_c.elastic * 100.0f));
+                        int sl = static_cast<int>(std::lround(a_c.sling * 100.0f));
+                        ImGuiMCP::SetNextItemWidth(220.0f);
+                        if (ImGuiMCP::SliderInt("Elastic arrival##elastic", &el, 0, 100, "%d", 0)) {
+                            a_c.elastic = static_cast<float>(el) / 100.0f;
+                            changed     = true;
+                        }
+                        Tip("The camera flies past the next camera and springs back (more = bouncier). It arrives at speed.");
+                        ImGuiMCP::SetNextItemWidth(220.0f);
+                        if (ImGuiMCP::SliderInt("Slingshot##sling", &sl, 0, 100, "%d", 0)) {
+                            a_c.sling = static_cast<float>(sl) / 100.0f;
+                            changed   = true;
+                        }
+                        Tip("Before leaving, the camera pulls back the other way, then shoots off to the next camera.");
                         changed |= ImGuiMCP::Checkbox("Crash zoom to the next camera##crash", &a_c.crashZoom);
                         Tip("The zoom to the next camera's zoom comes slow, then slams in at the end");
                         changed |= ImGuiMCP::Checkbox("Slow motion on the way##slow", &a_c.slowMo);
@@ -183,8 +197,16 @@ namespace CamPathWindow {
                                 a_c.slowLength = static_cast<float>(ln) / 100.0f;
                                 changed        = true;
                             }
-                            changed |= ImGuiMCP::Checkbox("The world slows down too##sloww", &a_c.slowWorld);
-                            Tip("Everyone moves in slow motion while the camera crawls (not while the world is frozen)");
+                            bool bullet = !a_c.slowCamera;
+                            if (ImGuiMCP::Checkbox("Bullet time - only the world slows##bullet", &bullet)) {
+                                a_c.slowCamera = !bullet;
+                                changed        = true;
+                            }
+                            Tip("The camera keeps its speed while everyone else crawls (catch an arrow in flight)");
+                            if (a_c.slowCamera) {
+                                changed |= ImGuiMCP::Checkbox("The world slows down too##sloww", &a_c.slowWorld);
+                                Tip("Everyone moves in slow motion while the camera crawls (not while the world is frozen)");
+                            }
                         }
                     }
                     ImGuiMCP::TreePop();

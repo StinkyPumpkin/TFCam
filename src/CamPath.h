@@ -25,7 +25,8 @@
 // goes into the path at that moment.
 // Effects: the pivot's point (head, eyes, chest, hips, bum, groin, hands, feet of an actor), camera shake (a bumpy
 // cart), crash zoom (the zoom to the next camera in a fast burst at the end), slow motion on part of a move (the world
-// slows too if asked). Clean screen hides all game UI for recording; the window steps aside while the path plays.
+// slows too if asked; bullet time = only the world slows), elastic arrival (overshoot and spring back), slingshot (pull
+// back, then shoot off). Clean screen hides all game UI for recording; the window steps aside while the path plays.
 // Motion smoothness takes the edge off sudden turns and speed changes. Record manual path: fly by hand and the
 // flight becomes cameras.
 //
@@ -86,6 +87,9 @@ namespace CamPath {
         float slowSpeed  = 0.2f;   // how slow: 0.05..1 of normal speed
         float slowLength = 0.3f;   // how much of the way: 0.05..1
         bool  slowWorld  = false;  // the world slows down with it
+        bool  slowCamera = true;   // false = bullet time: only the world slows, the camera keeps its pace
+        float elastic    = 0.0f;   // 0..1: the camera flies past the next camera and springs back (bounciness)
+        float sling      = 0.0f;   // 0..1: before leaving, the camera pulls back the other way, then shoots off
     };
 
     struct Settings {

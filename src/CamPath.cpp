@@ -228,17 +228,17 @@ namespace CamPath {
                        "follow loop\n"
                        "# cam: x y z yaw pitch roll fov | pivot x y z heading known | look wait blur strength | move time "
                        "smooth turns way zoom | pivot kind formID | bend side up | bone shake crash | slow at speed "
-                       "length world\n";
+                       "length world | elastic sling slowCamera\n";
                 out << std::format("pivot\t{}\t{:08X}\t{}\t{}\n", s_pivotKind, s_pivotRef, s_follow ? 1 : 0, s_loop ? 1 : 0);
                 for (const auto& c : s_cams) {
                     out << std::format("cam\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{:.5f}\t{:.5f}\t{:.2f}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{}"
                                        "\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{}\t{}\t{}\t{}\t{:08X}\t{:.3f}\t{:.3f}"
-                                       "\t{}\t{:.3f}\t{}\t{}\t{:.3f}\t{:.3f}\t{:.3f}\t{}\n",
+                                       "\t{}\t{:.3f}\t{}\t{}\t{:.3f}\t{:.3f}\t{:.3f}\t{}\t{:.3f}\t{:.3f}\t{}\n",
                         c.pos.x, c.pos.y, c.pos.z, c.yaw, c.pitch, c.roll, c.fov, c.pivotPos.x, c.pivotPos.y, c.pivotPos.z,
                         c.pivotHeading, c.havePivot ? 1 : 0, c.look, c.wait, c.blur ? 1 : 0, c.blurStrength, c.move, c.time,
                         c.smooth ? 1 : 0, c.turns, c.way, c.zoomTrick ? 1 : 0, c.pivotKind, c.pivotRef, c.bendSide, c.bendUp,
                         c.bone, c.shake, c.crashZoom ? 1 : 0, c.slowMo ? 1 : 0, c.slowAt, c.slowSpeed, c.slowLength,
-                        c.slowWorld ? 1 : 0);
+                        c.slowWorld ? 1 : 0, c.elastic, c.sling, c.slowCamera ? 1 : 0);
                 }
             }
             std::filesystem::rename(tmp, file, ec);
@@ -264,15 +264,15 @@ namespace CamPath {
                 }
                 if (!line.starts_with("cam\t")) continue;
                 Cam c;
-                int      have = 0, blur = 0, smooth = 1, zoom = 0, ckind = 0, crash = 0, slow = 0, sworld = 0;
+                int      have = 0, blur = 0, smooth = 1, zoom = 0, ckind = 0, crash = 0, slow = 0, sworld = 0, slowcam = 1;
                 unsigned cref = 0;
                 const int n = std::sscanf(line.c_str() + 4,
-                    "%f %f %f %f %f %f %f %f %f %f %f %d %d %f %d %f %d %f %d %d %d %d %d %x %f %f %d %f %d %d %f %f %f %d",
+                    "%f %f %f %f %f %f %f %f %f %f %f %d %d %f %d %f %d %f %d %d %d %d %d %x %f %f %d %f %d %d %f %f %f %d %f %f %d",
                     &c.pos.x, &c.pos.y,
                     &c.pos.z, &c.yaw, &c.pitch, &c.roll, &c.fov, &c.pivotPos.x, &c.pivotPos.y, &c.pivotPos.z,
                     &c.pivotHeading, &have, &c.look, &c.wait, &blur, &c.blurStrength, &c.move, &c.time, &smooth, &c.turns,
                     &c.way, &zoom, &ckind, &cref, &c.bendSide, &c.bendUp, &c.bone, &c.shake, &crash, &slow, &c.slowAt,
-                    &c.slowSpeed, &c.slowLength, &sworld);
+                    &c.slowSpeed, &c.slowLength, &sworld, &c.elastic, &c.sling, &slowcam);
                 if (n < 22 || !Finite(c.pos) || !std::isfinite(c.yaw) || !std::isfinite(c.pitch)) continue;
                 c.havePivot = have != 0;
                 c.blur      = blur != 0;
@@ -294,6 +294,9 @@ namespace CamPath {
                 c.slowAt     = std::isfinite(c.slowAt) ? std::clamp(c.slowAt, 0.0f, 1.0f) : 0.66f;
                 c.slowSpeed  = std::isfinite(c.slowSpeed) ? std::clamp(c.slowSpeed, 0.05f, 1.0f) : 0.2f;
                 c.slowLength = std::isfinite(c.slowLength) ? std::clamp(c.slowLength, 0.05f, 1.0f) : 0.3f;
+                c.slowCamera = slowcam != 0;
+                c.elastic    = std::isfinite(c.elastic) ? std::clamp(c.elastic, 0.0f, 1.0f) : 0.0f;
+                c.sling      = std::isfinite(c.sling) ? std::clamp(c.sling, 0.0f, 1.0f) : 0.0f;
                 cams.push_back(c);
             }
             s_cams      = std::move(cams);
@@ -517,12 +520,26 @@ namespace CamPath {
             return 1.0f - (1.0f - std::clamp(a_c.slowSpeed, 0.05f, 1.0f)) * b;
         }
 
-        // Seconds a move takes: its own at normal speed, more with slow motion, none for a cut.
+        // A move is up to three parts: the slingshot's wind-up (pull back), the move itself, the elastic tail (past the
+        // next camera and springing back). Bullet time: the camera keeps its own pace, only the world slows.
+        constexpr float kElasticHz = 1.2f;  // the elastic swing's rate
+        bool  CamSlows(const Cam& a_c) { return a_c.slowMo && a_c.slowCamera; }
+        float WindTime(const Cam& a_c) { return a_c.sling > 0.001f ? 0.4f + 0.5f * a_c.sling : 0.0f; }
+        float ElasticDecay(const Cam& a_c) { return 1.5f + 6.0f * (1.0f - std::clamp(a_c.elastic, 0.0f, 1.0f)); }
+        float TailTime(const Cam& a_c) { return a_c.elastic > 0.001f ? (std::min)(4.6f / ElasticDecay(a_c), 3.0f) : 0.0f; }
+
+        // Seconds of the move itself: its own at normal speed, more with slow motion.
+        float CoreTime(int a_k) {
+            const auto& c = s_play.cams[a_k];
+            if (CamSlows(c) && a_k < static_cast<int>(s_play.slowTab.size())) return s_play.slowTab[a_k][kSlowSamples];
+            return c.time;
+        }
+
+        // Seconds a move takes, all parts (none for a cut).
         float MoveTime(int a_k) {
             const auto& c = s_play.cams[a_k];
             if (c.move == kMoveCut) return 0.0f;
-            if (c.slowMo && a_k < static_cast<int>(s_play.slowTab.size())) return s_play.slowTab[a_k][kSlowSamples];
-            return c.time;
+            return WindTime(c) + CoreTime(a_k) + TailTime(c);
         }
 
         void BuildSlowTables() {
@@ -530,7 +547,7 @@ namespace CamPath {
             s_play.slowTab.assign(n, {});
             for (int k = 0; k < n; ++k) {
                 const auto& c = s_play.cams[k];
-                if (!c.slowMo) continue;
+                if (!CamSlows(c)) continue;
                 auto& T = s_play.slowTab[k];
                 for (int i = 1; i <= kSlowSamples; ++i) {
                     const float mid = (static_cast<float>(i) - 0.5f) / kSlowSamples;
@@ -543,7 +560,7 @@ namespace CamPath {
         float NormalF(int a_k, float a_t) {
             const auto& c = s_play.cams[a_k];
             if (c.time <= 0.0f) return 1.0f;
-            if (!c.slowMo || a_k >= static_cast<int>(s_play.slowTab.size())) return Clamp01(a_t / c.time);
+            if (!CamSlows(c) || a_k >= static_cast<int>(s_play.slowTab.size())) return Clamp01(a_t / c.time);
             const auto& T = s_play.slowTab[a_k];
             if (a_t <= 0.0f) return 0.0f;
             if (a_t >= T[kSlowSamples]) return 1.0f;
@@ -742,15 +759,43 @@ namespace CamPath {
             float        shake     = 0.0f;
             bool         fovDirect = false;  // a crash zoom: no motion smoothing on the field of view
             float        world     = 1.0f;   // the world's speed (slow motion)
+            RE::NiPoint3 swing{};            // slingshot pull-back / elastic swing: added after the motion smoothing
         };
 
         bool EaseIn(int a_k) {
             const auto& c = s_play.cams[a_k];
+            if (c.sling > 0.001f) return false;  // a slingshot shoots off at speed
             return c.smooth || c.wait > 0.0f || (!s_play.loop && a_k == 0);
         }
         bool EaseOut(int a_k, int a_next) {
             const auto& c = s_play.cams[a_k];
+            if (c.elastic > 0.001f) return false;  // an elastic arrival comes in at speed and flies past
             return c.smooth || s_play.cams[a_next].wait > 0.0f || (!s_play.loop && Next(a_next) < 0);
+        }
+
+        // The slingshot's pull back and the elastic swing, on top of the move's own position. a_tc = seconds into the
+        // move itself (< 0: winding up, > core: the tail); a_f its normal-time progress.
+        RE::NiPoint3 SwingOffset(int a_k, int a_next, float a_tc, float a_core, float a_f) {
+            const auto&        c   = s_play.cams[a_k];
+            const float        len = Length(s_play.world[a_next] - s_play.world[a_k]);
+            RE::NiPoint3       out{};
+            if (c.sling > 0.001f) {
+                const RE::NiPoint3 d0   = Normalized(MovePos(a_k, a_next, 0.02f) - MovePos(a_k, a_next, 0.0f), RE::NiPoint3{});
+                const float        back = c.sling * (std::min)(0.3f * len, 250.0f);
+                const float        W    = WindTime(c);
+                const float pull = a_tc < 0.0f ? SmoothStep((a_tc + W) / W) : 1.0f - SmoothStep(a_f / 0.35f);
+                out = out - d0 * (back * pull);
+            }
+            if (c.elastic > 0.001f && a_tc > a_core) {
+                // swings on past the camera at the speed it arrived with, then springs back and settles
+                const RE::NiPoint3 dPu  = (MovePos(a_k, a_next, 1.0f) - MovePos(a_k, a_next, 0.98f)) * 50.0f;
+                const float        dfdt = (CamSlows(c) ? SlowSpeed(c, 1.0f) : 1.0f) / (std::max)(c.time, 0.05f);
+                const float        w    = 2.0f * kPi * kElasticHz;
+                const float        amp  = (std::min)(Length(dPu) * dfdt / w * (0.6f + 0.8f * c.elastic), (std::min)(0.3f * len, 300.0f));
+                const float        tau  = a_tc - a_core;
+                out = out + Normalized(dPu, RE::NiPoint3{}) * (amp * std::exp(-ElasticDecay(c) * tau) * std::sin(w * tau));
+            }
+            return out;
         }
 
         Target Evaluate() {
@@ -769,11 +814,17 @@ namespace CamPath {
                 out.shake     = ck.shake;
                 return out;
             }
-            const auto& cn = s_play.cams[next];
-            const float f  = NormalF(k, s_play.t);
-            const float u  = Ease(f, EaseIn(k), EaseOut(k, next));
-            out.pos = MovePos(k, next, u);
-            const RE::NiPoint3 ahead = MovePos(k, next, Ease(std::min(f + 0.02f, 1.0f), EaseIn(k), EaseOut(k, next))) - out.pos;
+            const auto& cn   = s_play.cams[next];
+            const float core = CoreTime(k);
+            const float tc   = s_play.t - WindTime(ck);  // seconds into the move itself
+            const float f    = tc <= 0.0f ? 0.0f : (tc >= core ? 1.0f : NormalF(k, tc));
+            const float u    = Ease(f, EaseIn(k), EaseOut(k, next));
+            const RE::NiPoint3 onPath = MovePos(k, next, u);
+            // the path is smoothed; the swing goes on top afterwards (smoothing would iron a quick bounce flat)
+            out.pos   = onPath;
+            out.swing = SwingOffset(k, next, tc, core, f);
+            const RE::NiPoint3 seenFrom = onPath + out.swing;
+            const RE::NiPoint3 ahead = MovePos(k, next, Ease(std::min(f + 0.02f, 1.0f), EaseIn(k), EaseOut(k, next))) - onPath;
             if (ck.look == kLookSet && cn.look == kLookSet) {
                 // both keep their own view: turn from one to the other (extra turns spin in place unless the move goes
                 // round the pivot, which has them already)
@@ -786,7 +837,7 @@ namespace CamPath {
                 float w = SmoothStep(f);
                 if (ck.look == kLookPivot && cn.look != kLookPivot) w = SmoothStep((f - 0.6f) / 0.4f);
                 if (ck.look != kLookPivot && cn.look == kLookPivot) w = SmoothStep(f / 0.6f);
-                out.fwd = SlerpDir(LookDir(k, out.pos, ahead), LookDir(next, out.pos, ahead), w);
+                out.fwd = SlerpDir(LookDir(k, seenFrom, ahead), LookDir(next, seenFrom, ahead), w);
             }
             out.roll = ck.roll + WrapPi(cn.roll - ck.roll) * u;
             if (ck.zoomTrick && HavePivot(k)) {
@@ -800,7 +851,7 @@ namespace CamPath {
             }
             out.blur  = CamBlurOf(k) + (CamBlurOf(next) - CamBlurOf(k)) * u;
             out.shake = ck.shake + (cn.shake - ck.shake) * u;
-            out.world = ck.slowMo && ck.slowWorld ? SlowSpeed(ck, f) : 1.0f;
+            out.world = ck.slowMo && (ck.slowWorld || !ck.slowCamera) ? SlowSpeed(ck, f) : 1.0f;  // bullet time: always
             if (HavePivot(k) && HavePivot(next)) {
                 out.focus     = Mix(AimPoint(k), AimPoint(next), u);
                 out.haveFocus = true;
@@ -896,12 +947,13 @@ namespace CamPath {
             for (int i = 0; i < n; ++i) s_play.world[i] = WorldOf(i);
         }
 
-        void WritePose(RE::FreeCameraState* a_fcs, float a_shake) {
+        void WritePose(RE::FreeCameraState* a_fcs, float a_shake, const RE::NiPoint3& a_swing) {
             float yaw = s_play.outYaw, pitch = 0.0f;
             LookAngles(s_play.outFwd, yaw, pitch);
             s_play.outYaw = yaw;
             RE::NiPoint3 pos  = s_play.outPos;
             float        roll = s_play.outRoll;
+            pos = pos + a_swing;
             ShakeAt(s_play.shakeT, a_shake, pos, yaw, pitch, roll);  // on top of the path, never into it
             a_fcs->translation = pos;
             a_fcs->rotation.x  = std::clamp(pitch, -kPitchLimit, kPitchLimit);
@@ -1149,7 +1201,11 @@ namespace CamPath {
                 auto& c = s_cams[k];
                 if (moving) {
                     const float T         = (std::max)(c.time, 0.1f);
-                    const float done      = std::clamp(s_play.t, 0.0f, T);
+                    const float f         = NormalF(k, std::clamp(s_play.t - WindTime(s_play.cams[k]), 0.0f, CoreTime(k)));
+                    const float done      = std::clamp(f * T, 0.0f, T);
+                    fresh.elastic = c.elastic;  // the arrival stays with the last part, the wind-up with the first
+                    fresh.sling   = 0.0f;
+                    c.elastic     = 0.0f;
                     const int   turnsDone = static_cast<int>(std::floor(static_cast<float>(c.turns) * done / T));
                     fresh.time  = (std::max)(T - done, 0.1f);
                     fresh.turns = c.turns - turnsDone;
@@ -1495,7 +1551,11 @@ namespace CamPath {
                 s_play.outFov  = tg.fov;
             } else {
                 // still chased while paused: the camera settles onto the paused spot (a rewind stops ON camera 1)
-                const float w = ExpWeight(dt, s_settings.smoothness * 0.5f);
+                float w = ExpWeight(dt, s_settings.smoothness * 0.5f);
+                // A slingshot / elastic move rides its path exactly: the chase's lag (speed x ~0.2 s) would swallow the
+                // bounce. Faded out over the move's first 0.3 s, so a lag left from before closes without a jump.
+                const auto& cm = s_play.cams[s_play.k];
+                if (s_play.phase == 1 && (cm.elastic > 0.001f || cm.sling > 0.001f)) w = (std::max)(w, Clamp01(s_play.t / 0.3f));
                 s_play.outPos  = Mix(s_play.outPos, tg.pos, w);
                 s_play.outFwd  = SlerpDir(s_play.outFwd, tg.fwd, w);
                 s_play.outRoll += WrapPi(tg.roll - s_play.outRoll) * w;
@@ -1505,7 +1565,7 @@ namespace CamPath {
             s_play.haveOut = true;
         }
         s_play.snapOut = false;
-        WritePose(a_fcs, tg.shake);
+        WritePose(a_fcs, tg.shake, s_play.gliding ? RE::NiPoint3{} : tg.swing);
         if (s_play.blur > 0.01f && tg.haveFocus) {
             CamBlur::External(true, tg.focus, s_play.blur);
             s_play.blurOn = true;
@@ -1676,6 +1736,9 @@ namespace CamPath {
             c.slowSpeed    = std::clamp(std::isfinite(a_o.slowSpeed) ? a_o.slowSpeed : 0.2f, 0.05f, 1.0f);
             c.slowLength   = std::clamp(std::isfinite(a_o.slowLength) ? a_o.slowLength : 0.3f, 0.05f, 1.0f);
             c.slowWorld    = a_o.slowWorld;
+            c.slowCamera   = a_o.slowCamera;
+            c.elastic      = std::clamp(std::isfinite(a_o.elastic) ? a_o.elastic : 0.0f, 0.0f, 1.0f);
+            c.sling        = std::clamp(std::isfinite(a_o.sling) ? a_o.sling : 0.0f, 0.0f, 1.0f);
         }
         SaveCurrentSoon();
         return true;
