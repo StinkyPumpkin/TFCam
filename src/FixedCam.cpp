@@ -2,6 +2,7 @@
 #include "CamFocus.h"
 #include "CamPath.h"
 #include "FreeCamController.h"
+#include "FovFx.h"
 #include "FreezeTime.h"
 #include "SlccBridge.h"
 
@@ -81,12 +82,14 @@ namespace FixedCam {
         // Every frame of the third-person camera while fixed (main thread).
         void FrameWork() {
             FreezeTime::Tick();
-            if (!s_on) return;
-            if (!s_fovSaved) {  // the free camera's exit has put the game's own FOV back by now
-                s_savedFov = WorldFOV();
-                s_fovSaved = true;
+            if (s_on) {
+                if (!s_fovSaved) {  // the free camera's exit has put the game's own FOV back by now
+                    s_savedFov = WorldFOV();
+                    s_fovSaved = true;
+                }
+                if (s_fov > 0.0f) WorldFOV() = s_fov;
             }
-            if (s_fov > 0.0f) WorldFOV() = s_fov;
+            FovFx::Tick();  // last: its offset goes on top of everyone's FOV
         }
 
         RE::NiQuaternion WatchRotation() {

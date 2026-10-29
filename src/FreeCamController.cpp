@@ -1,6 +1,7 @@
 #include "FreeCamController.h"
 #include "FreezeTime.h"
 #include "FixedCam.h"
+#include "FovFx.h"
 #include "FreeCamMenu.h"
 #include "CameraLight.h"
 #include "HUDHider.h"
@@ -911,6 +912,7 @@ namespace FreeCam {
             const bool ranInline = RunHookWork([driven, slccOwned, timeline, selfToggle, thread] {
                 if (driven) {
                     FixedCam::OnFreeCamBegin();  // 0.18.0: a fixed camera hands over (its FOV back before the capture)
+                    FovFx::Reset();              // 0.18.0: no action-FOV offset in the FOV the free camera keeps
                     auto* cam = RE::PlayerCamera::GetSingleton();
                     s_baseFOV = cam ? WorldFOV(cam) : 0.0f;
                     HUDHider::OnFreeCamEnter();

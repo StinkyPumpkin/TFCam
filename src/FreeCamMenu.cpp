@@ -1,4 +1,5 @@
 #include "FreeCamMenu.h"
+#include "FovFx.h"
 #include "FreeCamController.h"
 #include "FreezeTime.h"
 #include "CameraLight.h"
@@ -275,6 +276,16 @@ namespace FreeCamMenu {
         WriteINIInt("CameraPath", "iRecordKey", c.recordKey);
         WriteINIFloat("CameraPath", "fSmoothness", c.smoothness);
         WriteINIFloat("CameraPath", "fAimHeight", c.aimHeight);
+        const auto& f = FovFx::Get();  // 0.18.0
+        WriteINIInt("ActionFOV", "bEnabled", f.enabled ? 1 : 0);
+        WriteINIFloat("ActionFOV", "fStrength", f.strength);
+        WriteINIInt("ActionFOV", "bBow", f.bow ? 1 : 0);
+        WriteINIInt("ActionFOV", "bPowerAttacks", f.power ? 1 : 0);
+        WriteINIInt("ActionFOV", "bSpells", f.spells ? 1 : 0);
+        WriteINIInt("ActionFOV", "iSpellLevel", f.spellLevel);
+        WriteINIInt("ActionFOV", "bShouts", f.shouts ? 1 : 0);
+        WriteINIInt("ActionFOV", "bSpeed", f.speedPlayer ? 1 : 0);
+        WriteINIInt("ActionFOV", "bCameraSpeed", f.speedCamera ? 1 : 0);
     }
 
     // 0.16.0 conversation camera, TFCam.ini [Conversation].
@@ -950,6 +961,41 @@ namespace FreeCamMenu {
         }
     }
 
+    // 0.18.0: FreeCam > Action FOV page.
+    static void __stdcall RenderActionFov() {
+        auto&                  f       = FovFx::Get();
+        bool                   changed = false;
+        const ImGuiMCP::ImVec4 grey{ 0.5f, 0.5f, 0.5f, 1.0f };
+
+        ImGuiMCP::SeparatorText("Action FOV");
+        ImGuiMCP::TextWrapped("The view reacts to what you do: drawing a bow pulls it in, letting the arrow go snaps it out, "
+                              "a power attack punches in, big spells and shouts warp it out, and moving fast stretches it wide.");
+        changed |= ImGuiMCP::Checkbox("On##afOn", &f.enabled);
+        ImGuiMCP::SetNextItemWidth(220.0f);
+        changed |= ImGuiMCP::SliderFloat("How strong##afStrength", &f.strength, 0.0f, 2.0f, "%.1f", 0);
+        changed |= ImGuiMCP::Checkbox("Bow: drawing pulls in, letting go snaps out##afBow", &f.bow);
+        changed |= ImGuiMCP::Checkbox("Power attacks punch in##afPower", &f.power);
+        changed |= ImGuiMCP::Checkbox("Big spells warp out##afSpells", &f.spells);
+        if (f.spells) {
+            static const char* const kLevels[] = { "Novice", "Apprentice", "Adept", "Expert", "Master" };
+            int idx = std::clamp(f.spellLevel / 25, 0, 4);
+            ImGuiMCP::SameLine();
+            ImGuiMCP::SetNextItemWidth(160.0f);
+            if (ImGuiMCP::Combo("and up##afLevel", &idx, kLevels, 5, -1)) {
+                f.spellLevel = idx * 25;
+                changed      = true;
+            }
+        }
+        changed |= ImGuiMCP::Checkbox("Shouts warp out##afShouts", &f.shouts);
+        changed |= ImGuiMCP::Checkbox("Moving fast stretches it (sprint, Whirlwind Sprint, a fast horse)##afSpeed", &f.speedPlayer);
+        changed |= ImGuiMCP::Checkbox("The free camera's speed stretches it (flying, camera paths)##afCamSpeed", &f.speedCamera);
+        ImGuiMCP::TextColored(grey, "Works on top of any FOV you or other mods set. Off by default.");
+        if (changed) {
+            FovFx::Clamp();
+            SaveINI();
+        }
+    }
+
     // 0.11.0: FreeCam > Idle & Furniture page.
     static void __stdcall RenderAmbient() {
         auto& a       = AmbientCam::Get();
@@ -1405,6 +1451,19 @@ namespace FreeCamMenu {
             c.smoothness = readFloat("CameraPath", "fSmoothness", cd.smoothness);
             c.aimHeight  = readFloat("CameraPath", "fAimHeight", cd.aimHeight);
             CamPath::Clamp();
+            auto&                 af = FovFx::Get();  // 0.18.0
+            const FovFx::Settings ad{};
+            af.enabled     = readInt("ActionFOV", "bEnabled", ad.enabled ? 1 : 0) != 0;
+            af.strength    = readFloat("ActionFOV", "fStrength", ad.strength);
+            af.bow         = readInt("ActionFOV", "bBow", ad.bow ? 1 : 0) != 0;
+            af.power       = readInt("ActionFOV", "bPowerAttacks", ad.power ? 1 : 0) != 0;
+            af.spells      = readInt("ActionFOV", "bSpells", ad.spells ? 1 : 0) != 0;
+            af.spellLevel  = readInt("ActionFOV", "iSpellLevel", ad.spellLevel);
+            af.shouts      = readInt("ActionFOV", "bShouts", ad.shouts ? 1 : 0) != 0;
+            af.speedPlayer = readInt("ActionFOV", "bSpeed", ad.speedPlayer ? 1 : 0) != 0;
+            af.speedCamera = readInt("ActionFOV", "bCameraSpeed", ad.speedCamera ? 1 : 0) != 0;
+            FovFx::Clamp();
+            SKSE::log::info("FovFx: action FOV {}", af.enabled ? "on" : "off");
             SKSE::log::info("CamBlur: background blur {} (strength {:.2f}{})", b.enabled ? "on" : "off", b.strength,
                 b.inFreeFly ? ", also in free-fly" : "");
         }
@@ -1559,6 +1618,7 @@ namespace FreeCamMenu {
         SKSEMenuFramework::AddSectionItem("Scene Camera", RenderSceneCam);  // 0.10.0
         SKSEMenuFramework::AddSectionItem("Idle & Furniture", RenderAmbient);  // 0.11.0
         SKSEMenuFramework::AddSectionItem("Camera Path", RenderCamPath);       // 0.17.0
+        SKSEMenuFramework::AddSectionItem("Action FOV", RenderActionFov);      // 0.18.0
         SKSEMenuFramework::AddInputEvent(OnSMFInput);
         CamPathWindow::Register();  // 0.18.0
 
