@@ -1,4 +1,5 @@
 #include "FovFx.h"
+#include "CamCollision.h"
 
 #include <Windows.h>
 
@@ -269,6 +270,8 @@ namespace FovFx {
         static double       s_holdUntil = 0.0;
         static RE::NiPoint3 s_aimAt{};
         static bool         s_haveAim   = false;
+        static RE::NiPoint3 s_wallOff{};          // how far a wall has moved the camera in (eased)
+        static double       s_wallHold  = 0.0;    // stays in this long after the last push
         const double        now         = Now();
         const float         dt          = s_aimLast > 0.0 ? static_cast<float>(std::clamp(now - s_aimLast, 0.0, 0.1)) : 0.0f;
         s_aimLast                       = now;
@@ -280,6 +283,7 @@ namespace FovFx {
             s_aimW     = 0.0f;
             s_haveAim  = false;
             s_wasDrawn = false;
+            s_wallOff  = {};
             return;
         }
         if (s_wasDrawn && !s_bowDrawn) s_holdUntil = now + kAimHold;
@@ -291,6 +295,7 @@ namespace FovFx {
         }
         if (s_aimW < 0.002f) {
             s_haveAim = false;
+            s_wallOff = {};
             return;
         }
         auto* body = player->Get3D2();
@@ -328,7 +333,20 @@ namespace FovFx {
         }
         const RE::NiPoint3 aimAt = s_aimAt;
         const float        th    = s_settings.aimTurn * kDegToRad;
-        const RE::NiPoint3 want  = eye + (r * std::sin(th) - f * std::cos(th)) * s_settings.aimBack + RE::NiPoint3{ 0.0f, 0.0f, s_settings.aimUp };
+        RE::NiPoint3       want  = eye + (r * std::sin(th) - f * std::cos(th)) * s_settings.aimBack + RE::NiPoint3{ 0.0f, 0.0f, s_settings.aimUp };
+        {
+            // Walls (10-29): the free camera's rules (TFCam > Collision) - in front of anything solid between your eyes and
+            // the camera, people passed. In quickly, held a moment once clear, out gently; looking at the same aim point.
+            const RE::NiPoint3 target = CamCollision::ClearSpot(eye, want) - want;
+            const float        tl     = target.Length();
+            if (tl >= s_wallOff.Length() - 0.01f) {
+                s_wallOff  = s_wallOff + (target - s_wallOff) * (dt > 0.0f ? 1.0f - std::exp(-dt / 0.03f) : 1.0f);
+                s_wallHold = now + 0.25;
+            } else if (now >= s_wallHold && dt > 0.0f) {
+                s_wallOff = s_wallOff + (target - s_wallOff) * (1.0f - std::exp(-dt / 0.15f));
+            }
+            want = want + s_wallOff;
+        }
         RE::NiPoint3       look  = aimAt - want;
         look                     = look * (1.0f / (std::max)(look.Length(), 1e-3f));
         const float        w     = SmoothStep(s_aimW);

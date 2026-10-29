@@ -30,5 +30,10 @@ namespace CamCollision {
     void Request(const RE::NiPoint3& a_pivot, const char* a_who);  // a driver wrote the camera this frame
     void Apply(RE::FreeCameraState* a_fcs, bool a_driving);       // Update hook, after every driver
 
+    // 10-29: the same walls for a camera that is not the free camera (the archer camera): where a camera wanted at a_cam,
+    // seen from a_pivot, may be - in front of anything solid in between, characters and small props passed. a_cam itself
+    // when the way is clear or walls are off. Main thread.
+    RE::NiPoint3 ClearSpot(const RE::NiPoint3& a_pivot, const RE::NiPoint3& a_cam);
+
     std::string MenuStatus();  // any thread
 }
