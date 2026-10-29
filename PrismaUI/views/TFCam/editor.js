@@ -1,6 +1,9 @@
 // TFCam Camera Path editor (PrismaUI view). TFCam pushes its state with tfcamState(json) about ten times a second while
 // the editor is open; every change goes back through tfcamCmd("cmd|arg|..."), handled on the game's main thread.
-// Outside the game (a normal browser) it shows demo data so the layout can be checked.
+// Minimal layout: a bar at the bottom (play, the timeline, add, record, menu); picking a camera on the timeline opens a
+// small card above it; everything for the whole path is in the menu. Outside the game it shows demo data.
+// PrismaUI notes: mouse events only (mousemove carries no button state, so drags run from our mousedown to our mouseup),
+// no CSS transform (clicks land off target), no stroked SVG (drawn broken) - the speed curve is drawn on a canvas.
 (function () {
   'use strict';
 
@@ -35,17 +38,21 @@
   }
 
   var S = null;           // the last state from TFCam
-  var sel = 0;            // the selected camera
+  var sel = -1;           // the picked camera; -1 = none, the card is closed
+  var expanded = false;   // the card shows every setting (tabs) instead of the few common ones
   var tab = 'move';
-  var busy = false;       // a slider or the curve is being dragged: the inspector is not redrawn under it
+  var menuOpen = false;
+  var busy = false;       // a slider or the curve is being dragged: the card is not redrawn under it
   var scrubbing = false;
   var scrubAt = 0;
   var dragHandle = -1;
   var lastKey = '';
   var clearArmed = false;
   var preview = false;
+  var seenEvent = null, flash = '', flashUntil = 0;
 
   function $(id) { return document.getElementById(id); }
+  function show(el, on) { if (el) el.style.display = on ? '' : 'none'; }
   function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   function cmd(s) {
     if (typeof window.tfcamCmd === 'function') window.tfcamCmd(s);
@@ -67,22 +74,18 @@
 
   // ---- the path's times ---------------------------------------------------------------------------------------------
   function hasNext(i) { var n = S.cams.length; return i < n - 1 || (S.loop && n > 1); }
+  function nextOf(i) { return i + 2 > S.cams.length ? 1 : i + 2; }
   function layout() {
     var out = { segs: [], marks: [], total: 0 }, t = 0;
     S.cams.forEach(function (c, i) {
       out.marks.push({ i: i, t: t });
-      if (c.wait > 0) out.segs.push({ kind: 'wait', t: t, d: c.wait, label: 'Wait ' + c.wait.toFixed(1) + ' s', cam: i });
+      if (c.wait > 0) out.segs.push({ kind: 'wait', t: t, d: c.wait, cam: i });
       t += c.wait;
       if (hasNext(i)) {
         if (c.move === 3) {
-          out.segs.push({ kind: 'cut', t: t, d: 0, label: 'Cut', cam: i });
+          out.segs.push({ kind: 'cut', t: t, d: 0, cam: i });
         } else {
-          var lbl = MOVE_NAMES[c.move] + ' ' + c.seconds.toFixed(1) + ' s';
-          if (c.slowMo) lbl += c.slowCamera ? ' · slow motion' : ' · bullet time';
-          if (c.elastic > 0) lbl += ' · elastic';
-          if (c.sling > 0) lbl += ' · slingshot';
-          if (c.crashZoom) lbl += ' · crash zoom';
-          out.segs.push({ kind: MOVES[c.move], t: t, d: c.seconds, label: lbl, cam: i, slow: c.slowMo ? c : null });
+          out.segs.push({ kind: MOVES[c.move], t: t, d: c.seconds, cam: i, slow: c.slowMo ? c : null });
           t += c.seconds;
         }
       }
@@ -99,52 +102,61 @@
     lay.marks.forEach(function (m) { if (t >= m.t) at = { cam: m.i, moving: false }; });
     return at;
   }
+  function moveText(c, i) {
+    if (!hasNext(i)) return 'the path ends here';
+    if (c.move === 3) return 'cut to ' + nextOf(i);
+    var t = MOVE_NAMES[c.move].toLowerCase() + ' to ' + nextOf(i) + ', ' + c.seconds.toFixed(1) + ' s';
+    if (c.slowMo) t += c.slowCamera ? ', slow motion' : ', bullet time';
+    return t;
+  }
 
   // ---- drawing --------------------------------------------------------------------------------------------------------
   function render(force) {
     if (!S) return;
     var n = S.cams.length;
-    if (sel >= n) sel = Math.max(0, n - 1);
-    var key = JSON.stringify([S.cams, S.loop, sel, tab, S.atCam, S.playing]);
-    renderTop();
+    if (sel >= n) sel = n - 1;
+    var key = JSON.stringify([S.cams, S.loop, sel, tab, expanded, S.atCam, S.playing]);
+    renderBar();
+    renderMenu();
     if (force || key !== lastKey) {
       lastKey = key;
-      renderCams();
-      renderTimeline();  // before the transport: the scrub's range first, then its value
-      if (!busy) renderInspector();
+      renderTrack();  // before the card: the card sits over its camera's mark
+      if (!busy) renderCard();
     }
     renderTransport();
+    renderToast();
   }
 
-  function renderTop() {
+  function setOn(el, on) { if (!el) return; el.classList.toggle('on', !!on); el.setAttribute('aria-pressed', on ? 'true' : 'false'); }
+
+  function renderBar() {
+    setOn($('btVideo'), S.video);
+    $('btVideo').title = S.video ? 'Stop the video' + (S.videoStatus ? ' (' + S.videoStatus + ')' : '') : 'Record video';
+    $('btVideo').setAttribute('aria-label', S.video ? 'Stop the video' : 'Record video');
+    $('btAdd').disabled = !S.freeCam || S.recordingPath;
+    setOn($('btMenu'), menuOpen);
+  }
+
+  function renderMenu() {
+    show($('menu'), menuOpen);
+    if (!menuOpen) return;
     setOn($('tgFollow'), S.follow);
     setOn($('tgLoop'), S.loop);
     setOn($('tgPath'), S.showPath);
-    setOn($('btFreeze'), S.frozen);
-    $('freezeLabel').textContent = S.frozen ? 'Unfreeze world' : 'Freeze world';
-    setOn($('btClean'), S.clean);
-    setOn($('btVideo'), S.video);
-    $('videoLabel').textContent = S.video ? 'Stop video' : 'Record video';
-    $('btVideo').title = S.videoStatus || '';
+    setOn($('tgClean'), S.clean);
+    setOn($('tgFreeze'), S.frozen);
     var open = $('open');
     var names = (S.saved || []).join('\n') + '|' + S.name;
     if (open.dataset.names !== names) {
       open.dataset.names = names;
-      var html = '<option value="">' + esc(S.name || 'Current') + '</option>';
+      var html = '<option value="">' + esc(S.name || 'This path') + '</option>';
       (S.saved || []).forEach(function (p) { html += '<option value="' + esc(p) + '">Open: ' + esc(p) + '</option>'; });
       open.innerHTML = html;
       open.value = '';
     }
-    var notice = $('notice');
-    var msg = S.recordingPath ? 'Recording a manual path - close the editor and fly; open it again to stop.'
-      : (!S.freeCam ? 'The free camera is off - turn it on to add cameras and play the path.' : '');
-    notice.hidden = !msg;
-    notice.textContent = msg;
-    $('btAdd').disabled = !S.freeCam || S.recordingPath;
-    var rec = $('btRecordPath');
-    rec.textContent = S.recordingPath ? 'Stop recording the path' : 'Record manual path (fly it)';
+    $('btRecordPath').textContent = S.recordingPath ? 'Stop recording the path' : 'Record a manual path (fly it)';
     var fix = $('btFix');
-    fix.textContent = S.fixed ? 'Let the camera go' : 'Fix camera here';
+    fix.textContent = S.fixed ? 'Let the camera go' : 'Fix the camera here';
     fix.dataset.cmd = S.fixed ? 'release' : 'fix';
     $('watch').checked = !!S.watching;
     if (!busy) {
@@ -155,27 +167,63 @@
     $('gv-aim').textContent = (S.aimHeight > 0 ? '+' : '') + Math.round(S.aimHeight || 0);
     $('foot').textContent = (S.openKey ? S.openKey + ' or ' : '') + 'Esc closes the editor' +
       (S.playKey ? ' · ' + S.playKey + ' plays / pauses' : '') + (S.addKey ? ' · ' + S.addKey + ' adds a camera' : '') +
-      (S.videoKey ? ' · ' + S.videoKey + ' records video' : '') + ' · Image pass: ' + (S.fxStatus || '-') +
-      ' · ' + (S.videoStatus || '');
-    $('lastEvent').textContent = S.lastEvent ? 'Last: ' + S.lastEvent : '';
+      (S.videoKey ? ' · ' + S.videoKey + ' records video' : '') + '. Image effects: ' + (S.fxStatus || '-') +
+      '. Video: ' + (S.videoStatus || '-') + '.';
   }
 
-  function setOn(el, on) { if (el) el.classList.toggle('on', !!on); if (el) el.setAttribute('aria-pressed', on ? 'true' : 'false'); }
+  function renderToast() {
+    var ev = S.lastEvent || '';
+    if (seenEvent === null) {
+      seenEvent = ev;  // old news when the editor opens: not shown
+    } else if (ev !== seenEvent) {
+      seenEvent = ev;
+      if (ev) { flash = ev.charAt(0).toUpperCase() + ev.slice(1); flashUntil = Date.now() + 2500; setTimeout(function () { if (S) renderToast(); }, 2600); }
+    }
+    var notice = S.recordingPath ? 'Recording a manual path - close the editor and fly; open it again to stop'
+      : (!S.freeCam ? 'Turn the free camera on to add cameras and play the path' : '');
+    var msg = notice || (Date.now() < flashUntil ? flash : '');
+    show($('toast'), !!msg);
+    $('toast').classList.toggle('warn', !!notice);
+    $('toastText').textContent = msg;
+  }
 
-  function renderCams() {
-    var n = S.cams.length;
-    $('camCount').textContent = n + (n === 1 ? ' camera' : ' cameras') + ' · ' + clock(layout().total);
-    var html = '';
-    S.cams.forEach(function (c, i) {
-      var piv = c.pivotKind >= 0 ? c.pivot + (c.bone ? ' · ' + BONES[c.bone].toLowerCase() : '') : 'no pivot';
-      var mv = !hasNext(i) ? 'end' : (c.move === 3 ? 'cut to ' + (i + 2 > n ? 1 : i + 2) : MOVE_NAMES[c.move].toLowerCase() + ' ' + c.seconds.toFixed(1) + ' s');
-      var cls = 'cam' + (i === sel ? ' on' : '') + (S.playing && i === S.atCam ? ' at' : '');
-      html += '<button type="button" class="' + cls + '" data-sel="' + i + '" aria-pressed="' + (i === sel) + '">' +
-        '<span class="badge">' + (i + 1) + '</span><span class="txt"><span class="t1">Camera ' + (i + 1) + '</span>' +
-        '<span class="t2">' + esc(piv) + ' · ' + esc(mv) + '</span></span></button>';
+  function trackWidth() { return $('track').offsetWidth || 1200; }
+
+  function renderTrack() {
+    var lay = layout(), W = trackWidth();
+    var x = function (t) { return t / lay.total * W; };
+    var h = '';
+    lay.segs.forEach(function (s) {
+      if (s.kind === 'cut') { h += '<i class="seg cut" style="left:' + x(s.t) + 'px"></i>'; return; }
+      var w = Math.max(x(s.d) - 2, 2);
+      var band = s.slow ? '<b class="slowband" style="left:' + Math.max(0, (s.slow.slowAt - s.slow.slowLength / 2) * w) +
+        'px;width:' + s.slow.slowLength * w + 'px"></b>' : '';
+      h += '<i class="seg ' + s.kind + (s.cam === sel && s.kind !== 'wait' ? ' sel' : '') + '" style="left:' + (x(s.t) + 1) +
+        'px;width:' + w + 'px">' + band + '</i>';
     });
-    if (!n) html = '<p class="dim">No cameras yet. Fly the free camera to a spot, open the editor and press Add camera here. Do it again somewhere else, then Play.</p>';
-    $('camList').innerHTML = html;
+    $('lane').innerHTML = h;
+    // a number where there is room for it, else a dot; the picked camera always gets its number
+    var xs = lay.marks.map(function (mk) { return x(mk.t); }), m = '';
+    lay.marks.forEach(function (mk, k) {
+      var room = Math.min(k > 0 ? xs[k] - xs[k - 1] : 99, k < xs.length - 1 ? xs[k + 1] - xs[k] : 99);
+      var big = mk.i === sel || room >= 24;
+      var cls = 'mark' + (big ? '' : ' dot') + (mk.i === sel ? ' on' : '') + (S.playing && mk.i === S.atCam ? ' at' : '');
+      m += '<button type="button" class="' + cls + '" style="left:' + xs[k] + 'px" data-sel="' + mk.i + '" title="Camera ' + (mk.i + 1) +
+        '" aria-label="Camera ' + (mk.i + 1) + '">' + (big ? mk.i + 1 : '') + '</button>';
+    });
+    $('marks').innerHTML = m;
+  }
+
+  function renderTransport() {
+    var lay = layout();
+    var cur = scrubbing ? scrubAt : (S.playing ? S.progress * lay.total : scrubAt);
+    cur = Math.min(Math.max(cur, 0), lay.total);
+    $('playhead').style.left = (cur / lay.total * trackWidth()) + 'px';
+    $('time').textContent = clock(cur) + ' / ' + clock(lay.total);
+    var playing = S.playing && !S.paused && !S.rewinding;
+    show($('icPlay'), !playing);
+    show($('icPause'), playing);
+    $('btPlay').setAttribute('aria-label', playing ? 'Pause' : 'Play');
   }
 
   function slider(field, label, c, note) {
@@ -184,8 +232,8 @@
       '<input id="f-' + field + '" type="range" min="' + f.min + '" max="' + f.max + '" step="' + f.step + '" value="' + v + '" data-field="' + field + '">' +
       (note ? '<span class="dim small">' + note + '</span>' : '') + '</div>';
   }
-  function opts(field, names, cur, cls) {
-    var h = '<div class="' + cls + '" role="group">';
+  function opts(field, names, cur) {
+    var h = '<div class="segbtns" role="group">';
     names.forEach(function (nm, k) {
       h += '<button type="button" class="opt' + (k === cur ? ' on' : '') + '" aria-pressed="' + (k === cur) + '" data-opt="' + field + '" data-val="' + k + '">' + nm + '</button>';
     });
@@ -194,62 +242,97 @@
   function check(field, label, on) {
     return '<label class="check"><input type="checkbox" data-flag="' + field + '"' + (on ? ' checked' : '') + '><span>' + label + '</span></label>';
   }
+  function same(a, b) { for (var k = 0; k < 4; k++) if (Math.abs(a[k] - b[k]) > 0.005) return false; return true; }
+  function speedValue(c) {
+    if (!c.curveOn) return 'auto';
+    for (var k = 0; k < PRESETS.length; k++) if (same(c.curve, PRESETS[k][1])) return String(k);
+    return 'custom';
+  }
+  function speedSelect(c) {
+    var v = speedValue(c);
+    var h = '<label class="row" for="f-speed"><span>Speed</span><select id="f-speed" data-select="speed">' +
+      '<option value="auto"' + (v === 'auto' ? ' selected' : '') + '>Automatic</option>';
+    PRESETS.forEach(function (p, k) { h += '<option value="' + k + '"' + (v === String(k) ? ' selected' : '') + '>' + p[0] + '</option>'; });
+    if (v === 'custom') h += '<option value="custom" selected>Drawn by hand</option>';
+    return h + '</select></label>';
+  }
 
-  function renderInspector() {
-    var body = $('inspBody');
-    var tabs = document.querySelectorAll('[data-tab]');
-    for (var k = 0; k < tabs.length; k++) setOn(tabs[k], tabs[k].dataset.tab === tab);
-    if (!S.cams.length) {
-      $('selTitle').textContent = 'No camera';
-      body.innerHTML = '<p class="dim">Add a camera first.</p>';
-      return;
-    }
+  function renderCard() {
+    var card = $('card');
+    if (sel < 0 || !S.cams.length) { show(card, false); return; }
+    show(card, true);
+    card.classList.toggle('wide', expanded);
     var c = S.cams[sel];
-    $('selTitle').textContent = 'Camera ' + (sel + 1);
+    $('cNum').textContent = sel + 1;
+    $('cTitle').textContent = 'Camera ' + (sel + 1) + (c.pivotKind >= 0 ? ' · ' + c.pivot : '');
+    $('cSub').textContent = moveText(c, sel) + (c.wait > 0 ? ' · waits ' + c.wait.toFixed(1) + ' s' : '');
+    $('cBody').innerHTML = expanded ? full(c) : quick(c);
+    $('btMore').textContent = expanded ? 'Fewer settings' : 'More settings';
+    if (expanded && tab === 'move') drawCurve(curveOf(c), c.curveOn);
+    placeCard();
+  }
+
+  // the few settings most moves need
+  function quick(c) {
     var h = '';
+    if (hasNext(sel)) {
+      h += '<div class="group"><span class="cap">Then to camera ' + nextOf(sel) + '</span>' + opts('move', MOVE_NAMES, c.move) + '</div>';
+      if (c.move !== 3) h += slider('time', 'Seconds to get there', c) + speedSelect(c);
+    } else {
+      h += '<div class="note">The last camera: the path ends here.' + (S.loop ? '' : ' Turn Loop on in the menu to go on to camera 1.') + '</div>';
+    }
+    h += slider('wait', 'Wait here', c);
+    return h;
+  }
+
+  // every setting, in three tabs
+  function full(c) {
+    var h = '<div class="tabs" role="group">';
+    [['shot', 'Shot'], ['move', 'Move'], ['fx', 'Effects']].forEach(function (t) {
+      h += '<button type="button" class="' + (tab === t[0] ? 'on' : '') + '" data-tab="' + t[0] + '">' + t[1] + '</button>';
+    });
+    h += '</div>';
     if (tab === 'shot') {
       h += '<div class="group"><span class="cap">Pivot - what it is about</span><div class="row">' +
         '<span class="pivot' + (c.pivotKind >= 0 ? '' : ' none') + '">' + esc(c.pivotKind >= 0 ? c.pivot : 'No pivot') + '</span>' +
         '<button type="button" class="btn" data-cam="pick">Pick</button><button type="button" class="btn" data-cam="me">Me</button>' +
         '<button type="button" class="btn" data-cam="console">Console</button><button type="button" class="btn" data-cam="none">None</button></div>';
       if (c.pivotKind >= 0) {
-        h += '<label class="row" for="f-bone"><span>Aim at its</span><select id="f-bone" class="small" data-select="bone">';
+        h += '<label class="row" for="f-bone"><span>Aim at its</span><select id="f-bone" data-select="bone">';
         BONES.forEach(function (b, k) { h += '<option value="' + k + '"' + (k === c.bone ? ' selected' : '') + '>' + b + '</option>'; });
         h += '</select></label>';
       }
-      h += '<span class="dim small">Pick: what the middle of the screen points at. Console: the person or thing clicked in the console.</span></div>';
-      h += '<div class="group"><span class="cap">Looks at</span>' + opts('look', LOOKS, c.look, 'grid3') +
+      h += '<span class="dim small">Pick: what the middle of the screen points at. Console: what was clicked in the console.</span></div>';
+      h += '<div class="group"><span class="cap">Looks at</span>' + opts('look', LOOKS, c.look) +
         (c.pivotKind < 0 && c.look === 0 ? '<span class="dim small">No pivot yet - it looks the way you set it.</span>' : '') + '</div>';
       h += slider('wait', 'Wait here', c);
-      h += slider('fov', 'Zoom (field of view)', c, 'Smaller is zoomed in. Two cameras on one spot with different zoom and Crash zoom make a crash zoom.');
+      h += slider('fov', 'Zoom (field of view)', c, 'Smaller is zoomed in.');
       h += check('blur', 'Blur the background', c.blur);
       if (c.blur) h += slider('blurStrength', 'How much', c);
     } else if (tab === 'move') {
       if (!hasNext(sel)) {
-        h += '<div class="endnote">The last camera - the path ends here. Turn Loop on to go on to camera 1.</div>';
+        h += '<div class="note">The last camera: the path ends here. Turn Loop on to go on to camera 1.</div>';
       } else {
-        var nx = sel + 2 > S.cams.length ? 1 : sel + 2;
-        h += '<div class="group"><span class="cap">Then to camera ' + nx + '</span>' + opts('move', MOVE_NAMES, c.move, 'grid4');
+        var nx = nextOf(sel);
+        h += '<div class="group"><span class="cap">Then to camera ' + nx + '</span>' + opts('move', MOVE_NAMES, c.move);
         if (c.move === 2 && c.pivotKind < 0 && (!S.cams[nx - 1] || S.cams[nx - 1].pivotKind < 0)) {
           h += '<span class="dim small">No pivot here or at camera ' + nx + ' to go round - it curves there instead.</span>';
         }
         h += '</div>';
         if (c.move !== 3) {
           var extra = c.seconds - c.time;
-          h += slider('time', 'Seconds to get there', c, extra > 0.05 ? 'With its effects this move takes ' + c.seconds.toFixed(1) + ' s in all (' + extra.toFixed(1) + ' s more).' : '');
+          h += slider('time', 'Seconds to get there', c, extra > 0.05 ? 'With its effects it takes ' + c.seconds.toFixed(1) + ' s.' : '');
           h += curveEditor(c);
-          h += '<details class="sub"><summary>More about the move</summary><div class="group">';
           if (c.move !== 2) h += slider('bendSide', 'Bend left / right', c) + slider('bendUp', 'Bend down / up', c);
           h += slider('turns', 'Extra full turns', c);
-          h += '<span class="cap">Which way round</span>' + opts('way', WAYS, c.way, 'grid3');
-          h += check('zoomTrick', 'Zoom trick (the pivot keeps its size while the background stretches)', c.zoomTrick);
-          h += '</div></details>';
+          h += '<div class="group"><span class="cap">Which way round</span>' + opts('way', WAYS, c.way) + '</div>';
+          h += check('zoomTrick', 'Zoom trick (the pivot keeps its size, the background stretches)', c.zoomTrick);
         } else {
-          h += '<div class="endnote">The camera jumps straight to camera ' + nx + ', like a cut in a film.</div>';
+          h += '<div class="note">The camera jumps straight to camera ' + nx + ', like a cut in a film.</div>';
         }
       }
     } else {
-      h += slider('shake', 'Camera shake', c, 'Bumps and sways like a camera on a cart. Blends into the next camera\'s shake.');
+      h += slider('shake', 'Camera shake', c);
       if (hasNext(sel) && c.move !== 3) {
         h += slider('elastic', 'Elastic arrival', c) + slider('sling', 'Slingshot', c);
         h += check('crashZoom', 'Crash zoom to the next camera', c.crashZoom);
@@ -262,129 +345,121 @@
         }
       }
     }
-    body.innerHTML = h;
-  }
-
-  function curveEditor(c) {
-    var cv = c.curveOn ? c.curve : (c.smooth ? [0.42, 0, 0.58, 1] : [0.33, 0.33, 0.67, 0.67]);
-    var h = '<div class="group"><span class="cap">Speed curve - drag the round handles</span><div class="curvebox">' +
-      '<svg id="curve" role="img" aria-label="Speed curve: time across, how far along up" width="210" height="210" viewBox="0 0 210 210">' +
-      '<g stroke="#1F252E" stroke-width="1"><line x1="60.5" y1="16" x2="60.5" y2="194"></line><line x1="105" y1="16" x2="105" y2="194"></line>' +
-      '<line x1="149.5" y1="16" x2="149.5" y2="194"></line><line x1="16" y1="60.5" x2="194" y2="60.5"></line><line x1="16" y1="105" x2="194" y2="105"></line>' +
-      '<line x1="16" y1="149.5" x2="194" y2="149.5"></line></g><rect x="16" y="16" width="178" height="178" fill="none" stroke="#2A313B"></rect>' +
-      '<line x1="16" y1="194" x2="194" y2="16" stroke="#3A424E" stroke-dasharray="4 5"></line>' +
-      '<line id="cl1" x1="16" y1="194" stroke="#8C96A8" stroke-width="1.5"></line><line id="cl2" x1="194" y1="16" stroke="#8C96A8" stroke-width="1.5"></line>' +
-      '<path id="cpath" stroke="' + (c.curveOn ? '#E8B04B' : '#8C96A8') + '" stroke-width="3.5" fill="none"></path>' +
-      '<circle id="ch0" r="9" fill="#ECE8DF" stroke="#11151B" stroke-width="2" data-handle="0"></circle>' +
-      '<circle id="ch1" r="9" fill="#ECE8DF" stroke="#11151B" stroke-width="2" data-handle="1"></circle>' +
-      '<text x="105" y="208" fill="#7C8592" font-size="11" text-anchor="middle">time</text></svg><div class="presets">' +
-      '<button type="button" class="chip' + (!c.curveOn ? ' on' : '') + '" data-preset="auto">Automatic</button>';
-    PRESETS.forEach(function (p, k) {
-      var on = c.curveOn && same(c.curve, p[1]);
-      h += '<button type="button" class="chip' + (on ? ' on' : '') + '" data-preset="' + k + '">' + p[0] + '</button>';
-    });
-    h += '</div></div><span class="dim small">Steep is fast, flat is slow.' + (c.curveOn ? '' : ' Automatic: a slow start and stop where the camera waits or the path ends.') + '</span>';
-    if (!c.curveOn) h += check('smooth', 'Automatic: always start and stop slowly', c.smooth);
-    h += '</div>';
-    setTimeout(function () { drawCurve(cv); }, 0);
     return h;
   }
-  function same(a, b) { for (var k = 0; k < 4; k++) if (Math.abs(a[k] - b[k]) > 0.005) return false; return true; }
-  function drawCurve(cv) {
-    var gx = function (v) { return 16 + v * 178; }, gy = function (v) { return 194 - v * 178; };
-    var p = $('cpath'); if (!p) return;
-    p.setAttribute('d', 'M 16 194 C ' + gx(cv[0]) + ' ' + gy(cv[1]) + ', ' + gx(cv[2]) + ' ' + gy(cv[3]) + ', 194 16');
-    $('cl1').setAttribute('x2', gx(cv[0])); $('cl1').setAttribute('y2', gy(cv[1]));
-    $('cl2').setAttribute('x2', gx(cv[2])); $('cl2').setAttribute('y2', gy(cv[3]));
-    $('ch0').setAttribute('cx', gx(cv[0])); $('ch0').setAttribute('cy', gy(cv[1]));
-    $('ch1').setAttribute('cx', gx(cv[2])); $('ch1').setAttribute('cy', gy(cv[3]));
+
+  function curveOf(c) { return c.curveOn ? c.curve : (c.smooth ? [0.42, 0, 0.58, 1] : [0.33, 0.33, 0.67, 0.67]); }
+  function curveEditor(c) {
+    var v = speedValue(c);
+    var h = '<div class="group"><span class="cap">Speed - drag the round handles</span><div class="curvebox">' +
+      '<canvas id="curve" width="160" height="160" aria-label="Speed curve: time across, how far along up"></canvas><div class="presets">' +
+      '<button type="button" class="chip' + (v === 'auto' ? ' on' : '') + '" data-preset="auto">Automatic</button>';
+    PRESETS.forEach(function (p, k) {
+      h += '<button type="button" class="chip' + (v === String(k) ? ' on' : '') + '" data-preset="' + k + '">' + p[0] + '</button>';
+    });
+    h += '</div></div><span class="dim small">Steep is fast, flat is slow.</span>';
+    if (!c.curveOn) h += check('smooth', 'Automatic: always start and stop slowly', c.smooth);
+    return h + '</div>';
+  }
+  function curveGeom(cnv) {
+    var w = cnv.width, p = Math.round(w * 0.09), l = w - 2 * p;
+    return { w: w, gx: function (v) { return p + v * l; }, gy: function (v) { return w - p - v * l; }, p: p, l: l };
+  }
+  function drawCurve(cv, hot) {
+    var cnv = $('curve');
+    if (!cnv || !cnv.getContext) return;
+    var size = Math.round(cnv.offsetWidth || 160);
+    if (cnv.width !== size) { cnv.width = size; cnv.height = size; }
+    var ctx = cnv.getContext('2d'), g = curveGeom(cnv), k, t;
+    ctx.clearRect(0, 0, g.w, g.w);
+    ctx.fillStyle = '#1C222B';  // grid as filled 1 px rectangles
+    for (k = 0; k <= 4; k++) {
+      var at = Math.round(g.p + k * g.l / 4);
+      ctx.fillRect(at, g.p, 1, g.l);
+      ctx.fillRect(g.p, at, g.l, 1);
+    }
+    var dot = function (x, y, r, col) { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); };
+    for (t = 0; t <= 1.0001; t += 0.05) dot(g.gx(t), g.gy(t), 1, '#3A424E');
+    var line = function (x0, y0, x1, y1, col) {
+      var n = Math.max(2, Math.round(Math.hypot(x1 - x0, y1 - y0) / 4));
+      for (var i = 0; i <= n; i++) dot(x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n, 0.9, col);
+    };
+    line(g.gx(0), g.gy(0), g.gx(cv[0]), g.gy(cv[1]), '#8C96A8');
+    line(g.gx(1), g.gy(1), g.gx(cv[2]), g.gy(cv[3]), '#8C96A8');
+    var col = hot ? '#E8B04B' : '#AEB6C3', r = Math.max(1.6, g.w / 90);
+    for (k = 0; k <= 200; k++) {
+      t = k / 200;
+      var u = 1 - t, b1 = 3 * u * u * t, b2 = 3 * u * t * t, b3 = t * t * t;
+      dot(g.gx(b1 * cv[0] + b2 * cv[2] + b3), g.gy(b1 * cv[1] + b2 * cv[3] + b3), r, col);
+    }
+    var hr = Math.max(6, g.w / 22);
+    [[cv[0], cv[1]], [cv[2], cv[3]]].forEach(function (h) {
+      dot(g.gx(h[0]), g.gy(h[1]), hr + 2, '#0B0E12');
+      dot(g.gx(h[0]), g.gy(h[1]), hr, '#ECE8DF');
+    });
   }
 
-  function renderTimeline() {
-    var lay = layout(), W = $('lane').offsetWidth || 1832;
-    var x = function (t) { return t / lay.total * W; };
-    var h = '';
-    lay.segs.forEach(function (s) {
-      if (s.kind === 'cut') {
-        h += '<div class="seg cut" style="left:' + (x(s.t) + 2) + 'px"><span class="lbl">Cut</span></div>';
-        return;
-      }
-      var w = Math.max(x(s.d) - 2, 3);
-      var band = '';
-      if (s.slow) {
-        band = '<span class="slowband" style="left:' + Math.max(0, (s.slow.slowAt - s.slow.slowLength / 2) * w) + 'px;width:' + s.slow.slowLength * w + 'px"></span>';
-      }
-      h += '<div class="seg ' + s.kind + '" style="left:' + x(s.t) + 'px;width:' + w + 'px">' + band +
-        '<span class="lbl">' + (w > 70 ? esc(s.label) : '') + '</span></div>';
-    });
-    $('lane').innerHTML = h;
-    var m = '';
-    lay.marks.forEach(function (mk) {
-      m += '<button type="button" class="mark' + (mk.i === sel ? ' on' : '') + '" style="left:' + x(mk.t) + 'px" data-sel="' + mk.i + '" aria-label="Camera ' + (mk.i + 1) + '">' + (mk.i + 1) + '</button>';
-    });
-    $('marks').innerHTML = m;
-    var step = lay.total > 60 ? 10 : lay.total > 30 ? 5 : lay.total > 12 ? 2 : 1, r = '';
-    for (var s = 0; s <= lay.total + 0.001; s += step) r += '<div class="tick" style="left:' + x(s) + 'px"><i></i><span>' + s + 's</span></div>';
-    $('ruler').innerHTML = r;
-    $('scrub').max = lay.total.toFixed(2);
+  function placeCard() {
+    var card = $('card');
+    if (card.style.display === 'none') return;
+    var app = $('app').getBoundingClientRect(), mk = document.querySelector('.mark.on');
+    var cx = app.width / 2;
+    if (mk) { var r = mk.getBoundingClientRect(); cx = r.left + r.width / 2 - app.left; }
+    var gap = parseFloat(getComputedStyle(document.documentElement).fontSize) * 1.25;
+    var left = Math.min(Math.max(cx - card.offsetWidth / 2, gap), app.width - card.offsetWidth - gap);
+    card.style.left = Math.round(left) + 'px';
   }
 
-  function renderTransport() {
-    var lay = layout(), W = $('lane').offsetWidth || 1832;
-    var cur = scrubbing ? scrubAt : (S.playing ? S.progress * lay.total : scrubAt);
-    cur = Math.min(Math.max(cur, 0), lay.total);
-    $('playhead').style.left = (cur / lay.total * W) + 'px';
-    if (!scrubbing) $('scrub').value = cur;
-    $('time').textContent = clock(cur) + ' / ' + clock(lay.total);
-    var at = camAt(lay, cur);
-    var n = S.cams.length;
-    $('nowLabel').textContent = !n ? '' : (S.playing ? (S.paused ? 'Paused - ' : S.rewinding ? (S.rate < -1.5 ? 'Rewinding - ' : 'Backwards - ') : 'Playing - ') : '') +
-      (at.moving ? 'camera ' + (at.cam + 1) + ' on to camera ' + (at.cam + 2 > n ? 1 : at.cam + 2) : 'at camera ' + (at.cam + 1));
-    var playing = S.playing && !S.paused && !S.rewinding;
-    $('icPlay').style.display = playing ? 'none' : '';
-    $('icPause').style.display = playing ? '' : 'none';
-    $('btPlay').setAttribute('aria-label', playing ? 'Pause' : 'Play');
-  }
+  function setMenu(on) { menuOpen = on; render(false); }
 
   // ---- input --------------------------------------------------------------------------------------------------------
   function local(field, value) { if (S && S.cams[sel]) S.cams[sel][field] = value; }
 
   document.addEventListener('click', function (e) {
-    var el = e.target.closest('button, [data-sel]');
-    if (!el || !S) return;
-    if (el.dataset.sel !== undefined) { sel = +el.dataset.sel; render(true); return; }
+    if (!S) return;
+    if (menuOpen && !e.target.closest('#menu') && !e.target.closest('#btMenu')) setMenu(false);
+    var el = e.target.closest('button');
+    if (!el) return;
+    if (el.id === 'btMenu') { setMenu(!menuOpen); return; }
+    if (el.id === 'btMore') { expanded = !expanded; render(true); return; }
+    if (el.dataset.close === 'card') { sel = -1; render(true); return; }
+    if (el.dataset.sel !== undefined) {  // a camera on the timeline: pick it and jump there; again closes the card
+      var i = +el.dataset.sel;
+      if (i === sel) { sel = -1; render(true); return; }
+      sel = i;
+      var mk = layout().marks[i];
+      if (mk) { scrubAt = mk.t; cmd('seek|' + mk.t.toFixed(2)); }
+      render(true); return;
+    }
     if (el.dataset.tab) { tab = el.dataset.tab; render(true); return; }
-    if (el.dataset.toggle) { var k = el.dataset.toggle; S[k] = !S[k]; cmd(k + '|' + (S[k] ? 1 : 0)); renderTop(); return; }
-    if (el.dataset.cam) { cmd(el.dataset.cam + '|' + sel); return; }
+    if (el.dataset.toggle) { var k = el.dataset.toggle; S[k] = !S[k]; cmd(k + '|' + (S[k] ? 1 : 0)); renderMenu(); return; }
+    if (el.dataset.cam) { if (sel >= 0) cmd(el.dataset.cam + '|' + sel); return; }
     if (el.dataset.opt) {
       var f = el.dataset.opt, v = +el.dataset.val;
       local(f, v); cmd('edit|' + sel + '|' + f + '|' + v); render(true); return;
     }
-    if (el.dataset.preset !== undefined) {
-      var c = S.cams[sel];
-      if (el.dataset.preset === 'auto') { c.curveOn = false; cmd('edit|' + sel + '|curveOn|0'); }
-      else { var p = PRESETS[+el.dataset.preset][1]; c.curveOn = true; c.curve = p.slice(); cmd('edit|' + sel + '|curve|' + p.join('|')); }
-      render(true); return;
-    }
+    if (el.dataset.preset !== undefined) { setSpeed(el.dataset.preset); return; }
     if (el.id === 'btClear') {
       if (!clearArmed) { clearArmed = true; el.textContent = 'Click again to clear all ' + S.cams.length + ' cameras'; setTimeout(function () { clearArmed = false; el.textContent = 'Clear all cameras'; }, 3000); return; }
-      clearArmed = false; el.textContent = 'Clear all cameras'; cmd('clear'); return;
+      clearArmed = false; el.textContent = 'Clear all cameras'; sel = -1; cmd('clear'); return;
     }
     if (el.dataset.cmd) {
       var c2 = el.dataset.cmd;
       if (c2 === 'saveAs') { var name = $('saveName').value.trim(); if (name) cmd('saveAs|' + name.replace(/\|/g, ' ')); return; }
-      if (c2 === 'record' && S.recordingPath) { cmd('record'); return; }
       cmd(c2);
     }
   });
 
+  function setSpeed(v) {
+    var c = S.cams[sel];
+    if (!c) return;
+    if (v === 'auto') { c.curveOn = false; cmd('edit|' + sel + '|curveOn|0'); }
+    else if (v !== 'custom') { var p = PRESETS[+v][1]; c.curveOn = true; c.curve = p.slice(); cmd('edit|' + sel + '|curve|' + p.join('|')); }
+    render(true);
+  }
+
   document.addEventListener('input', function (e) {
     var el = e.target;
-    if (el.id === 'scrub') {
-      scrubbing = true; scrubAt = +el.value; renderTransport();
-      throttled('seek', function () { cmd('seek|' + scrubAt.toFixed(2)); });
-      return;
-    }
     if (el.dataset && el.dataset.global && S) {  // path-wide: smoothness, aim height
       busy = true;
       var g = el.dataset.global, gv = g === 'smoothness' ? +el.value / 100 : +el.value;
@@ -404,14 +479,12 @@
 
   document.addEventListener('change', function (e) {
     var el = e.target;
-    if (el.id === 'scrub') { scrubbing = false; scrubAt = +el.value; cmd('seek|' + scrubAt.toFixed(2)); return; }
     if (el.id === 'open') { if (el.value) cmd('open|' + el.value); el.value = ''; return; }
     if (el.id === 'watch') { cmd('watch|' + (el.checked ? 1 : 0)); return; }
     if (el.dataset.global) { busy = false; cmd(el.dataset.global + '|' + (el.dataset.global === 'smoothness' ? +el.value / 100 : +el.value)); return; }
     if (!S || !S.cams[sel]) return;
     if (el.dataset.field) {
-      var f = F[el.dataset.field];
-      cmd('edit|' + sel + '|' + el.dataset.field + '|' + f.put(+el.value));
+      cmd('edit|' + sel + '|' + el.dataset.field + '|' + F[el.dataset.field].put(+el.value));
       busy = false; render(true); return;
     }
     if (el.dataset.flag) {
@@ -420,37 +493,54 @@
       else { local(flag, on); cmd('edit|' + sel + '|' + flag + '|' + (on ? 1 : 0)); }
       render(true); return;
     }
+    if (el.dataset.select === 'speed') { setSpeed(el.value); return; }
     if (el.dataset.select === 'bone') { local('bone', +el.value); cmd('edit|' + sel + '|bone|' + el.value); render(true); }
   });
 
-  document.addEventListener('pointerup', function () {
-    if (busy && dragHandle < 0) { busy = false; }
+  // drags: the timeline (scrub) and the speed curve's handles
+  function scrubTo(e) {
+    var r = $('track').getBoundingClientRect();
+    scrubAt = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * layout().total;
+    renderTransport();
+    throttled('seek', function () { cmd('seek|' + scrubAt.toFixed(2)); });
+  }
+  function curvePoint(e) {
+    var cnv = $('curve'), r = cnv.getBoundingClientRect(), g = curveGeom(cnv);
+    var px = (e.clientX - r.left) * cnv.width / r.width, py = (e.clientY - r.top) * cnv.height / r.height;
+    return { x: Math.min(1, Math.max(0, (px - g.p) / g.l)), y: Math.min(1, Math.max(0, (g.w - g.p - py) / g.l)), px: px, py: py, g: g };
+  }
+  document.addEventListener('mousedown', function (e) {
+    if (e.button !== 0 || !S) return;
+    if (e.target.closest('#track') && !e.target.closest('.mark')) { scrubbing = true; scrubTo(e); e.preventDefault(); return; }
+    if (e.target.id === 'curve' && S.cams[sel]) {
+      var c = S.cams[sel], cv = curveOf(c), p = curvePoint(e), best = -1, bestD = 1e9;
+      for (var k = 0; k < 2; k++) {
+        var d = Math.hypot(p.g.gx(cv[k * 2]) - p.px, p.g.gy(cv[k * 2 + 1]) - p.py);
+        if (d < bestD) { bestD = d; best = k; }
+      }
+      if (bestD > p.g.w * 0.15) return;
+      if (!c.curveOn) { c.curve = cv.slice(); c.curveOn = true; }
+      dragHandle = best; busy = true; e.preventDefault();
+    }
+  });
+  document.addEventListener('mousemove', function (e) {
+    if (e.clientX === 0 && e.clientY === 0) return;  // PrismaUI's move to (0,0) when the editor loses focus
+    if (scrubbing) { scrubTo(e); return; }
+    if (dragHandle < 0 || !S || !S.cams[sel] || !$('curve')) return;
+    var c = S.cams[sel], p = curvePoint(e);
+    c.curve[dragHandle * 2] = Math.round(p.x * 100) / 100;
+    c.curve[dragHandle * 2 + 1] = Math.round(p.y * 100) / 100;
+    drawCurve(c.curve, true);
+    throttled('curve', function () { cmd('edit|' + sel + '|curve|' + c.curve.join('|')); });
+  });
+  document.addEventListener('mouseup', function () {
+    if (scrubbing) { scrubbing = false; cmd('seek|' + scrubAt.toFixed(2)); return; }
     if (dragHandle >= 0) {
       var c = S && S.cams[sel];
       if (c) cmd('edit|' + sel + '|curve|' + c.curve.map(function (v) { return v.toFixed(3); }).join('|'));
-      dragHandle = -1; busy = false; render(true);
+      dragHandle = -1; busy = false; render(true); return;
     }
-  });
-  document.addEventListener('pointerdown', function (e) {
-    var h = e.target.closest && e.target.closest('[data-handle]');
-    if (h && S && S.cams[sel]) {
-      var c = S.cams[sel];
-      if (!c.curveOn) { c.curve = c.smooth ? [0.42, 0, 0.58, 1] : [0.33, 0.33, 0.67, 0.67]; c.curveOn = true; }
-      dragHandle = +h.dataset.handle; busy = true; e.preventDefault();
-    }
-  });
-  document.addEventListener('pointermove', function (e) {
-    if (dragHandle < 0 || !S) return;
-    var svg = $('curve'); if (!svg) return;
-    var r = svg.getBoundingClientRect();
-    var px = (e.clientX - r.left) / r.width * 210, py = (e.clientY - r.top) / r.height * 210;
-    var vx = Math.min(1, Math.max(0, (px - 16) / 178)), vy = Math.min(1, Math.max(0, (194 - py) / 178));
-    var c = S.cams[sel];
-    c.curve[dragHandle * 2] = Math.round(vx * 100) / 100;
-    c.curve[dragHandle * 2 + 1] = Math.round(vy * 100) / 100;
-    drawCurve(c.curve);
-    $('cpath').setAttribute('stroke', '#E8B04B');
-    throttled('curve', function () { cmd('edit|' + sel + '|curve|' + c.curve.join('|')); });
+    if (busy) busy = false;
   });
 
   // text boxes: the game's keys stay out while typing
@@ -470,14 +560,17 @@
     render(false);
   };
 
+  // sizes are in rem: 16 px on a 1920 x 1080 screen, in proportion on others
   function fit() {
     var s = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
-    $('app').style.transform = 'scale(' + s + ')';
+    document.documentElement.style.fontSize = (16 * s) + 'px';
   }
-  window.addEventListener('resize', fit);
+  window.addEventListener('resize', function () { fit(); if (S) render(true); });
   fit();
 
   // ---- outside the game: demo data ---------------------------------------------------------------------------------------
+  // #cam picks camera 2, #more shows every setting, #menu opens the menu, #many uses 22 cameras, #shot / #fx pick a tab;
+  // ?bg=<url> puts a picture behind it.
   function cam(o) {
     var base = { pivot: 'none', pivotKind: -1, bone: 0, look: 1, wait: 0, fov: 70, move: 1, time: 3, seconds: 3, smooth: false, turns: 0, way: 0, zoomTrick: false,
       bendSide: 0, bendUp: 0, blur: false, blurStrength: 0.6, shake: 0, crashZoom: false, slowMo: false, slowAt: 0.66, slowSpeed: 0.4, slowLength: 0.2,
@@ -489,35 +582,53 @@
     var a = s.split('|');
     if (a[0] === 'play') { S.playing = !(S.playing && !S.paused); S.paused = false; }
     else if (a[0] === 'stop') { S.playing = false; }
-    else if (a[0] === 'rewind') { S.playing = false; S.progress = 0; scrubAt = 0; }
     else if (a[0] === 'freeze') { S.frozen = !S.frozen; }
     else if (a[0] === 'video') { S.video = !S.video; }
     else if (a[0] === 'seek') { S.playing = false; scrubAt = +a[1]; }
-    S.lastEvent = s;
+    else if (a[0] === 'add') { S.cams.push(cam({})); S.lastEvent = 'camera ' + S.cams.length + ' added'; }
     render(false);
   }
   setTimeout(function () {
     if (/Ultralight/.test(navigator.userAgent) || typeof window.tfcamCmd === 'function' || S) { cmd('ready'); return; }
     preview = true;
-    if (location.hash.length > 1) tab = location.hash.slice(1);
+    var flags = location.hash.slice(1).split(',');
+    var has = function (f) { return flags.indexOf(f) >= 0; };
+    var bg = /[?&]bg=([^&#]+)/.exec(location.search);
+    if (bg) {
+      document.body.style.background = '#000 url("' + decodeURIComponent(bg[1]) + '") center / cover no-repeat';
+      document.body.style.height = '100vh';
+    }
     var badge = document.createElement('div');
     badge.className = 'preview';
     badge.textContent = 'Preview outside the game - demo data';
     document.body.appendChild(badge);
+    var cams = [
+      cam({ pivot: 'Adrianne', pivotKind: 1, bone: 1, look: 0, wait: 0.2, fov: 62, move: 2, time: 1.9, seconds: 2.2, slowMo: true, curveOn: true }),
+      cam({ pivot: 'Adrianne', pivotKind: 1, look: 0, fov: 55, move: 1, time: 3, seconds: 3, bendSide: 0.25, bendUp: 0.1, shake: 0.15, elastic: 0.3, curveOn: true, curve: [0.1, 0.7, 0.3, 1] }),
+      cam({ look: 1, wait: 1, move: 3, seconds: 0 }),
+      cam({ pivot: 'you', pivotKind: 0, bone: 2, look: 0, wait: 1.5, fov: 40, crashZoom: true })
+    ];
+    if (has('many')) {
+      cams = [];
+      var secs = [1.9, 3, 3, 3, 1.7, 0.9, 0.9, 3, 1.5, 3, 4, 1.2, 0.8, 3, 3, 3, 4.5, 3, 2, 6.4, 5, 3];
+      secs.forEach(function (sx, k) {
+        cams.push(cam({ pivot: k < 2 ? 'Adrianne Avenicci' : 'none', pivotKind: k < 2 ? 1 : -1, move: k % 7 === 6 ? 2 : k % 5 === 4 ? 0 : 1,
+          time: sx, seconds: sx, wait: k === 20 ? 5 : k === 21 ? 3 : 0, slowMo: k === 16 }));
+      });
+    }
     S = {
       name: 'Whiterun - Adrianne', follow: true, loop: false, showPath: true, smoothness: 0.3, aimHeight: 0, playing: false, paused: false, rewinding: false,
-      rate: 1, atCam: -1, progress: 0, total: 9.7, freeCam: true, frozen: false, clean: false, recordingPath: false, video: false,
-      videoStatus: 'not recording', fxStatus: 'idle', fixed: false, watching: false, lastEvent: 'camera 4 added', openKey: '1', playKey: '', addKey: '', videoKey: '',
-      saved: ['whiterun', 'Before clearing'],
-      cams: [
-        cam({ pivot: 'Adrianne', pivotKind: 1, bone: 1, look: 0, wait: 0.2, fov: 62, move: 2, time: 1.9, seconds: 2.2, slowMo: true, curveOn: true }),
-        cam({ pivot: 'Adrianne', pivotKind: 1, look: 0, fov: 55, move: 1, time: 3, seconds: 3, bendSide: 0.25, bendUp: 0.1, shake: 0.15, elastic: 0.3, curveOn: true, curve: [0.1, 0.7, 0.3, 1] }),
-        cam({ look: 1, wait: 1, move: 3, seconds: 0 }),
-        cam({ pivot: 'you', pivotKind: 0, bone: 2, look: 0, wait: 1.5, fov: 40, crashZoom: true })
-      ]
+      rate: 1, atCam: -1, progress: 0, total: 0, freeCam: !has('off'), frozen: false, clean: false, recordingPath: false, video: false,
+      videoStatus: 'not recording', fxStatus: 'idle', fixed: false, watching: false, lastEvent: '', openKey: '1', playKey: '', addKey: '', videoKey: '',
+      saved: ['whiterun', 'Before clearing'], cams: cams
     };
     S.total = layout().total;
-    scrubAt = 2.9;
+    if (has('cam')) sel = 1;
+    if (has('more')) expanded = true;
+    if (has('shot')) tab = 'shot';
+    if (has('fx')) tab = 'fx';
+    if (has('menu')) menuOpen = true;
+    scrubAt = sel >= 0 ? layout().marks[sel].t : 2.9;
     render(true);
   }, 800);
 })();
