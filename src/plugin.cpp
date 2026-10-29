@@ -10,6 +10,7 @@
 #include "CamBlur.h"
 #include "CamPath.h"
 #include "HUDHider.h"
+#include "FixedCam.h"
 
 #include <spdlog/sinks/basic_file_sink.h>
 #include <ShlObj.h>
@@ -131,11 +132,13 @@ namespace {
             AmbientCam::Install();     // 0.11.0: idle camera + furniture camera
             ConvoCam::Install();       // 0.16.0: conversation camera
             CamBlur::Install();        // 0.17.0: no-op when already linked at kPostLoad
+            FixedCam::Install();       // 0.18.0: fixed camera (third-person view override) + the full freeze's frame tick
             FreeCamMenu::Register();
             FreeCamMenu::ApplyGameSettings();
             break;
         case SKSE::MessagingInterface::kPreLoadGame:
             CellEntryCam::OnPreLoadGame();  // the loading screen that follows is a save load, not a door
+            FixedCam::OnGameLoad();         // 0.18.0
             // 0.10.0: the scene, orbit / eye view (head cull, near clip) and the active pose end with the old game.
             SceneTracker::Reset("save loading");
             SceneCam::OnGameLoad("save loading");

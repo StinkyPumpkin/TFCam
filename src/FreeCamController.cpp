@@ -1,5 +1,6 @@
 #include "FreeCamController.h"
 #include "FreezeTime.h"
+#include "FixedCam.h"
 #include "FreeCamMenu.h"
 #include "CameraLight.h"
 #include "HUDHider.h"
@@ -437,6 +438,7 @@ namespace FreeCam {
     struct GetRotationHook {
         static void thunk(RE::TESCameraState* a_this, RE::NiQuaternion& a_rotation) {
             func(a_this, a_rotation);
+            FreezeTime::Tick();  // 0.18.0: every free-camera frame keeps a full freeze on
 
             // 0.7.9: the roll also applies on top of an FCFW (SLCC) camera. Checked in FCFW's source (8b4df64):
             // TimelineManager::Update rewrites the state's translation + pitch/yaw and its roll (a write_call on
@@ -908,6 +910,7 @@ namespace FreeCam {
             // 0.7.10: FOV capture, HUD hide and the SLCC bridge on the main thread (inline when already there).
             const bool ranInline = RunHookWork([driven, slccOwned, timeline, selfToggle, thread] {
                 if (driven) {
+                    FixedCam::OnFreeCamBegin();  // 0.18.0: a fixed camera hands over (its FOV back before the capture)
                     auto* cam = RE::PlayerCamera::GetSingleton();
                     s_baseFOV = cam ? WorldFOV(cam) : 0.0f;
                     HUDHider::OnFreeCamEnter();

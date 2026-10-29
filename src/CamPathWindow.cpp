@@ -1,5 +1,6 @@
 #include "CamPathWindow.h"
 #include "CamPath.h"
+#include "FixedCam.h"
 #include "FreeCamMenu.h"
 
 #include "SKSEMenuFramework.h"
@@ -51,6 +52,7 @@ namespace CamPathWindow {
         constexpr unsigned kIconBack       = 0xf04a;
         constexpr unsigned kIconReverse    = 0xf0d9;
         constexpr unsigned kIconEyeSlash   = 0xf070;
+        constexpr unsigned kIconThumbtack  = 0xf08d;
 
         const ImGuiMCP::ImVec4 kGrey{ 0.6f, 0.6f, 0.6f, 1.0f };
         const ImGuiMCP::ImVec4 kGold{ 1.0f, 0.82f, 0.35f, 1.0f };
@@ -368,6 +370,23 @@ namespace CamPathWindow {
                 CamPath::Clamp();
                 FreeCamMenu::SaveCamPathSettings();
             }
+
+            // ---- fixed camera (0.18.0)
+            ImGuiMCP::SeparatorText("Fixed camera - you play on, the camera stays");
+            if (FixedCam::IsOn()) {
+                if (Big(kIconThumbtack, "Let the camera go", "unfix", 3)) FixedCam::RequestRelease("window");
+                Tip("The camera follows you again");
+            } else {
+                if (Big(kIconThumbtack, "Fix camera here", "fix", 0, s.freeCam)) {
+                    FixedCam::RequestFixHere();
+                    Close();  // play
+                }
+                Tip("Keeps this free-camera view and gives you your character back: walk, fight, run through the shot.\n"
+                    "Open this window again to let the camera go (or turn the free camera on to move it).");
+            }
+            bool watch = FixedCam::Watching();
+            if (ImGuiMCP::Checkbox("Turn to watch me##fixwatch", &watch)) FixedCam::SetWatch(watch);
+            Tip("The fixed camera stays where it is but turns to follow you");
 
             // ---- the path
             ImGuiMCP::SeparatorText("The path");
