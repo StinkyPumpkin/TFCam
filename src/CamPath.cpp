@@ -109,6 +109,26 @@ namespace CamPath {
             return v0 * (f3 - 2.0f * f2 + f) + (-2.0f * f3 + 3.0f * f2) + v1 * (f3 - f2);
         }
 
+        // A speed curve (CSS cubic-bezier: (0,0), (x1,y1), (x2,y2), (1,1)) at time a_f: the bezier's x is solved for
+        // a_f (x1, x2 in 0..1 keep it rising, so one answer), then its y is the progress.
+        float CurveEase(float a_f, float a_x1, float a_y1, float a_x2, float a_y2) {
+            const float f   = Clamp01(a_f);
+            auto        bez = [](float a_s, float a_p1, float a_p2) {
+                const float r = 1.0f - a_s;
+                return 3.0f * r * r * a_s * a_p1 + 3.0f * r * a_s * a_s * a_p2 + a_s * a_s * a_s;
+            };
+            float lo = 0.0f, hi = 1.0f, s = f;
+            for (int i = 0; i < 24; ++i) {  // bisection: plain and safe at the flat ends
+                s = 0.5f * (lo + hi);
+                if (bez(s, a_x1, a_x2) < f) {
+                    lo = s;
+                } else {
+                    hi = s;
+                }
+            }
+            return Clamp01(bez(s, a_y1, a_y2));
+        }
+
         double Now() {
             static const double freq = [] {
                 LARGE_INTEGER f;
@@ -224,17 +244,19 @@ namespace CamPath {
                 out << "# TFCam camera path v3 - tab separated. pivot: - - follow loop (no pivot for new cameras since 10-29)\n"
                        "# cam: x y z yaw pitch roll fov | pivot x y z heading known | look wait blur strength | move time "
                        "smooth turns way zoom | pivot kind formID | bend side up | bone shake crash | slow at speed "
-                       "length world | elastic sling slowCamera\n";
+                       "length world | elastic sling slowCamera | curve on x1 y1 x2 y2\n";
                 out << std::format("pivot\t-1\t00000000\t{}\t{}\n", s_follow ? 1 : 0, s_loop ? 1 : 0);
                 for (const auto& c : s_cams) {
                     out << std::format("cam\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{:.5f}\t{:.5f}\t{:.2f}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{}"
                                        "\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{}\t{}\t{}\t{}\t{:08X}\t{:.3f}\t{:.3f}"
-                                       "\t{}\t{:.3f}\t{}\t{}\t{:.3f}\t{:.3f}\t{:.3f}\t{}\t{:.3f}\t{:.3f}\t{}\n",
+                                       "\t{}\t{:.3f}\t{}\t{}\t{:.3f}\t{:.3f}\t{:.3f}\t{}\t{:.3f}\t{:.3f}\t{}"
+                                       "\t{}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.3f}\n",
                         c.pos.x, c.pos.y, c.pos.z, c.yaw, c.pitch, c.roll, c.fov, c.pivotPos.x, c.pivotPos.y, c.pivotPos.z,
                         c.pivotHeading, c.havePivot ? 1 : 0, c.look, c.wait, c.blur ? 1 : 0, c.blurStrength, c.move, c.time,
                         c.smooth ? 1 : 0, c.turns, c.way, c.zoomTrick ? 1 : 0, c.pivotKind, c.pivotRef, c.bendSide, c.bendUp,
                         c.bone, c.shake, c.crashZoom ? 1 : 0, c.slowMo ? 1 : 0, c.slowAt, c.slowSpeed, c.slowLength,
-                        c.slowWorld ? 1 : 0, c.elastic, c.sling, c.slowCamera ? 1 : 0);
+                        c.slowWorld ? 1 : 0, c.elastic, c.sling, c.slowCamera ? 1 : 0, c.curveOn ? 1 : 0, c.curveX1,
+                        c.curveY1, c.curveX2, c.curveY2);
                 }
             }
             std::filesystem::rename(tmp, file, ec);
@@ -260,15 +282,17 @@ namespace CamPath {
                 }
                 if (!line.starts_with("cam\t")) continue;
                 Cam c;
-                int      have = 0, blur = 0, smooth = 1, zoom = 0, ckind = 0, crash = 0, slow = 0, sworld = 0, slowcam = 1;
+                int      have = 0, blur = 0, smooth = 1, zoom = 0, ckind = 0, crash = 0, slow = 0, sworld = 0, slowcam = 1, curve = 0;
                 unsigned cref = 0;
                 const int n = std::sscanf(line.c_str() + 4,
-                    "%f %f %f %f %f %f %f %f %f %f %f %d %d %f %d %f %d %f %d %d %d %d %d %x %f %f %d %f %d %d %f %f %f %d %f %f %d",
+                    "%f %f %f %f %f %f %f %f %f %f %f %d %d %f %d %f %d %f %d %d %d %d %d %x %f %f %d %f %d %d %f %f %f %d %f %f %d "
+                    "%d %f %f %f %f",
                     &c.pos.x, &c.pos.y,
                     &c.pos.z, &c.yaw, &c.pitch, &c.roll, &c.fov, &c.pivotPos.x, &c.pivotPos.y, &c.pivotPos.z,
                     &c.pivotHeading, &have, &c.look, &c.wait, &blur, &c.blurStrength, &c.move, &c.time, &smooth, &c.turns,
                     &c.way, &zoom, &ckind, &cref, &c.bendSide, &c.bendUp, &c.bone, &c.shake, &crash, &slow, &c.slowAt,
-                    &c.slowSpeed, &c.slowLength, &sworld, &c.elastic, &c.sling, &slowcam);
+                    &c.slowSpeed, &c.slowLength, &sworld, &c.elastic, &c.sling, &slowcam, &curve, &c.curveX1, &c.curveY1,
+                    &c.curveX2, &c.curveY2);
                 if (n < 22 || !Finite(c.pos) || !std::isfinite(c.yaw) || !std::isfinite(c.pitch)) continue;
                 c.havePivot = have != 0;
                 c.blur      = blur != 0;
@@ -293,6 +317,18 @@ namespace CamPath {
                 c.slowCamera = slowcam != 0;
                 c.elastic    = std::isfinite(c.elastic) ? std::clamp(c.elastic, 0.0f, 1.0f) : 0.0f;
                 c.sling      = std::isfinite(c.sling) ? std::clamp(c.sling, 0.0f, 1.0f) : 0.0f;
+                // the speed curve (37 fields before it)
+                const bool curveOk = n >= 42 && std::isfinite(c.curveX1) && std::isfinite(c.curveY1) && std::isfinite(c.curveX2) &&
+                                     std::isfinite(c.curveY2);
+                if (!curveOk) {
+                    const Cam d;
+                    c.curveX1 = d.curveX1, c.curveY1 = d.curveY1, c.curveX2 = d.curveX2, c.curveY2 = d.curveY2;
+                }
+                c.curveOn = curveOk && curve != 0;
+                c.curveX1 = std::clamp(c.curveX1, 0.0f, 1.0f);
+                c.curveY1 = std::clamp(c.curveY1, 0.0f, 1.0f);
+                c.curveX2 = std::clamp(c.curveX2, 0.0f, 1.0f);
+                c.curveY2 = std::clamp(c.curveY2, 0.0f, 1.0f);
                 cams.push_back(c);
             }
             s_cams      = std::move(cams);
@@ -335,7 +371,9 @@ namespace CamPath {
         }
 
         std::atomic<bool> s_dirty{ false };
+        std::atomic<int>  s_editGen{ 0 };  // + 1 on every edit of the path
         void SaveCurrentSoon() {
+            ++s_editGen;
             if (s_dirty.exchange(true)) return;
             Queue([] {
                 s_dirty = false;
@@ -480,6 +518,7 @@ namespace CamPath {
             bool                      blurOn   = false;
             float                     total    = 0.0f;
             float                     elapsed  = 0.0f;
+            int                       editGen  = 0;  // s_editGen when Play started
         };
         Play   s_play;
         bool   s_pendingPlay   = false;
@@ -762,6 +801,13 @@ namespace CamPath {
             return c.smooth || s_play.cams[a_next].wait > 0.0f || (!s_play.loop && Next(a_next) < 0);
         }
 
+        // Progress along move a_k at its normal-time fraction a_f: the camera's own speed curve, else automatic.
+        float MoveEase(int a_k, int a_next, float a_f) {
+            const auto& c = s_play.cams[a_k];
+            if (c.curveOn) return CurveEase(a_f, c.curveX1, c.curveY1, c.curveX2, c.curveY2);
+            return Ease(a_f, EaseIn(a_k), EaseOut(a_k, a_next));
+        }
+
         // The slingshot's pull back and the elastic swing, on top of the move's own position. a_tc = seconds into the
         // move itself (< 0: winding up, > core: the tail); a_f its normal-time progress.
         RE::NiPoint3 SwingOffset(int a_k, int a_next, float a_tc, float a_core, float a_f) {
@@ -807,13 +853,13 @@ namespace CamPath {
             const float core = CoreTime(k);
             const float tc   = s_play.t - WindTime(ck);  // seconds into the move itself
             const float f    = tc <= 0.0f ? 0.0f : (tc >= core ? 1.0f : NormalF(k, tc));
-            const float u    = Ease(f, EaseIn(k), EaseOut(k, next));
+            const float u    = MoveEase(k, next, f);
             const RE::NiPoint3 onPath = MovePos(k, next, u);
             // the path is smoothed; the swing goes on top afterwards (smoothing would iron a quick bounce flat)
             out.pos   = onPath;
             out.swing = SwingOffset(k, next, tc, core, f);
             const RE::NiPoint3 seenFrom = onPath + out.swing;
-            const RE::NiPoint3 ahead = MovePos(k, next, Ease(std::min(f + 0.02f, 1.0f), EaseIn(k), EaseOut(k, next))) - onPath;
+            const RE::NiPoint3 ahead = MovePos(k, next, MoveEase(k, next, std::min(f + 0.02f, 1.0f))) - onPath;
             if (ck.look == kLookSet && cn.look == kLookSet) {
                 // both keep their own view: turn from one to the other (extra turns spin in place unless the move goes
                 // round the pivot, which has them already)
@@ -910,6 +956,37 @@ namespace CamPath {
             return kGoing;
         }
 
+        // The path clock put a_sec into the path (one lap): the camera, wait or move there; the camera jumps to it.
+        void SeekTo(float a_sec) {
+            const int n    = Count();
+            float     left = std::clamp(std::isfinite(a_sec) ? a_sec : 0.0f, 0.0f, s_play.total);
+            s_play.elapsed = left;
+            int k          = 0;
+            for (int guard = 0; guard <= n; ++guard) {
+                const auto& c = s_play.cams[k];
+                if (left <= c.wait || Next(k) < 0) {  // waiting at camera k (the last one holds the end)
+                    s_play.k        = k;
+                    s_play.phase    = 0;
+                    s_play.t        = (std::min)(left, c.wait);
+                    s_play.fovCarry = c.fov;
+                    break;
+                }
+                left -= c.wait;
+                const float T = MoveTime(k);
+                if (left < T || guard == n) {  // on the way to the next camera
+                    s_play.k        = k;
+                    s_play.phase    = 1;
+                    s_play.fovCarry = c.fov;
+                    StartMove();
+                    s_play.t = (std::min)(left, T);
+                    break;
+                }
+                left -= T;
+                k = Next(k);
+            }
+            s_play.snapOut = true;
+        }
+
         void UpdatePivots(float a_dt, bool a_snap) {
             for (auto& p : s_play.pivots) {
                 RE::NiPoint3 raw{}, rawAim{};
@@ -996,9 +1073,10 @@ namespace CamPath {
                     Notify("Camera path: add at least 2 cameras first");
                     return false;
                 }
-                s_play        = Play{};
-                s_play.blurOn = blurWas;
-                s_play.cams   = s_cams;
+                s_play         = Play{};
+                s_play.blurOn  = blurWas;
+                s_play.cams    = s_cams;
+                s_play.editGen = s_editGen.load();
                 s_play.follow = s_follow;
                 s_play.loop   = s_loop;
             }
@@ -1646,6 +1724,11 @@ namespace CamPath {
         s.progress   = s_pubProgress;
         s.lastEvent  = s_lastEvent;
         s.savedPaths = s_savedPaths;
+        const int nc = static_cast<int>(s_cams.size());
+        for (int k = 0; k < nc; ++k) {
+            s.total += s_cams[k].wait;
+            if (k + 1 < nc || (s_loop && nc > 1)) s.total += MoveSeconds(s_cams[k]);
+        }
         for (const auto& c : s_cams) {
             if (c.pivotKind != 1 || !c.pivotRef) {
                 s.camPivotNames.emplace_back(c.pivotKind < 0 ? "none" : "you");
@@ -1692,6 +1775,11 @@ namespace CamPath {
             c.slowCamera   = a_o.slowCamera;
             c.elastic      = std::clamp(std::isfinite(a_o.elastic) ? a_o.elastic : 0.0f, 0.0f, 1.0f);
             c.sling        = std::clamp(std::isfinite(a_o.sling) ? a_o.sling : 0.0f, 0.0f, 1.0f);
+            c.curveOn      = a_o.curveOn;
+            c.curveX1      = std::clamp(std::isfinite(a_o.curveX1) ? a_o.curveX1 : 0.42f, 0.0f, 1.0f);
+            c.curveY1      = std::clamp(std::isfinite(a_o.curveY1) ? a_o.curveY1 : 0.0f, 0.0f, 1.0f);
+            c.curveX2      = std::clamp(std::isfinite(a_o.curveX2) ? a_o.curveX2 : 0.58f, 0.0f, 1.0f);
+            c.curveY2      = std::clamp(std::isfinite(a_o.curveY2) ? a_o.curveY2 : 1.0f, 0.0f, 1.0f);
         }
         SaveCurrentSoon();
         return true;
@@ -1786,6 +1874,23 @@ namespace CamPath {
     bool CleanScreen() { return s_clean; }
 
     const char* BoneName(int a_bone) { return kBoneNames[std::clamp(a_bone, 0, kBoneCount - 1)]; }
+
+    void RequestSeek(float a_seconds) {
+        Queue([a_seconds] {
+            auto* fcs = CurrentFreeCam();
+            if (!fcs) {
+                Notify("Camera path: turn the free camera on to move along the path");
+                return;
+            }
+            if (s_play.on && s_play.editGen != s_editGen.load()) EndPlay("the path was edited - the slider starts it again");
+            if (!s_play.on && !StartPlay(fcs, "the path slider", 0, false, 1.0f)) return;
+            s_play.gliding = false;
+            s_play.paused  = true;
+            s_play.rate    = 1.0f;
+            SeekTo(a_seconds);
+            Publish();
+        });
+    }
 
     void RequestPause() {
         Queue([] {

@@ -91,6 +91,13 @@ namespace CamPath {
         bool  slowCamera = true;   // false = bullet time: only the world slows, the camera keeps its pace
         float elastic    = 0.0f;   // 0..1: the camera flies past the next camera and springs back (bounciness)
         float sling      = 0.0f;   // 0..1: before leaving, the camera pulls back the other way, then shoots off
+        // speed curve of the move (10-29): off = automatic (slow start / stop as set); on = this curve - time across,
+        // progress up, a CSS-style cubic bezier from (0,0) to (1,1) through two handles (x 0..1, y 0..1)
+        bool  curveOn = false;
+        float curveX1 = 0.42f;
+        float curveY1 = 0.0f;
+        float curveX2 = 0.58f;
+        float curveY2 = 1.0f;
     };
 
     struct Settings {
@@ -134,6 +141,7 @@ namespace CamPath {
         bool             frozen       = false;
         int              atCam        = -1;     // the camera the path is at / leaving
         float            progress     = 0.0f;   // 0..1 of the whole path
+        float            total        = 0.0f;   // seconds of the whole path (one lap), as the cameras are now
         std::string      lastEvent;
         std::vector<std::string> savedPaths;
     };
@@ -156,6 +164,9 @@ namespace CamPath {
     void RequestRewind();           // run the path backwards to camera 1 (from the end when it is not playing)
     void RequestPlayBackwards();    // the same at normal speed
     void RequestPause();
+    // The path slider: the camera goes to a_seconds into the path and waits there, paused (Play goes on from it). The
+    // path starts paused when it is not playing, or again when it was edited since Play (the slider shows the edit).
+    void RequestSeek(float a_seconds);
     // Camera a_cam's pivot.
     void RequestPickPivot(int a_cam);     // what the free camera points at
     void RequestPivotConsole(int a_cam);  // the console's selected reference

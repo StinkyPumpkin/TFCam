@@ -14,6 +14,7 @@
 #include <format>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace CamPathWindow {
 
@@ -87,6 +88,132 @@ namespace CamPathWindow {
 
         void Close() {
             if (s_window && s_window->IsOpen.exchange(false)) s_closedAt = NowMs();
+        }
+
+        ImGuiMCP::ImU32 Col(float a_r, float a_g, float a_b, float a_a = 1.0f) {
+            return ImGuiMCP::GetColorU32(ImGuiMCP::ImVec4{ a_r, a_g, a_b, a_a });
+        }
+
+        // When the camera reaches each camera, seconds from the start of the path (the slider's marks).
+        std::vector<float> ArrivalTimes(const CamPath::Snapshot& a_s) {
+            std::vector<float> out;
+            const int          n = static_cast<int>(a_s.cams.size());
+            float              t = 0.0f;
+            for (int k = 0; k < n; ++k) {
+                out.push_back(t);
+                t += a_s.cams[k].wait;
+                if (k + 1 < n || (a_s.loop && n > 1)) t += CamPath::MoveSeconds(a_s.cams[k]);
+            }
+            return out;
+        }
+
+        // The camera a moment of the path belongs to: waiting at it, or (a_moving) on the way on from it.
+        int CamAtTime(const CamPath::Snapshot& a_s, float a_t, bool& a_moving) {
+            const int n    = static_cast<int>(a_s.cams.size());
+            float     left = a_t;
+            for (int k = 0; k < n; ++k) {
+                a_moving = false;
+                if (left <= a_s.cams[k].wait) return k;
+                left -= a_s.cams[k].wait;
+                if (k + 1 >= n && !(a_s.loop && n > 1)) return k;
+                a_moving      = true;
+                const float T = CamPath::MoveSeconds(a_s.cams[k]);
+                if (left < T) return k;
+                left -= T;
+            }
+            a_moving = false;
+            return n - 1;
+        }
+
+        // The move's speed curve (10-29, Movie Maker's idea): time goes across, how far along the camera is goes up.
+        // Steep = fast, flat = slow. Drag a round handle (it turns the curve on); the buttons are ready-made curves.
+        bool CurveEditor(CamPath::Cam& a_c) {
+            bool changed = false;
+            struct Preset {
+                const char* name;
+                float       x1, y1, x2, y2;
+            };
+            static const Preset kPresets[] = { { "Steady", 0.33f, 0.33f, 0.67f, 0.67f }, { "Slow start and stop", 0.42f, 0.0f, 0.58f, 1.0f },
+                { "Slow start", 0.42f, 0.0f, 1.0f, 1.0f }, { "Slow stop", 0.0f, 0.0f, 0.58f, 1.0f },
+                { "Fast start, long glide", 0.1f, 0.7f, 0.3f, 1.0f }, { "Hold, then rush", 0.8f, 0.0f, 0.9f, 0.3f } };
+            if (ImGuiMCP::RadioButton("Automatic##cvauto", !a_c.curveOn)) {
+                a_c.curveOn = false;
+                changed     = true;
+            }
+            Tip("As before: a slow start and stop where the camera waits or the path ends, else straight through");
+            for (int i = 0; i < static_cast<int>(std::size(kPresets)); ++i) {
+                const auto& p  = kPresets[i];
+                const bool  on = a_c.curveOn && a_c.curveX1 == p.x1 && a_c.curveY1 == p.y1 && a_c.curveX2 == p.x2 && a_c.curveY2 == p.y2;
+                ImGuiMCP::SameLine();
+                if (ImGuiMCP::RadioButton(std::format("{}##cv{}", p.name, i).c_str(), on)) {
+                    a_c.curveOn = true;
+                    a_c.curveX1 = p.x1, a_c.curveY1 = p.y1, a_c.curveX2 = p.x2, a_c.curveY2 = p.y2;
+                    changed     = true;
+                }
+            }
+            if (!a_c.curveOn) {
+                changed |= ImGuiMCP::Checkbox("Slow start and stop##smooth", &a_c.smooth);
+                Tip("Automatic only: the move eases in and out even when the camera does not wait");
+            }
+
+            constexpr float  kBox = 220.0f;
+            ImGuiMCP::ImVec2 o{};
+            ImGuiMCP::GetCursorScreenPos(&o);
+            ImGuiMCP::InvisibleButton("##curvebox", ImGuiMCP::ImVec2{ kBox, kBox }, 0);
+            const bool       active = ImGuiMCP::IsItemActive();
+            static int       s_drag = -1;  // the handle being dragged (one item is active at a time)
+            ImGuiMCP::ImVec2 m{};
+            ImGuiMCP::GetMousePos(&m);
+            auto  at   = [&](float a_x, float a_y) { return ImGuiMCP::ImVec2{ o.x + a_x * kBox, o.y + (1.0f - a_y) * kBox }; };
+            float x1   = a_c.curveOn ? a_c.curveX1 : (a_c.smooth ? 0.42f : 0.33f);
+            float y1   = a_c.curveOn ? a_c.curveY1 : (a_c.smooth ? 0.0f : 0.33f);
+            float x2   = a_c.curveOn ? a_c.curveX2 : (a_c.smooth ? 0.58f : 0.67f);
+            float y2   = a_c.curveOn ? a_c.curveY2 : (a_c.smooth ? 1.0f : 0.67f);
+            float* hx[2] = { &x1, &x2 };
+            float* hy[2] = { &y1, &y2 };
+            if (ImGuiMCP::IsItemActivated()) {  // the nearer handle
+                float best = 1e9f;
+                for (int i = 0; i < 2; ++i) {
+                    const auto  p = at(*hx[i], *hy[i]);
+                    const float d = std::hypot(p.x - m.x, p.y - m.y);
+                    if (d < best) {
+                        best   = d;
+                        s_drag = i;
+                    }
+                }
+            }
+            if (!active) s_drag = -1;
+            if (active && s_drag >= 0) {
+                const float x = std::clamp((m.x - o.x) / kBox, 0.0f, 1.0f);
+                const float y = std::clamp(1.0f - (m.y - o.y) / kBox, 0.0f, 1.0f);
+                if (!a_c.curveOn || x != *hx[s_drag] || y != *hy[s_drag]) {
+                    *hx[s_drag] = x;
+                    *hy[s_drag] = y;
+                    a_c.curveOn = true;
+                    a_c.curveX1 = x1, a_c.curveY1 = y1, a_c.curveX2 = x2, a_c.curveY2 = y2;
+                    changed     = true;
+                }
+            }
+            namespace D = ImGuiMCP::ImDrawListManager;
+            auto*       dl    = ImGuiMCP::GetWindowDrawList();
+            const auto  ink   = a_c.curveOn ? Col(1.0f, 0.82f, 0.35f) : Col(0.6f, 0.6f, 0.6f);
+            D::AddRectFilled(dl, o, ImGuiMCP::ImVec2{ o.x + kBox, o.y + kBox }, Col(0.10f, 0.13f, 0.20f), 4.0f, 0);
+            for (int i = 1; i < 4; ++i) {
+                const float g = kBox * static_cast<float>(i) / 4.0f;
+                D::AddLine(dl, ImGuiMCP::ImVec2{ o.x + g, o.y }, ImGuiMCP::ImVec2{ o.x + g, o.y + kBox }, Col(1, 1, 1, 0.08f), 1.0f);
+                D::AddLine(dl, ImGuiMCP::ImVec2{ o.x, o.y + g }, ImGuiMCP::ImVec2{ o.x + kBox, o.y + g }, Col(1, 1, 1, 0.08f), 1.0f);
+            }
+            D::AddLine(dl, at(0, 0), at(1, 1), Col(1, 1, 1, 0.15f), 1.0f);  // steady, for comparison
+            D::AddLine(dl, at(0, 0), at(x1, y1), Col(1, 1, 1, 0.45f), 1.5f);
+            D::AddLine(dl, at(1, 1), at(x2, y2), Col(1, 1, 1, 0.45f), 1.5f);
+            D::AddBezierCubic(dl, at(0, 0), at(x1, y1), at(x2, y2), at(1, 1), ink, 3.0f, 48);
+            for (int i = 0; i < 2; ++i) {
+                const bool hot = s_drag == i;
+                D::AddCircleFilled(dl, at(*hx[i], *hy[i]), hot ? 9.0f : 7.0f, hot ? Col(1, 1, 1) : ink, 16);
+            }
+            ImGuiMCP::TextColored(kGrey, "Across: time. Up: how far along. Steep = fast, flat = slow.%s",
+                a_c.curveOn ? "" : "  (Automatic - drag a handle to make your own)");
+            return changed;
         }
 
         // One camera's card: the everyday options open, the rest folded away (More, Effects, More about the move).
@@ -253,9 +380,12 @@ namespace CamPathWindow {
                             ImGuiMCP::TextColored(kGrey, "With its effects this move takes %.1f s in all (%.1f s more).", total,
                                 total - a_c.time);
                         }
+                        if (ImGuiMCP::TreeNode(a_c.curveOn ? "Speed curve (your own)##curve" : "Speed curve (automatic)##curve")) {
+                            changed |= CurveEditor(a_c);
+                            ImGuiMCP::TreePop();
+                        }
                     }
                     if (a_c.move != CamPath::kMoveCut && ImGuiMCP::TreeNode("More about the move##moremove")) {
-                        changed |= ImGuiMCP::Checkbox("Slow start and stop##smooth", &a_c.smooth);
                         if (a_c.move != CamPath::kMoveAround) {
                             int side = static_cast<int>(std::lround(a_c.bendSide * 100.0f));
                             int up   = static_cast<int>(std::lround(a_c.bendUp * 100.0f));
@@ -388,11 +518,43 @@ namespace CamPathWindow {
                 Tip("Fly the camera by hand and it becomes the path.\nThe window closes - fly, then open it again and press Stop recording.\n"
                     "The path you had is kept as \"Before recording\".");
             }
-            if (s.playing) {
-                ImGuiMCP::ProgressBar(s.progress, ImGuiMCP::ImVec2(-1.0f, 0.0f),
-                    std::format("{} - camera {} of {}",
-                        s.paused ? "Paused" : (s.rewinding ? (s.rate < -1.5f ? "Rewinding" : "Playing backwards") : "Playing"),
-                        s.atCam + 1, s.cams.size()).c_str());
+            // ---- the path slider (10-29): drag to any moment of the path - the camera goes there and waits
+            if (s.cams.size() >= 2 && s.total > 0.01f) {
+                static float s_scrub = 0.0f;  // where the slider was left while the path is not playing
+                const auto   arrive  = ArrivalTimes(s);
+                float        at      = s.playing ? s.progress * s.total : (std::min)(s_scrub, s.total);
+                bool         moving  = false;
+                const int    ci      = CamAtTime(s, at, moving);
+                const int    cn      = ci + 1 < static_cast<int>(s.cams.size()) ? ci + 2 : 1;
+                const char*  state   = !s.playing ? "Drag to move along the path"
+                                     : s.paused   ? "Paused"
+                                     : s.rewinding ? (s.rate < -1.5f ? "Rewinding" : "Playing backwards")
+                                                   : "Playing";
+                const std::string fmt = std::format("{} - {} - %.1f s of {:.1f} s", state,
+                    moving ? std::format("camera {} to {}", ci + 1, cn) : std::format("at camera {}", ci + 1), s.total);
+                ImGuiMCP::SetNextItemWidth(-1.0f);
+                if (ImGuiMCP::SliderFloat("##scrub", &at, 0.0f, s.total, fmt.c_str(), 0)) {
+                    for (const float t : arrive) {  // close to a camera: right on it
+                        if (std::fabs(at - t) < s.total * 0.012f) {
+                            at = t;
+                            break;
+                        }
+                    }
+                    s_scrub = at;
+                    CamPath::RequestSeek(at);
+                }
+                Tip("Drag to any moment of the path: the camera goes there and waits. It snaps onto a camera when close\n"
+                    "(the gold marks). Play goes on from there. Needs the free camera on.");
+                ImGuiMCP::ImVec2 a{}, b{};
+                ImGuiMCP::GetItemRectMin(&a);
+                ImGuiMCP::GetItemRectMax(&b);
+                auto*       dl    = ImGuiMCP::GetWindowDrawList();
+                const float inset = 8.0f;  // the grab's half width: where 0 and the end sit
+                for (const float t : arrive) {
+                    const float x = a.x + inset + (b.x - a.x - 2.0f * inset) * (t / s.total);
+                    ImGuiMCP::ImDrawListManager::AddLine(dl, ImGuiMCP::ImVec2{ x, b.y - 7.0f }, ImGuiMCP::ImVec2{ x, b.y },
+                        Col(1.0f, 0.82f, 0.35f), 3.0f);
+                }
             }
 
             // ---- fixed camera (0.18.0)
