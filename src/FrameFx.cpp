@@ -518,6 +518,11 @@ float2 PSChroma(VsOut i) : SV_Target {
             ComPtr<ID3D11DepthStencilView> dsv;
             g.ctx->OMGetRenderTargets(1, &rtv, &dsv);
             if (!rtv) {
+                // Usually nothing is bound here: the menu draw binds the frame buffer itself, after this hook.
+                auto& fb = RE::BSGraphics::Renderer::GetSingleton()->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kFRAMEBUFFER];
+                rtv      = reinterpret_cast<ID3D11RenderTargetView*>(fb.RTV);
+            }
+            if (!rtv) {
                 SetStatus("waiting - no picture bound where the menus draw");
                 return;
             }
