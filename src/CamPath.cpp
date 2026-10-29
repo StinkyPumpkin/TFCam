@@ -39,6 +39,7 @@ namespace CamPath {
         constexpr float  kRecordMove     = 3.0f;   // ... once the camera moved this many units
         constexpr float  kRecordTurn     = 0.02f;  // ... or turned this many radians
         constexpr float  kRewindRate     = 2.0f;   // a rewind runs the path backwards at twice its speed
+        constexpr int    kSlowSamples    = 64;     // per slow-motion move, for its time table
 
         Settings s_settings;
 
@@ -160,6 +161,7 @@ namespace CamPath {
         std::vector<std::string> s_savedPaths;
         // play state copied for the window (s_lock)
         bool  s_pubPlaying = false, s_pubPaused = false, s_pubRewinding = false, s_pubRecording = false, s_pubFreeCam = false;
+        float s_pubRate    = 1.0f;
         int   s_pubAt      = -1;
         float s_pubProgress = 0.0f;
         std::string s_pubPivotName = "you";
@@ -225,14 +227,18 @@ namespace CamPath {
                 out << "# TFCam camera path v3 - tab separated. pivot (for new cameras): kind (0 you, 1 reference) formID "
                        "follow loop\n"
                        "# cam: x y z yaw pitch roll fov | pivot x y z heading known | look wait blur strength | move time "
-                       "smooth turns way zoom | pivot kind formID | bend side up\n";
+                       "smooth turns way zoom | pivot kind formID | bend side up | bone shake crash | slow at speed "
+                       "length world\n";
                 out << std::format("pivot\t{}\t{:08X}\t{}\t{}\n", s_pivotKind, s_pivotRef, s_follow ? 1 : 0, s_loop ? 1 : 0);
                 for (const auto& c : s_cams) {
                     out << std::format("cam\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{:.5f}\t{:.5f}\t{:.2f}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{}"
-                                       "\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{}\t{}\t{}\t{}\t{:08X}\t{:.3f}\t{:.3f}\n",
+                                       "\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{}\t{}\t{}\t{}\t{:08X}\t{:.3f}\t{:.3f}"
+                                       "\t{}\t{:.3f}\t{}\t{}\t{:.3f}\t{:.3f}\t{:.3f}\t{}\n",
                         c.pos.x, c.pos.y, c.pos.z, c.yaw, c.pitch, c.roll, c.fov, c.pivotPos.x, c.pivotPos.y, c.pivotPos.z,
                         c.pivotHeading, c.havePivot ? 1 : 0, c.look, c.wait, c.blur ? 1 : 0, c.blurStrength, c.move, c.time,
-                        c.smooth ? 1 : 0, c.turns, c.way, c.zoomTrick ? 1 : 0, c.pivotKind, c.pivotRef, c.bendSide, c.bendUp);
+                        c.smooth ? 1 : 0, c.turns, c.way, c.zoomTrick ? 1 : 0, c.pivotKind, c.pivotRef, c.bendSide, c.bendUp,
+                        c.bone, c.shake, c.crashZoom ? 1 : 0, c.slowMo ? 1 : 0, c.slowAt, c.slowSpeed, c.slowLength,
+                        c.slowWorld ? 1 : 0);
                 }
             }
             std::filesystem::rename(tmp, file, ec);
@@ -258,13 +264,15 @@ namespace CamPath {
                 }
                 if (!line.starts_with("cam\t")) continue;
                 Cam c;
-                int      have = 0, blur = 0, smooth = 1, zoom = 0, ckind = 0;
+                int      have = 0, blur = 0, smooth = 1, zoom = 0, ckind = 0, crash = 0, slow = 0, sworld = 0;
                 unsigned cref = 0;
                 const int n = std::sscanf(line.c_str() + 4,
-                    "%f %f %f %f %f %f %f %f %f %f %f %d %d %f %d %f %d %f %d %d %d %d %d %x %f %f", &c.pos.x, &c.pos.y,
+                    "%f %f %f %f %f %f %f %f %f %f %f %d %d %f %d %f %d %f %d %d %d %d %d %x %f %f %d %f %d %d %f %f %f %d",
+                    &c.pos.x, &c.pos.y,
                     &c.pos.z, &c.yaw, &c.pitch, &c.roll, &c.fov, &c.pivotPos.x, &c.pivotPos.y, &c.pivotPos.z,
                     &c.pivotHeading, &have, &c.look, &c.wait, &blur, &c.blurStrength, &c.move, &c.time, &smooth, &c.turns,
-                    &c.way, &zoom, &ckind, &cref, &c.bendSide, &c.bendUp);
+                    &c.way, &zoom, &ckind, &cref, &c.bendSide, &c.bendUp, &c.bone, &c.shake, &crash, &slow, &c.slowAt,
+                    &c.slowSpeed, &c.slowLength, &sworld);
                 if (n < 22 || !Finite(c.pos) || !std::isfinite(c.yaw) || !std::isfinite(c.pitch)) continue;
                 c.havePivot = have != 0;
                 c.blur      = blur != 0;
@@ -277,6 +285,15 @@ namespace CamPath {
                 if (n < 26 || !std::isfinite(c.bendSide) || !std::isfinite(c.bendUp)) c.bendSide = c.bendUp = 0.0f;
                 c.bendSide = std::clamp(c.bendSide, -1.0f, 1.0f);
                 c.bendUp   = std::clamp(c.bendUp, -1.0f, 1.0f);
+                // the effects (26 fields before them)
+                c.bone      = std::clamp(c.bone, 0, kBoneCount - 1);
+                c.shake     = std::isfinite(c.shake) ? std::clamp(c.shake, 0.0f, 1.0f) : 0.0f;
+                c.crashZoom = crash != 0;
+                c.slowMo    = slow != 0;
+                c.slowWorld = sworld != 0;
+                c.slowAt     = std::isfinite(c.slowAt) ? std::clamp(c.slowAt, 0.0f, 1.0f) : 0.66f;
+                c.slowSpeed  = std::isfinite(c.slowSpeed) ? std::clamp(c.slowSpeed, 0.05f, 1.0f) : 0.2f;
+                c.slowLength = std::isfinite(c.slowLength) ? std::clamp(c.slowLength, 0.05f, 1.0f) : 0.3f;
                 cams.push_back(c);
             }
             s_cams      = std::move(cams);
@@ -332,13 +349,75 @@ namespace CamPath {
         }
 
         // ---- pivot -------------------------------------------------------------------------------------------------
-        // The pivot as it is right now: its middle (where the camera looks), heading and name.
-        bool PivotRaw(int a_kind, RE::FormID a_ref, RE::NiPoint3& a_out, float& a_heading, std::string* a_name) {
+        constexpr const char* kBoneNames[kBoneCount] = { "middle", "head", "eyes", "chest", "hips", "bum", "groin", "hands", "feet" };
+
+        // A body part of an actor, from the XPMSSE skeleton's nodes (a pair is averaged). False = not an actor / no
+        // such node (a_out is left alone).
+        bool BonePoint(RE::TESObjectREFR* a_ref, int a_bone, RE::NiPoint3& a_out) {
+            auto* actor = a_ref ? a_ref->As<RE::Actor>() : nullptr;
+            auto* root  = actor ? actor->Get3D2() : nullptr;
+            if (!root) return false;
+            auto avg = [&](std::initializer_list<const char*> a_names) {
+                RE::NiPoint3 sum{};
+                int          found = 0;
+                for (const char* n : a_names) {
+                    if (auto* o = root->GetObjectByName(n)) {
+                        sum += o->world.translate;
+                        ++found;
+                    }
+                }
+                if (found) a_out = sum * (1.0f / static_cast<float>(found));
+                return found > 0;
+            };
+            const float        h = actor->GetAngleZ();
+            const RE::NiPoint3 fwd{ std::sin(h), std::cos(h), 0.0f };
+            const RE::NiPoint3 up{ 0.0f, 0.0f, 1.0f };
+            switch (a_bone) {
+            case kBoneHead:
+                return avg({ "NPC Head [Head]" });
+            case kBoneEyes:
+                if (!avg({ "NPC Head [Head]" })) return false;
+                a_out += fwd * 4.0f + up * 7.0f;
+                return true;
+            case kBoneChest:
+                if (avg({ "NPC L Breast", "NPC R Breast" }) || avg({ "L Breast02", "R Breast02" })) return true;
+                if (!avg({ "NPC Spine2 [Spn2]" })) return false;
+                a_out += fwd * 8.0f;
+                return true;
+            case kBoneHips:
+                return avg({ "NPC Pelvis [Pelv]" });
+            case kBoneBum:
+                if (avg({ "NPC L Butt", "NPC R Butt" })) return true;
+                if (!avg({ "NPC Pelvis [Pelv]" })) return false;
+                a_out -= fwd * 8.0f;
+                return true;
+            case kBoneGroin:
+                if (avg({ "NPC Genitals01 [Gen01]" }) || avg({ "VaginaB1" }) || avg({ "Clitoral1" })) return true;
+                if (!avg({ "NPC Pelvis [Pelv]" })) return false;
+                a_out += fwd * 6.0f - up * 6.0f;
+                return true;
+            case kBoneHands:
+                return avg({ "NPC L Hand [LHnd]", "NPC R Hand [RHnd]" });
+            case kBoneFeet:
+                return avg({ "NPC L Foot [Lft ]", "NPC R Foot [Rft ]" });
+            default:
+                return false;
+            }
+        }
+
+        // The pivot as it is right now: its middle (a_out: the frame Follow rides in), heading and name; a_aim = the
+        // point the camera looks at / goes round (the chosen body part of an actor, else the middle).
+        bool PivotRaw(int a_kind, RE::FormID a_ref, RE::NiPoint3& a_out, float& a_heading, std::string* a_name,
+            int a_bone = kBoneMiddle, RE::NiPoint3* a_aim = nullptr) {
             if (a_kind == 1 && a_ref) {
                 auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_ref);
                 if (ref && !ref->IsDeleted() && ref->Get3D() && CamFocus::RefPoint(ref, a_out)) {
                     a_heading = ref->GetAngleZ();
                     if (a_name) *a_name = CamFocus::Describe(ref);
+                    if (a_aim) {
+                        *a_aim = a_out;
+                        if (a_bone != kBoneMiddle) BonePoint(ref, a_bone, *a_aim);
+                    }
                     return true;
                 }
             }
@@ -347,6 +426,10 @@ namespace CamPath {
             auto* player = RE::PlayerCharacter::GetSingleton();
             a_heading    = player ? player->GetAngleZ() : 0.0f;
             if (a_name) *a_name = a_kind == 1 ? "you (the picked one is not here)" : "you";
+            if (a_aim) {
+                *a_aim = a_out;
+                if (a_bone != kBoneMiddle && player) BonePoint(player, a_bone, *a_aim);
+            }
             return true;
         }
 
@@ -355,7 +438,9 @@ namespace CamPath {
         struct Piv {
             int          kind    = 0;
             RE::FormID   ref     = 0;
-            RE::NiPoint3 pos{};
+            int          bone    = kBoneMiddle;
+            RE::NiPoint3 aim{};  // the body part (looked at, gone round)
+            RE::NiPoint3 pos{};  // the middle (Follow's frame)
             float        heading = 0.0f;
             bool         have    = false;
             std::string  name;
@@ -378,6 +463,8 @@ namespace CamPath {
             std::vector<int>          pivOf;    // per camera: its pivot in pivots
             std::vector<Piv>          pivots;   // the different pivots the cameras use
             std::vector<RE::NiPoint3> world;    // per camera: where it is this frame
+            std::vector<std::array<float, kSlowSamples + 1>> slowTab;  // per camera: seconds to each step of a slow-motion move
+            float                     shakeT   = 0.0f;  // the shake's own clock
             bool                      follow   = false;
             bool                      loop     = false;
             int                       k        = 0;   // camera
@@ -402,7 +489,7 @@ namespace CamPath {
         bool   s_pendingPlay   = false;
         double s_pendingUntil  = 0.0;
         int    s_pendingFrom   = 0;
-        bool   s_pendingRewind = false;
+        float  s_pendingRate   = 1.0f;
 
         // Record manual path (main thread).
         struct Record {
@@ -420,11 +507,96 @@ namespace CamPath {
             return s_play.loop && n > 1 ? 0 : -1;
         }
         int   Prev(int a_k) { return a_k > 0 ? a_k - 1 : -1; }  // a rewind stops at camera 1, loop or not
-        float MoveTime(int a_k) { return s_play.cams[a_k].move == kMoveCut ? 0.0f : s_play.cams[a_k].time; }
+        // Slow motion: the speed (0..1 of normal) at normal-time progress a_f of a move - a smooth dip round slowAt.
+        float SlowSpeed(const Cam& a_c, float a_f) {
+            if (!a_c.slowMo) return 1.0f;
+            const float half = (std::max)(a_c.slowLength, 0.05f) * 0.5f;
+            const float d    = std::fabs(a_f - a_c.slowAt);
+            if (d >= half) return 1.0f;
+            const float b = 0.5f * (1.0f + std::cos(kPi * d / half));
+            return 1.0f - (1.0f - std::clamp(a_c.slowSpeed, 0.05f, 1.0f)) * b;
+        }
+
+        // Seconds a move takes: its own at normal speed, more with slow motion, none for a cut.
+        float MoveTime(int a_k) {
+            const auto& c = s_play.cams[a_k];
+            if (c.move == kMoveCut) return 0.0f;
+            if (c.slowMo && a_k < static_cast<int>(s_play.slowTab.size())) return s_play.slowTab[a_k][kSlowSamples];
+            return c.time;
+        }
+
+        void BuildSlowTables() {
+            const int n = static_cast<int>(s_play.cams.size());
+            s_play.slowTab.assign(n, {});
+            for (int k = 0; k < n; ++k) {
+                const auto& c = s_play.cams[k];
+                if (!c.slowMo) continue;
+                auto& T = s_play.slowTab[k];
+                for (int i = 1; i <= kSlowSamples; ++i) {
+                    const float mid = (static_cast<float>(i) - 0.5f) / kSlowSamples;
+                    T[i]            = T[i - 1] + (c.time / kSlowSamples) / (std::max)(SlowSpeed(c, mid), 0.05f);
+                }
+            }
+        }
+
+        // Seconds a_t into move a_k -> how far along it is in normal time (0..1).
+        float NormalF(int a_k, float a_t) {
+            const auto& c = s_play.cams[a_k];
+            if (c.time <= 0.0f) return 1.0f;
+            if (!c.slowMo || a_k >= static_cast<int>(s_play.slowTab.size())) return Clamp01(a_t / c.time);
+            const auto& T = s_play.slowTab[a_k];
+            if (a_t <= 0.0f) return 0.0f;
+            if (a_t >= T[kSlowSamples]) return 1.0f;
+            const auto it   = std::upper_bound(T.begin(), T.end(), a_t);
+            const int  i    = static_cast<int>(std::distance(T.begin(), it));  // T[i - 1] <= a_t < T[i]
+            const float span = T[i] - T[i - 1];
+            const float w    = span > 1e-6f ? (a_t - T[i - 1]) / span : 1.0f;
+            return (static_cast<float>(i - 1) + w) / kSlowSamples;
+        }
+
+        // The world's time: a slow-motion move with "the world slows too" (1 = normal). The engine's CURRENT multiplier
+        // is written as well as the target (a target alone eases there - and from 0 never back, see FreezeTime).
+        bool  s_worldSlowed = false;
+        float s_worldBase   = 1.0f;
+        void WorldSpeed(float a_v) {
+            if (FreezeTime::IsFrozen()) return;  // Freeze world wins
+            REL::Relocation<float*> current{ RELOCATION_ID(511882, 388442) };
+            REL::Relocation<float*> target{ RELOCATION_ID(511883, 388443) };
+            if (a_v >= 0.999f) {
+                if (s_worldSlowed) {
+                    *current      = s_worldBase;
+                    *target       = s_worldBase;
+                    s_worldSlowed = false;
+                    SKSE::log::info("CamPath: the world runs at normal speed again ({:.2f})", s_worldBase);
+                }
+                return;
+            }
+            if (!s_worldSlowed) {
+                s_worldBase   = *target > 0.0f ? *target : 1.0f;
+                s_worldSlowed = true;
+                SKSE::log::info("CamPath: slow motion - the world slows down too");
+            }
+            *current = s_worldBase * a_v;
+            *target  = s_worldBase * a_v;
+        }
+
+        // Camera shake: layered waves at unrelated rates - bumps up and down, sway, small tilts (a cart on a rough road).
+        void ShakeAt(float a_t, float a_amount, RE::NiPoint3& a_pos, float& a_yaw, float& a_pitch, float& a_roll) {
+            if (a_amount <= 0.001f) return;
+            auto wave = [a_t](float a_f1, float a_f2, float a_f3, float a_p) {
+                return std::sin(a_t * a_f1 + a_p) * 0.5f + std::sin(a_t * a_f2 + a_p * 1.7f) * 0.3f + std::sin(a_t * a_f3 + a_p * 2.3f) * 0.2f;
+            };
+            a_pos.z += wave(9.1f, 15.3f, 23.7f, 0.0f) * 10.0f * a_amount;  // bumps
+            a_pos.x += wave(2.3f, 5.9f, 11.1f, 1.3f) * 4.0f * a_amount;    // sway
+            a_pos.y += wave(2.9f, 6.7f, 12.9f, 2.1f) * 4.0f * a_amount;
+            a_pitch += wave(7.7f, 13.1f, 19.3f, 0.7f) * 0.021f * a_amount;  // ~1.2 degrees
+            a_yaw += wave(3.1f, 7.3f, 10.7f, 2.9f) * 0.014f * a_amount;
+            a_roll += wave(4.3f, 8.9f, 14.1f, 1.9f) * 0.026f * a_amount;
+        }
 
         const Piv&   PivOf(int a_i) { return s_play.pivots[s_play.pivOf[a_i]]; }
         bool         HavePivot(int a_i) { return PivOf(a_i).have; }
-        RE::NiPoint3 AimPoint(int a_i) { return PivOf(a_i).pos + RE::NiPoint3{ 0.0f, 0.0f, s_settings.aimHeight }; }
+        RE::NiPoint3 AimPoint(int a_i) { return PivOf(a_i).aim + RE::NiPoint3{ 0.0f, 0.0f, s_settings.aimHeight }; }
 
         // Where camera a_i is now: where it was put, or its offset turned with its pivot (follow).
         RE::NiPoint3 WorldOf(int a_i) {
@@ -442,7 +614,7 @@ namespace CamPath {
         // cameras were put, or one that walked off, is still the one circled).
         RE::NiPoint3 CentreOf(int a_i) {
             const auto& p = PivOf(a_i);
-            if (p.have) return p.pos;
+            if (p.have) return p.aim;
             const auto& c = s_play.cams[a_i];
             return c.havePivot ? c.pivotPos : c.pos;
         }
@@ -567,6 +739,9 @@ namespace CamPath {
             float        blur = 0.0f;
             RE::NiPoint3 focus{};  // what the blur keeps sharp
             bool         haveFocus = false;
+            float        shake     = 0.0f;
+            bool         fovDirect = false;  // a crash zoom: no motion smoothing on the field of view
+            float        world     = 1.0f;   // the world's speed (slow motion)
         };
 
         bool EaseIn(int a_k) {
@@ -591,10 +766,11 @@ namespace CamPath {
                 out.blur      = CamBlurOf(k);
                 out.focus     = AimPoint(k);
                 out.haveFocus = HavePivot(k);
+                out.shake     = ck.shake;
                 return out;
             }
             const auto& cn = s_play.cams[next];
-            const float f  = Clamp01(ck.time > 0.0f ? s_play.t / ck.time : 1.0f);
+            const float f  = NormalF(k, s_play.t);
             const float u  = Ease(f, EaseIn(k), EaseOut(k, next));
             out.pos = MovePos(k, next, u);
             const RE::NiPoint3 ahead = MovePos(k, next, Ease(std::min(f + 0.02f, 1.0f), EaseIn(k), EaseOut(k, next))) - out.pos;
@@ -618,9 +794,13 @@ namespace CamPath {
                 const float half = std::atan(std::tan(s_play.segFov * 0.5f * kPi / 180.0f) * s_play.segDist / d);
                 out.fov = std::clamp(2.0f * half * 180.0f / kPi, 5.0f, 150.0f);
             } else {
-                out.fov = s_play.segFov + (cn.fov - s_play.segFov) * u;
+                // crash zoom: slow, then slamming in at the end (cubic)
+                out.fov       = s_play.segFov + (cn.fov - s_play.segFov) * (ck.crashZoom ? f * f * f : u);
+                out.fovDirect = ck.crashZoom;
             }
-            out.blur = CamBlurOf(k) + (CamBlurOf(next) - CamBlurOf(k)) * u;
+            out.blur  = CamBlurOf(k) + (CamBlurOf(next) - CamBlurOf(k)) * u;
+            out.shake = ck.shake + (cn.shake - ck.shake) * u;
+            out.world = ck.slowMo && ck.slowWorld ? SlowSpeed(ck, f) : 1.0f;
             if (HavePivot(k) && HavePivot(next)) {
                 out.focus     = Mix(AimPoint(k), AimPoint(next), u);
                 out.haveFocus = true;
@@ -691,38 +871,43 @@ namespace CamPath {
 
         void UpdatePivots(float a_dt, bool a_snap) {
             for (auto& p : s_play.pivots) {
-                RE::NiPoint3 raw{};
+                RE::NiPoint3 raw{}, rawAim{};
                 float        heading = 0.0f;
                 std::string  name;
-                if (!PivotRaw(p.kind, p.ref, raw, heading, &name)) {
+                if (!PivotRaw(p.kind, p.ref, raw, heading, &name, p.bone, &rawAim)) {
                     p.have = false;
                     continue;
                 }
                 if (!p.have || a_snap) {
                     p.pos     = raw;
+                    p.aim     = rawAim;
                     p.heading = heading;
                 } else {
                     const float w = ExpWeight(a_dt, kPivotHalfLife);
                     p.pos         = Mix(p.pos, raw, w);
+                    p.aim         = Mix(p.aim, rawAim, w);
                     p.heading    += WrapPi(heading - p.heading) * w;
                 }
                 p.have = true;
-                p.name = std::move(name);
+                p.name = p.bone != kBoneMiddle ? std::format("{} - {}", name, kBoneNames[p.bone]) : std::move(name);
             }
             const int n = Count();
             s_play.world.resize(n);
             for (int i = 0; i < n; ++i) s_play.world[i] = WorldOf(i);
         }
 
-        void WritePose(RE::FreeCameraState* a_fcs) {
+        void WritePose(RE::FreeCameraState* a_fcs, float a_shake) {
             float yaw = s_play.outYaw, pitch = 0.0f;
             LookAngles(s_play.outFwd, yaw, pitch);
-            s_play.outYaw     = yaw;
-            a_fcs->translation = s_play.outPos;
+            s_play.outYaw = yaw;
+            RE::NiPoint3 pos  = s_play.outPos;
+            float        roll = s_play.outRoll;
+            ShakeAt(s_play.shakeT, a_shake, pos, yaw, pitch, roll);  // on top of the path, never into it
+            a_fcs->translation = pos;
             a_fcs->rotation.x  = std::clamp(pitch, -kPitchLimit, kPitchLimit);
             a_fcs->rotation.y  = WrapPi(yaw);
             SetFOV(s_play.outFov);
-            FreeCam::SetExtraRoll(WrapPi(s_play.outRoll - FreeCam::GetRollRadians()));
+            FreeCam::SetExtraRoll(WrapPi(roll - FreeCam::GetRollRadians()));
         }
 
         void Publish() {
@@ -730,6 +915,7 @@ namespace CamPath {
             s_pubPlaying   = s_play.on;
             s_pubPaused    = s_play.on && s_play.paused;
             s_pubRewinding = s_play.on && !s_play.paused && s_play.rate < 0.0f;
+            s_pubRate      = s_play.on ? s_play.rate : 1.0f;
             s_pubAt        = s_play.on ? s_play.k : -1;
             s_pubProgress  = s_play.on && s_play.total > 0.0f ? Clamp01(s_play.elapsed / s_play.total) : 0.0f;
             s_pubRecording = s_rec.on;
@@ -748,6 +934,7 @@ namespace CamPath {
             FreeCam::SetRollRadians(WrapPi(FreeCam::GetRollRadians() + FreeCam::GetExtraRoll()));
             FreeCam::SetExtraRoll(0.0f);
             BlurOff();
+            WorldSpeed(1.0f);
             s_play.on      = false;
             s_play.paused  = false;
             s_play.gliding = false;
@@ -755,9 +942,9 @@ namespace CamPath {
             Publish();
         }
 
-        // Play from camera a_from (a_glide: 1 s from where the camera is; a_rewind: backwards from the end of its wait).
+        // Play from camera a_from (a_glide: 1 s from where the camera is; a_rate < 0: backwards from the end of its wait).
         bool StartPlay(RE::FreeCameraState* a_fcs, std::string_view a_source, int a_from = 0, bool a_glide = true,
-            bool a_rewind = false) {
+            float a_rate = 1.0f) {
             LoadOnce();
             const bool blurWas = s_play.blurOn;
             {
@@ -780,14 +967,17 @@ namespace CamPath {
                 const auto&      c    = s_play.cams[i];
                 const int        kind = c.pivotKind == 1 && c.pivotRef ? 1 : 0;
                 const RE::FormID ref  = kind == 1 ? c.pivotRef : 0;
+                const int        bone = std::clamp(c.bone, 0, kBoneCount - 1);
                 int              idx  = -1;
                 for (int j = 0; j < static_cast<int>(s_play.pivots.size()); ++j) {
-                    if (s_play.pivots[j].kind == kind && s_play.pivots[j].ref == ref) idx = j;
+                    const auto& q = s_play.pivots[j];
+                    if (q.kind == kind && q.ref == ref && q.bone == bone) idx = j;
                 }
                 if (idx < 0) {
                     Piv p;
                     p.kind = kind;
                     p.ref  = ref;
+                    p.bone = bone;
                     s_play.pivots.push_back(p);
                     idx = static_cast<int>(s_play.pivots.size()) - 1;
                 }
@@ -798,6 +988,7 @@ namespace CamPath {
                 s_play.baseYaw.push_back(rides ? WrapPi(c.yaw - c.pivotHeading) : c.yaw);
             }
             UpdatePivots(0.0f, true);
+            BuildSlowTables();
             for (int k = 0; k < n; ++k) {
                 s_play.total += s_play.cams[k].wait;
                 if (Next(k) >= 0) s_play.total += MoveTime(k);
@@ -805,10 +996,10 @@ namespace CamPath {
             const int from = std::clamp(a_from, 0, n - 1);
             s_play.k       = from;
             for (int k = 0; k < from; ++k) s_play.elapsed += s_play.cams[k].wait + MoveTime(k);
-            if (a_rewind) {
+            if (a_rate < 0.0f) {
                 s_play.t        = s_play.cams[from].wait;
                 s_play.elapsed += s_play.t;
-                s_play.rate     = -kRewindRate;
+                s_play.rate     = a_rate;
             }
             s_play.fovCarry = s_play.cams[from].fov;
             s_play.fromPos  = a_fcs->translation;
@@ -827,23 +1018,24 @@ namespace CamPath {
             s_play.on = true;
             std::string pivots;
             for (const auto& p : s_play.pivots) pivots += (pivots.empty() ? "" : ", ") + (p.have ? p.name : std::string("not found"));
-            Event(std::format("camera path {} ({}) - {} cameras, {:.0f} s{}{}, pivot {}{}", a_rewind ? "rewinds" : "plays", a_source, n,
+            Event(std::format("camera path {} ({}) - {} cameras, {:.0f} s{}{}, pivot {}{}",
+                a_rate < 0.0f ? (a_rate < -1.5f ? "rewinds" : "plays backwards") : "plays", a_source, n,
                 s_play.total, from > 0 ? std::format(", from camera {}", from + 1) : "", s_play.loop ? " (loop)" : "", pivots,
                 s_play.follow ? ", following" : ""));
             Publish();
             return true;
         }
 
-        // Play (or rewind) from camera a_from: right away in TFCam's free camera, else once it has started.
-        void Begin(int a_from, bool a_rewind, std::string_view a_source) {
+        // Play (a_rate < 0: backwards) from camera a_from: right away in TFCam's free camera, else once it has started.
+        void Begin(int a_from, float a_rate, std::string_view a_source) {
             if (auto* fcs = CurrentFreeCam()) {
                 if (s_play.on) EndPlay(a_source);
-                StartPlay(fcs, a_source, a_from, true, a_rewind);
+                StartPlay(fcs, a_source, a_from, true, a_rate);
                 return;
             }
-            s_pendingPlay   = true;
-            s_pendingFrom   = a_from;
-            s_pendingRewind = a_rewind;
+            s_pendingPlay = true;
+            s_pendingFrom = a_from;
+            s_pendingRate = a_rate;
             s_pendingUntil  = Now() + kPendingTimeout;
             Event(std::format("play ({}): entering TFCam free-fly first", a_source));
             SlccBridge::RequestEnterFreeFly("Camera path");
@@ -863,15 +1055,45 @@ namespace CamPath {
                 return;
             }
             if (s_play.on) {
-                if (s_play.paused || s_play.rate < 0.0f) {  // go on - forwards, a rewind included
+                // the play / pause key goes on the way it was going; the Play button always forwards
+                if (s_play.paused || (a_state > 0 && s_play.rate < 0.0f)) {
                     s_play.paused = false;
-                    s_play.rate   = 1.0f;
-                    Event(std::format("going on ({})", a_source));
+                    if (a_state > 0) s_play.rate = 1.0f;
+                    Event(std::format("going on{} ({})", s_play.rate < 0.0f ? " backwards" : "", a_source));
                     Publish();
                 }
                 return;
             }
-            Begin(0, false, a_source);
+            Begin(0, 1.0f, a_source);
+        }
+
+        // Backwards to camera 1 at a_rate (< 0): from where the path is, or from its end when it is not playing.
+        void Reverse(float a_rate, const char* a_what) {
+            if (s_play.on) {
+                s_play.rate   = a_rate;
+                s_play.paused = false;
+                Event(a_what);
+                Publish();
+                return;
+            }
+            int n;
+            {
+                std::scoped_lock lock(s_lock);
+                n = static_cast<int>(s_cams.size());
+            }
+            if (n < 2) {
+                Notify("Camera path: add at least 2 cameras first");
+                return;
+            }
+            Begin(n - 1, a_rate, std::format("{} from the end", a_what));
+        }
+
+        // Clean screen (all game UI hidden). Main thread.
+        std::atomic<bool> s_clean{ false };
+        void ApplyClean(bool a_on, std::string_view a_why) {
+            if (auto* ui = RE::UI::GetSingleton()) ui->ShowMenus(!a_on);
+            Event(a_on ? std::format("clean screen: all game UI hidden ({})", a_why)
+                       : std::format("clean screen off - the game UI is back ({})", a_why));
         }
 
         // ---- editing (main thread) ---------------------------------------------------------------------------------
@@ -950,7 +1172,7 @@ namespace CamPath {
             Notify(std::format("Camera {} put into the path here", at + 1));
             const bool  paused = s_play.paused;
             const float rate   = s_play.rate;
-            if (StartPlay(a_fcs, "a camera went in", at, false, false)) {
+            if (StartPlay(a_fcs, "a camera went in", at, false, 1.0f)) {
                 s_play.paused = paused;
                 s_play.rate   = rate;
                 Publish();
@@ -1223,7 +1445,7 @@ namespace CamPath {
         if (s_pendingPlay) {
             if (a_driving) {
                 s_pendingPlay = false;
-                StartPlay(a_fcs, "after entering free-fly", s_pendingFrom, true, s_pendingRewind);
+                StartPlay(a_fcs, "after entering free-fly", s_pendingFrom, true, s_pendingRate);
             } else if (Now() > s_pendingUntil) {
                 s_pendingPlay = false;
                 Event("play: TFCam free-fly did not start in time");
@@ -1236,6 +1458,8 @@ namespace CamPath {
                 RecordFrame(a_fcs, dt);
             }
         }
+        // clean screen: the window steps aside while the path plays, and comes back when it pauses / ends
+        CamPathWindow::AutoHide(s_clean && s_play.on && !s_play.paused);
         if (!s_play.on) return;
         if (!a_driving) {
             EndPlay("another camera (FCFW timeline / SLCC) took the free camera");
@@ -1249,6 +1473,10 @@ namespace CamPath {
             step = Advance(dt * s_play.rate);
         }
         const Target tg = Evaluate();
+        if (!s_play.paused) {
+            s_play.shakeT += dt;
+            if (!s_play.gliding) WorldSpeed(tg.world);
+        }
         if (s_play.gliding) {
             const float w  = SmoothStep(s_play.glideT / kStartGlide);
             s_play.outPos  = Mix(s_play.fromPos, tg.pos, w);
@@ -1271,13 +1499,13 @@ namespace CamPath {
                 s_play.outPos  = Mix(s_play.outPos, tg.pos, w);
                 s_play.outFwd  = SlerpDir(s_play.outFwd, tg.fwd, w);
                 s_play.outRoll += WrapPi(tg.roll - s_play.outRoll) * w;
-                s_play.outFov += (tg.fov - s_play.outFov) * w;
+                s_play.outFov = tg.fovDirect ? tg.fov : s_play.outFov + (tg.fov - s_play.outFov) * w;
             }
             s_play.blur    = tg.blur;
             s_play.haveOut = true;
         }
         s_play.snapOut = false;
-        WritePose(a_fcs);
+        WritePose(a_fcs, tg.shake);
         if (s_play.blur > 0.01f && tg.haveFocus) {
             CamBlur::External(true, tg.focus, s_play.blur);
             s_play.blurOn = true;
@@ -1290,8 +1518,8 @@ namespace CamPath {
         } else if (step == kAtStart) {
             s_play.paused = true;
             s_play.rate   = 1.0f;
-            Event("rewound to camera 1 - paused (Play goes on from here)");
-            Notify("Rewound to camera 1");
+            Event("back at camera 1 - paused (Play goes on from here)");
+            Notify("Back at camera 1");
             Publish();
         }
     }
@@ -1349,12 +1577,17 @@ namespace CamPath {
             Event("camera path stopped (the free camera ended)");
             Publish();
         }
+        WorldSpeed(1.0f);
+        if (s_clean.exchange(false)) ApplyClean(false, "the free camera ended");
+        CamPathWindow::AutoHide(false);
     }
 
     void OnGameLoad() {
         s_pendingPlay = false;
         s_play.on     = false;
         s_rec.on      = false;
+        s_worldSlowed = false;  // a load sets the world's time itself
+        if (s_clean.exchange(false)) ApplyClean(false, "a game load");
         {
             std::scoped_lock lock(s_lock);
             s_refNames.clear();  // a reference may be here now, or gone
@@ -1391,6 +1624,8 @@ namespace CamPath {
         s.playing    = s_pubPlaying;
         s.paused     = s_pubPaused;
         s.rewinding  = s_pubRewinding;
+        s.rate       = s_pubRate;
+        s.cleanScreen = s_clean;
         s.recording  = s_pubRecording;
         s.freeCam    = s_pubFreeCam;
         s.frozen     = FreezeTime::IsFrozen();
@@ -1432,6 +1667,15 @@ namespace CamPath {
             c.zoomTrick    = a_o.zoomTrick;
             c.bendSide     = std::clamp(std::isfinite(a_o.bendSide) ? a_o.bendSide : 0.0f, -1.0f, 1.0f);
             c.bendUp       = std::clamp(std::isfinite(a_o.bendUp) ? a_o.bendUp : 0.0f, -1.0f, 1.0f);
+            c.fov          = std::clamp(std::isfinite(a_o.fov) ? a_o.fov : 70.0f, 5.0f, 150.0f);
+            c.bone         = std::clamp(a_o.bone, 0, kBoneCount - 1);
+            c.shake        = std::clamp(std::isfinite(a_o.shake) ? a_o.shake : 0.0f, 0.0f, 1.0f);
+            c.crashZoom    = a_o.crashZoom;
+            c.slowMo       = a_o.slowMo;
+            c.slowAt       = std::clamp(std::isfinite(a_o.slowAt) ? a_o.slowAt : 0.66f, 0.0f, 1.0f);
+            c.slowSpeed    = std::clamp(std::isfinite(a_o.slowSpeed) ? a_o.slowSpeed : 0.2f, 0.05f, 1.0f);
+            c.slowLength   = std::clamp(std::isfinite(a_o.slowLength) ? a_o.slowLength : 0.3f, 0.05f, 1.0f);
+            c.slowWorld    = a_o.slowWorld;
         }
         SaveCurrentSoon();
         return true;
@@ -1507,30 +1751,25 @@ namespace CamPath {
     }
 
     void RequestPlayFrom(int a_index) {
-        Queue([a_index] { Begin(a_index, false, std::format("play from camera {}", a_index + 1)); });
+        Queue([a_index] { Begin(a_index, 1.0f, std::format("play from camera {}", a_index + 1)); });
     }
 
     void RequestRewind() {
-        Queue([] {
-            if (s_play.on) {
-                s_play.rate   = -kRewindRate;
-                s_play.paused = false;
-                Event("rewinding");
-                Publish();
-                return;
-            }
-            int n;
-            {
-                std::scoped_lock lock(s_lock);
-                n = static_cast<int>(s_cams.size());
-            }
-            if (n < 2) {
-                Notify("Camera path: add at least 2 cameras first");
-                return;
-            }
-            Begin(n - 1, true, "rewind from the end");
-        });
+        Queue([] { Reverse(-kRewindRate, "rewinding"); });
     }
+
+    void RequestPlayBackwards() {
+        Queue([] { Reverse(-1.0f, "playing backwards"); });
+    }
+
+    void SetCleanScreen(bool a_on) {
+        if (s_clean.exchange(a_on) == a_on) return;
+        Queue([a_on] { ApplyClean(a_on, "window"); });
+    }
+
+    bool CleanScreen() { return s_clean; }
+
+    const char* BoneName(int a_bone) { return kBoneNames[std::clamp(a_bone, 0, kBoneCount - 1)]; }
 
     void RequestPause() {
         Queue([] {

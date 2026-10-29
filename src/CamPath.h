@@ -21,8 +21,11 @@
 //                   keep their own view), which way round, seconds, slow start + stop, bend left / right and up /
 //                   down (straight line and curve), zoom trick (dolly zoom: the FOV changes so the pivot keeps its
 //                   size).
-// Play from any camera, rewind (the path runs backwards to camera 1), and a camera added while the path plays goes
-// into the path at that moment.
+// Play from any camera, play backwards, rewind (backwards at 2x to camera 1), and a camera added while the path plays
+// goes into the path at that moment.
+// Effects: the pivot's point (head, eyes, chest, hips, bum, groin, hands, feet of an actor), camera shake (a bumpy
+// cart), crash zoom (the zoom to the next camera in a fast burst at the end), slow motion on part of a move (the world
+// slows too if asked). Clean screen hides all game UI for recording; the window steps aside while the path plays.
 // Motion smoothness takes the edge off sudden turns and speed changes. Record manual path: fly by hand and the
 // flight becomes cameras.
 //
@@ -34,6 +37,19 @@ namespace CamPath {
     enum Look : int { kLookPivot = 0, kLookSet = 1, kLookAhead = 2 };
     enum Move : int { kMoveStraight = 0, kMoveCurve = 1, kMoveAround = 2, kMoveCut = 3 };
     enum Way : int { kWayShortest = 0, kWayLeft = 1, kWayRight = 2 };
+    enum Bone : int {
+        kBoneMiddle = 0,
+        kBoneHead,
+        kBoneEyes,
+        kBoneChest,
+        kBoneHips,
+        kBoneBum,
+        kBoneGroin,
+        kBoneHands,
+        kBoneFeet,
+        kBoneCount
+    };
+    const char* BoneName(int a_bone);
 
     struct Cam {
         // where the camera was put (world) and the pivot at that moment
@@ -62,6 +78,14 @@ namespace CamPath {
         bool  zoomTrick = false;
         float bendSide  = 0.0f;  // -1..1: bends left / right (1 = the middle sits half the distance off the line)
         float bendUp    = 0.0f;  // -1..1: bends down / up
+        int   bone      = kBoneMiddle;  // the pivot's point (actors)
+        float shake     = 0.0f;   // 0..1: camera shake here, blending to the next camera's on the way
+        bool  crashZoom = false;  // the zoom (field of view) to the next camera comes in a fast burst at the end
+        bool  slowMo     = false;  // slow motion on part of the way on
+        float slowAt     = 0.66f;  // where: 0..1 of the way
+        float slowSpeed  = 0.2f;   // how slow: 0.05..1 of normal speed
+        float slowLength = 0.3f;   // how much of the way: 0.05..1
+        bool  slowWorld  = false;  // the world slows down with it
     };
 
     struct Settings {
@@ -99,7 +123,9 @@ namespace CamPath {
         std::vector<std::string> camPivotNames;  // per camera
         bool             playing      = false;
         bool             paused       = false;
-        bool             rewinding    = false;
+        bool             rewinding    = false;  // going backwards (rate < 0), not paused
+        float            rate         = 1.0f;   // 1 forwards, -1 playing backwards, -2 rewinding
+        bool             cleanScreen  = false;
         bool             recording    = false;
         bool             freeCam      = false;  // TFCam drives a free camera (cameras can be added)
         bool             frozen       = false;
@@ -123,12 +149,16 @@ namespace CamPath {
     void RequestPlay(int a_state);  // 1 play (from the start, or go on after a pause), 0 stop, -1 play / pause
     void RequestPlayFrom(int a_index);
     void RequestRewind();           // run the path backwards to camera 1 (from the end when it is not playing)
+    void RequestPlayBackwards();    // the same at normal speed
     void RequestPause();
     // The pivot for new cameras (a_cam = -1), every camera (a_cam = -2) or one camera.
     void RequestPickPivot(int a_cam = -1);     // what the free camera points at
     void RequestPivotConsole(int a_cam = -1);  // the console's selected reference
     void RequestPivotMe(int a_cam = -1);
     void RequestPivotToAll();                  // every camera takes the pivot for new cameras
+    // Clean screen: all game UI hidden (the console's tm - SMF HUD elements follow it); off when the free camera ends.
+    void SetCleanScreen(bool a_on);
+    bool CleanScreen();
     void RequestFreezeWorld();
     void RequestRecord(int a_state);  // 1 start, 0 stop, -1 toggle
     void RequestSaveAs(std::string a_name);

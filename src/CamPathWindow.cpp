@@ -4,6 +4,8 @@
 
 #include "SKSEMenuFramework.h"
 
+#include <Windows.h>
+
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -19,6 +21,11 @@ namespace CamPathWindow {
         std::atomic<long long>                     s_closedAt{ 0 };  // ms; the key that closed it must not reopen it
         char                                       s_saveName[48] = {};
         bool                                       s_confirmClear = false;
+        // 0.18.0: our SKSE Menu Framework fork can keep the game running behind this window (no freeze, no blur), so a
+        // path plays with the window open. Without it (the public SMF) the window closes on Play as before.
+        bool                                       s_keepsRunning = false;
+        std::atomic<bool>                          s_autoHidden{ false };
+        bool                                       s_lastAutoHide = false;
 
         long long NowMs() {
             return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -42,6 +49,8 @@ namespace CamPathWindow {
         constexpr unsigned kIconWalk       = 0xf554;
         constexpr unsigned kIconRepeat     = 0xf363;
         constexpr unsigned kIconBack       = 0xf04a;
+        constexpr unsigned kIconReverse    = 0xf0d9;
+        constexpr unsigned kIconEyeSlash   = 0xf070;
 
         const ImGuiMCP::ImVec4 kGrey{ 0.6f, 0.6f, 0.6f, 1.0f };
         const ImGuiMCP::ImVec4 kGold{ 1.0f, 0.82f, 0.35f, 1.0f };
@@ -92,9 +101,10 @@ namespace CamPathWindow {
                 ImGuiMCP::SameLine();
                 if (Small(kIconPlay, "Play from here", "playfrom")) {
                     CamPath::RequestPlayFrom(a_i);
-                    Close();  // watch it
+                    if (!s_keepsRunning) Close();  // watch it (a window that froze the world would hide it)
                 }
-                Tip("Plays the path starting at this camera (the window closes so you can watch)");
+                Tip(s_keepsRunning ? "Plays the path starting at this camera"
+                                   : "Plays the path starting at this camera (the window closes so you can watch)");
                 ImGuiMCP::SameLine();
                 if (Small(kIconPin, "Move it to where I am", "here")) CamPath::RequestSetCamHere(a_i);
                 Tip("This camera takes the free camera's spot and view");
@@ -112,6 +122,12 @@ namespace CamPathWindow {
                 ImGuiMCP::SameLine();
                 if (Small(kIconTerminal, "Console", "cconsole")) CamPath::RequestPivotConsole(a_i);
                 Tip("This camera's pivot: the person or thing you clicked in the console");
+                static const char* const kBones[] = { CamPath::BoneName(0), CamPath::BoneName(1), CamPath::BoneName(2),
+                    CamPath::BoneName(3), CamPath::BoneName(4), CamPath::BoneName(5), CamPath::BoneName(6),
+                    CamPath::BoneName(7), CamPath::BoneName(8) };
+                ImGuiMCP::SetNextItemWidth(180.0f);
+                changed |= ImGuiMCP::Combo("Aim at its##bone", &a_c.bone, kBones, CamPath::kBoneCount, -1);
+                Tip("A person's head, eyes, chest, hips, bum, groin, hands or feet (things only have a middle)");
 
                 ImGuiMCP::Text("Looks at:");
                 ImGuiMCP::SameLine();
@@ -123,6 +139,9 @@ namespace CamPathWindow {
 
                 ImGuiMCP::SetNextItemWidth(220.0f);
                 changed |= ImGuiMCP::SliderFloat("Wait here (seconds)##wait", &a_c.wait, 0.0f, 10.0f, "%.1f", 0);
+                ImGuiMCP::SetNextItemWidth(220.0f);
+                changed |= ImGuiMCP::SliderFloat("Zoom (field of view)##fov", &a_c.fov, 10.0f, 120.0f, "%.0f", 0);
+                Tip("Smaller = zoomed in. Two cameras on the same spot with different zoom + Crash zoom = a crash zoom.");
                 changed |= ImGuiMCP::Checkbox("Blur the background##blur", &a_c.blur);
                 if (a_c.blur) {
                     ImGuiMCP::SameLine();
@@ -131,6 +150,43 @@ namespace CamPathWindow {
                 }
 
                 const bool hasNext = a_i + 1 < a_count || (a_loop && a_count > 1);
+                if (ImGuiMCP::TreeNode("Effects##fx")) {
+                    int shake = static_cast<int>(std::lround(a_c.shake * 100.0f));
+                    ImGuiMCP::SetNextItemWidth(220.0f);
+                    if (ImGuiMCP::SliderInt("Camera shake##shake", &shake, 0, 100, "%d", 0)) {
+                        a_c.shake = static_cast<float>(shake) / 100.0f;
+                        changed   = true;
+                    }
+                    Tip("Bumps and sways like a camera on a cart (100 = a rough road). Blends into the next camera's shake.");
+                    if (hasNext && a_c.move != CamPath::kMoveCut) {
+                        changed |= ImGuiMCP::Checkbox("Crash zoom to the next camera##crash", &a_c.crashZoom);
+                        Tip("The zoom to the next camera's zoom comes slow, then slams in at the end");
+                        changed |= ImGuiMCP::Checkbox("Slow motion on the way##slow", &a_c.slowMo);
+                        if (a_c.slowMo) {
+                            int at = static_cast<int>(std::lround(a_c.slowAt * 100.0f));
+                            int sp = static_cast<int>(std::lround(a_c.slowSpeed * 100.0f));
+                            int ln = static_cast<int>(std::lround(a_c.slowLength * 100.0f));
+                            ImGuiMCP::SetNextItemWidth(220.0f);
+                            if (ImGuiMCP::SliderInt("Where (% of the way)##slowat", &at, 0, 100, "%d", 0)) {
+                                a_c.slowAt = static_cast<float>(at) / 100.0f;
+                                changed    = true;
+                            }
+                            ImGuiMCP::SetNextItemWidth(220.0f);
+                            if (ImGuiMCP::SliderInt("How slow (% of normal speed)##slowsp", &sp, 5, 100, "%d", 0)) {
+                                a_c.slowSpeed = static_cast<float>(sp) / 100.0f;
+                                changed       = true;
+                            }
+                            ImGuiMCP::SetNextItemWidth(220.0f);
+                            if (ImGuiMCP::SliderInt("How much of the way (%)##slowln", &ln, 5, 100, "%d", 0)) {
+                                a_c.slowLength = static_cast<float>(ln) / 100.0f;
+                                changed        = true;
+                            }
+                            changed |= ImGuiMCP::Checkbox("The world slows down too##sloww", &a_c.slowWorld);
+                            Tip("Everyone moves in slow motion while the camera crawls (not while the world is frozen)");
+                        }
+                    }
+                    ImGuiMCP::TreePop();
+                }
                 if (hasNext) {
                     const int next = a_i + 1 < a_count ? a_i + 2 : 1;
                     ImGuiMCP::SeparatorText(std::format("Then to camera {}", next).c_str());
@@ -241,22 +297,34 @@ namespace CamPathWindow {
             } else {
                 if (Big(kIconPlay, s.paused ? "Go on" : "Play", "play", 1, s.cams.size() >= 2)) {
                     CamPath::RequestPlay(1);
-                    Close();  // watch it
+                    if (!s_keepsRunning) Close();  // watch it
                 }
-                Tip("Plays the cameras in order (the window closes so you can watch)");
+                Tip(s_keepsRunning ? "Plays the cameras in order" : "Plays the cameras in order (the window closes so you can watch)");
             }
             ImGuiMCP::SameLine();
             if (Big(kIconStop, "Stop", "stop", 2, s.playing)) CamPath::RequestPlay(0);
             ImGuiMCP::SameLine();
-            if (Big(kIconBack, "Rewind", "rewind", s.rewinding ? 3 : 0, s.cams.size() >= 2)) {
+            if (Big(kIconBack, "Rewind", "rewind", s.rewinding && s.rate < -1.5f ? 3 : 0, s.cams.size() >= 2)) {
                 CamPath::RequestRewind();
-                Close();  // watch it
+                if (!s_keepsRunning) Close();  // watch it
             }
             Tip("Runs the path backwards to camera 1 and waits there (from the end if it is not playing)");
             ImGuiMCP::SameLine();
             if (Big(kIconSnow, s.frozen ? "Unfreeze world" : "Freeze world", "freeze", s.frozen ? 3 : 0)) CamPath::RequestFreezeWorld();
             Tip("Stops everyone in the world (the camera still moves)");
 
+            if (Big(kIconReverse, "Play backwards", "backwards", s.rewinding && s.rate > -1.5f ? 3 : 0, s.cams.size() >= 2)) {
+                CamPath::RequestPlayBackwards();
+                if (!s_keepsRunning) Close();
+            }
+            Tip("Plays the path backwards at normal speed, to camera 1 (from the end if it is not playing)");
+            ImGuiMCP::SameLine();
+            if (Big(kIconEyeSlash, s.cleanScreen ? "Show the game UI" : "Clean screen", "clean", s.cleanScreen ? 3 : 0)) {
+                CamPath::SetCleanScreen(!s.cleanScreen);
+            }
+            Tip("Hides ALL game UI (HUD, widgets, messages) for recording and screenshots.\n"
+                "While the path plays this window steps aside too, and comes back when it pauses or ends.");
+            ImGuiMCP::SameLine();
             if (s.recording) {
                 if (Big(kIconStop, "Stop recording", "rec", 2)) CamPath::RequestRecord(0);
                 ImGuiMCP::SameLine();
@@ -271,8 +339,9 @@ namespace CamPathWindow {
             }
             if (s.playing) {
                 ImGuiMCP::ProgressBar(s.progress, ImGuiMCP::ImVec2(-1.0f, 0.0f),
-                    std::format("{} - camera {} of {}", s.paused ? "Paused" : (s.rewinding ? "Rewinding" : "Playing"), s.atCam + 1,
-                        s.cams.size()).c_str());
+                    std::format("{} - camera {} of {}",
+                        s.paused ? "Paused" : (s.rewinding ? (s.rate < -1.5f ? "Rewinding" : "Playing backwards") : "Playing"),
+                        s.atCam + 1, s.cams.size()).c_str());
             }
 
             // ---- pivot
@@ -367,6 +436,15 @@ namespace CamPathWindow {
         if (s_window) return;
         s_window = SKSEMenuFramework::AddWindow(Render, true);
         if (s_window) s_window->IsOpen = false;
+        using KeepFn = void (*)(SKSEMenuFramework::Model::WindowInterface*, bool);
+        const HMODULE smf  = ::GetModuleHandleW(L"SKSEMenuFramework");
+        const auto    keep = smf ? reinterpret_cast<KeepFn>(::GetProcAddress(smf, "SetWindowKeepGameRunning")) : nullptr;
+        if (s_window && keep) {
+            keep(s_window, true);
+            s_keepsRunning = true;
+        }
+        SKSE::log::info("CamPathWindow: {}", s_keepsRunning ? "the game keeps running behind the window (SMF fork)"
+                                                            : "a window that pauses the game (closes on Play)");
         SKSE::log::info("CamPathWindow: {}", s_window ? "registered" : "SKSE Menu Framework window unavailable");
     }
 
@@ -384,17 +462,38 @@ namespace CamPathWindow {
 
     bool OnMenuInput(RE::InputEvent* a_event) {
         if (!IsOpen()) return false;
-        const int key = CamPath::Get().openKey;
-        if (key == 0) return false;
+        const auto& set = CamPath::Get();
+        if (FreeCamMenu::IsCapturingKey()) return false;
+        if (auto* io = ImGuiMCP::GetIO(); io && io->WantTextInput) return false;  // typing a path name
+        bool used = false;
         for (auto* evt = a_event; evt; evt = evt->next) {
             if (evt->GetEventType() != RE::INPUT_EVENT_TYPE::kButton) continue;
             auto* btn = evt->AsButtonEvent();
             if (!btn || !btn->IsDown() || btn->GetDevice() != RE::INPUT_DEVICE::kKeyboard) continue;
-            if (static_cast<int>(btn->GetIDCode()) == key && !FreeCamMenu::IsCapturingKey()) {
+            const int code = static_cast<int>(btn->GetIDCode());
+            if (set.openKey && code == set.openKey) {
                 Close();
                 return true;
             }
+            // the game gets no keys while this window is open, so its path keys work here
+            if (set.playKey && code == set.playKey) {
+                CamPath::RequestPlay(-1);
+                used = true;
+            } else if (set.addKey && code == set.addKey) {
+                CamPath::RequestAddCam();
+                used = true;
+            }
         }
-        return false;
+        return used;
+    }
+
+    void AutoHide(bool a_hide) {
+        if (!s_window || a_hide == s_lastAutoHide) return;  // edges only: never fights the window key
+        s_lastAutoHide = a_hide;
+        if (a_hide) {
+            if (s_window->IsOpen.exchange(false)) s_autoHidden = true;
+        } else if (s_autoHidden.exchange(false)) {
+            s_window->IsOpen = true;
+        }
     }
 }

@@ -9,6 +9,7 @@
 #include "ConvoCam.h"
 #include "CamBlur.h"
 #include "CamPath.h"
+#include "HUDHider.h"
 
 #include <spdlog/sinks/basic_file_sink.h>
 #include <ShlObj.h>
@@ -150,6 +151,7 @@ namespace {
             ConvoCam::OnGameLoad("save loaded");
             CamPath::OnGameLoad();       // 0.17.0
             CamBlur::Off("save loaded");  // 0.17.0
+            HUDHider::OnGameLoaded(FreeCam::IsActive());  // 0.18.0
             SlccBridge::OnGameLoaded("save loaded");
             break;
         case SKSE::MessagingInterface::kNewGame:

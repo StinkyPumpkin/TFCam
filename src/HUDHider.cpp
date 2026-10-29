@@ -161,4 +161,16 @@ namespace HUDHider {
             ShowHUD();
         }
     }
+
+    // 0.18.0: a save load rebuilds the HUD (shown again) and the Aroused Widget drops a HideAll sent before the load,
+    // while the free camera can stay on through the load (user 10-28: entered at the main menu, everything showed all
+    // session). Hidden again then; otherwise only our "hidden" note is dropped.
+    void OnGameLoaded(bool a_freeCam) {
+        if (!s_hidden) return;
+        s_hidden = false;
+        if (a_freeCam && s_enabled) {
+            HideHUD();
+            SKSE::log::info("HUDHider: hidden again after the load (the free camera is still on)");
+        }
+    }
 }
