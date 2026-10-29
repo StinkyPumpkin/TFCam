@@ -597,7 +597,6 @@ float2 PSChroma(VsOut i) : SV_Target {
             SetStatus("off - the game's draw call was not found");
             return;
         }
-        SKSE::AllocTrampoline(14);
         MenuDrawHook::func = SKSE::GetTrampoline().write_call<5>(site, MenuDrawHook::thunk);
         SKSE::log::info("FrameFx: Main::Draw's menu draw hooked (image effects + video, before the UI)");
     }

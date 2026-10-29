@@ -129,6 +129,9 @@ namespace {
             if (!AddressLibraryPresent()) {
                 break;
             }
+            // One reservation for every trampoline hook: CommonLib sets the trampoline up only on the FIRST
+            // AllocTrampoline call, so a second call adds nothing. 14 bytes per write_call<5>: FixedCam + FrameFx.
+            SKSE::AllocTrampoline(2 * 14);
             FreeCam::Install();
             CellEntryCam::Install();  // 0.9.0: zoom + orbit after a loading screen into a new cell
             SlccBridge::Install();

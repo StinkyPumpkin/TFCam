@@ -178,7 +178,6 @@ namespace FixedCam {
             return;
         }
         const auto target = site + 5 + *reinterpret_cast<const std::int32_t*>(code + 1);
-        SKSE::AllocTrampoline(14);
         CameraUpdateHook::func = SKSE::GetTrampoline().write_call<5>(site, CameraUpdateHook::thunk);
         SKSE::log::info("FixedCam: PlayerCamera::Update + 0x1A6 hooked (it called SkyrimSE.exe+{:X})",
             target - REL::Module::get().base());
