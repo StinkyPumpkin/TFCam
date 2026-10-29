@@ -1,6 +1,7 @@
 #include "CamPath.h"
 #include "CamBlur.h"
 #include "CamFocus.h"
+#include "CamPathView.h"
 #include "CamPathWindow.h"
 #include "FreeCamController.h"
 #include "FreezeTime.h"
@@ -1061,27 +1062,8 @@ namespace CamPath {
             Publish();
         }
 
-        // Play from camera a_from (a_glide: 1 s from where the camera is; a_rate < 0: backwards from the end of its wait).
-        bool StartPlay(RE::FreeCameraState* a_fcs, std::string_view a_source, int a_from = 0, bool a_glide = true,
-            float a_rate = 1.0f) {
-            LoadOnce();
-            const bool blurWas = s_play.blurOn;
-            {
-                std::scoped_lock lock(s_lock);
-                if (s_cams.size() < 2) {
-                    EventLocked(std::format("play refused ({}): {} camera(s)", a_source, s_cams.size()));
-                    Notify("Camera path: add at least 2 cameras first");
-                    return false;
-                }
-                s_play         = Play{};
-                s_play.blurOn  = blurWas;
-                s_play.cams    = s_cams;
-                s_play.editGen = s_editGen.load();
-                s_play.follow = s_follow;
-                s_play.loop   = s_loop;
-            }
-            if (s_rec.on) s_rec.on = false;
-            SceneCam::StandDown("camera path plays");
+        // The play state for s_play.cams: each camera's pivot, where it is now, the slow-motion tables, the total time.
+        void PreparePlay() {
             const int n = Count();
             for (int i = 0; i < n; ++i) {
                 const auto&      c    = s_play.cams[i];
@@ -1113,6 +1095,101 @@ namespace CamPath {
                 s_play.total += s_play.cams[k].wait;
                 if (Next(k) >= 0) s_play.total += MoveTime(k);
             }
+        }
+
+        // ---- the path drawn in the world (10-29) ---------------------------------------------------------------
+        // The shape of each move (not its timing) and the cameras, for CamPathView: from the playing path when it
+        // plays (its pivots as they are now), else from a preview set up like Play's (the play state is put back).
+        std::atomic<bool> s_clean{ false };  // Clean screen is on (ApplyClean below)
+        double s_viewNext = 0.0;
+        int    s_viewGen  = -1;
+
+        RE::NiPoint3 ShapeAt(int a_k, int a_next, float a_p) {
+            if (s_play.cams[a_k].move == kMoveAround) return MovePos(a_k, a_next, a_p);  // no pivot: MovePos curves
+            return LinePos(a_k, a_next, a_p);
+        }
+
+        void BuildView(CamPathView::View& a_out) {
+            const int n = Count();
+            for (int k = 0; k < n; ++k) {
+                const auto&        c = s_play.cams[k];
+                CamPathView::Mark  m;
+                m.pos                  = s_play.world[k];
+                const RE::NiPoint3 set = Forward(SetYaw(k), c.pitch);
+                m.fwd       = c.look == kLookPivot && HavePivot(k) ? Normalized(AimPoint(k) - m.pos, set) : set;
+                m.havePivot = HavePivot(k);
+                if (m.havePivot) m.pivot = AimPoint(k);
+                a_out.cams.push_back(m);
+                const int next = Next(k);
+                if (next < 0) continue;
+                CamPathView::Line line;
+                line.cut = c.move == kMoveCut;
+                if (line.cut) {
+                    line.pts = { s_play.world[k], s_play.world[next] };
+                } else {
+                    constexpr int kSteps = 32;
+                    for (int i = 0; i <= kSteps; ++i) line.pts.push_back(ShapeAt(k, next, static_cast<float>(i) / kSteps));
+                }
+                a_out.lines.push_back(std::move(line));
+            }
+        }
+
+        // Main thread, every free-camera frame: shown while TFCam drives the free camera and Clean screen is off.
+        void UpdateView(bool a_driving) {
+            if (!s_settings.showPath || !a_driving || s_clean) {
+                CamPathView::Clear();
+                return;
+            }
+            const double now = Now();
+            const int    gen = s_editGen.load();
+            if (now < s_viewNext && gen == s_viewGen) return;
+            s_viewNext = now + (s_play.on ? 0.1 : 0.5);  // a followed pivot moves the path
+            s_viewGen  = gen;
+            CamPathView::View v;
+            if (s_play.on) {
+                BuildView(v);
+                v.at = s_play.k;
+            } else {
+                Play saved = std::move(s_play);
+                s_play     = Play{};
+                {
+                    std::scoped_lock lock(s_lock);
+                    s_play.cams   = s_cams;
+                    s_play.follow = s_follow;
+                    s_play.loop   = s_loop;
+                }
+                if (!s_play.cams.empty()) {
+                    PreparePlay();
+                    BuildView(v);
+                }
+                s_play = std::move(saved);
+            }
+            CamPathView::Publish(std::move(v));
+        }
+
+        // Play from camera a_from (a_glide: 1 s from where the camera is; a_rate < 0: backwards from the end of its wait).
+        bool StartPlay(RE::FreeCameraState* a_fcs, std::string_view a_source, int a_from = 0, bool a_glide = true,
+            float a_rate = 1.0f) {
+            LoadOnce();
+            const bool blurWas = s_play.blurOn;
+            {
+                std::scoped_lock lock(s_lock);
+                if (s_cams.size() < 2) {
+                    EventLocked(std::format("play refused ({}): {} camera(s)", a_source, s_cams.size()));
+                    Notify("Camera path: add at least 2 cameras first");
+                    return false;
+                }
+                s_play         = Play{};
+                s_play.blurOn  = blurWas;
+                s_play.cams    = s_cams;
+                s_play.editGen = s_editGen.load();
+                s_play.follow = s_follow;
+                s_play.loop   = s_loop;
+            }
+            if (s_rec.on) s_rec.on = false;
+            SceneCam::StandDown("camera path plays");
+            PreparePlay();
+            const int n = Count();
             const int from = std::clamp(a_from, 0, n - 1);
             s_play.k       = from;
             for (int k = 0; k < from; ++k) s_play.elapsed += s_play.cams[k].wait + MoveTime(k);
@@ -1210,8 +1287,7 @@ namespace CamPath {
             Begin(n - 1, a_rate, std::format("{} from the end", a_what));
         }
 
-        // Clean screen (all game UI hidden). Main thread.
-        std::atomic<bool> s_clean{ false };
+        // Clean screen (all game UI hidden; s_clean is declared with the drawn path, which it hides). Main thread.
         void ApplyClean(bool a_on, std::string_view a_why) {
             if (auto* ui = RE::UI::GetSingleton()) ui->ShowMenus(!a_on);
             Event(a_on ? std::format("clean screen: all game UI hidden ({})", a_why)
@@ -1557,6 +1633,7 @@ namespace CamPath {
         }
         // clean screen: the window steps aside while the path plays, and comes back when it pauses / ends
         CamPathWindow::AutoHide(s_clean && s_play.on && !s_play.paused);
+        UpdateView(a_driving);
         if (!s_play.on) return;
         if (!a_driving) {
             EndPlay("another camera (FCFW timeline / SLCC) took the free camera");
@@ -1666,6 +1743,7 @@ namespace CamPath {
     }
 
     void OnFreeCamEnd() {
+        CamPathView::Clear();
         if (s_rec.on) StopRecord("the free camera ended");
         {
             std::scoped_lock lock(s_lock);

@@ -1,5 +1,6 @@
 #include "CamPathWindow.h"
 #include "CamPath.h"
+#include "CamPathView.h"
 #include "FixedCam.h"
 #include "FreeCamMenu.h"
 
@@ -584,6 +585,9 @@ namespace CamPathWindow {
                 FontAwesome::Pop();
                 if (followHit) CamPath::SetFollow(follow);
                 Tip("Each camera moves and turns with its own pivot (a walking NPC). Off: the cameras stay where you put them.");
+                if (ImGuiMCP::Checkbox("Show the path in the world##showpath", &set.showPath)) FreeCamMenu::SaveCamPathSettings();
+                Tip("A gold line along every move (dashed for a cut), a numbered marker at every camera with a tick the way it\n"
+                    "looks, and a cross at its pivot - while the free camera is on. Clean screen hides it for recording.");
                 bool loop = s.loop;
                 FontAwesome::PushSolid();
                 const bool loopHit = ImGuiMCP::Checkbox(Icon(kIconRepeat, "Loop (start again at camera 1)##loop").c_str(), &loop);
@@ -658,6 +662,7 @@ namespace CamPathWindow {
 
     void Register() {
         if (s_window) return;
+        CamPathView::Register();
         s_window = SKSEMenuFramework::AddWindow(Render, true);
         if (s_window) s_window->IsOpen = false;
         using KeepFn = void (*)(SKSEMenuFramework::Model::WindowInterface*, bool);

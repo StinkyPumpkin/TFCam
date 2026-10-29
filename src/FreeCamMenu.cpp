@@ -276,6 +276,7 @@ namespace FreeCamMenu {
         WriteINIInt("CameraPath", "iRecordKey", c.recordKey);
         WriteINIFloat("CameraPath", "fSmoothness", c.smoothness);
         WriteINIFloat("CameraPath", "fAimHeight", c.aimHeight);
+        WriteINIInt("CameraPath", "bShowPath", c.showPath ? 1 : 0);
         const auto& f = FovFx::Get();  // 0.18.0
         WriteINIInt("ActionFOV", "bEnabled", f.enabled ? 1 : 0);
         WriteINIFloat("ActionFOV", "fStrength", f.strength);
@@ -1466,6 +1467,7 @@ namespace FreeCamMenu {
             c.recordKey  = readInt("CameraPath", "iRecordKey", cd.recordKey);
             c.smoothness = readFloat("CameraPath", "fSmoothness", cd.smoothness);
             c.aimHeight  = readFloat("CameraPath", "fAimHeight", cd.aimHeight);
+            c.showPath   = readInt("CameraPath", "bShowPath", cd.showPath ? 1 : 0) != 0;
             CamPath::Clamp();
             auto&                 af = FovFx::Get();  // 0.18.0
             const FovFx::Settings ad{};

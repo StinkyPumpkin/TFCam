@@ -107,6 +107,7 @@ namespace CamPath {
         int   recordKey  = 0;
         float smoothness = 0.3f;  // 0..1
         float aimHeight  = 0.0f;  // -60..60 units above the pivot's middle
+        bool  showPath   = true;  // the path drawn in the world while the free camera is on (CamPathView)
     };
 
     Settings& Get();
