@@ -88,6 +88,7 @@ add_commonlibsse_plugin(${PROJECT_NAME} MINIMUM_SKSE_VERSION 0.0.0 SOURCES
     src/CamBlur.cpp
     src/CamPath.cpp
     src/CamPathView.cpp
+    src/CamPathPrisma.cpp
     src/CamPathWindow.cpp
     src/FixedCam.cpp
     src/FovFx.cpp

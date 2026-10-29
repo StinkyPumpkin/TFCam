@@ -1,6 +1,7 @@
 #include "FixedCam.h"
 #include "CamFocus.h"
 #include "CamPath.h"
+#include "CamPathPrisma.h"
 #include "FreeCamController.h"
 #include "FovFx.h"
 #include "FreezeTime.h"
@@ -82,6 +83,7 @@ namespace FixedCam {
         // Every frame of the third-person camera while fixed (main thread).
         void FrameWork() {
             FreezeTime::Tick();
+            CamPathPrisma::Tick();  // the PrismaUI editor's state push (while open)
             if (s_on) {
                 if (!s_fovSaved) {  // the free camera's exit has put the game's own FOV back by now
                     s_savedFov = WorldFOV();

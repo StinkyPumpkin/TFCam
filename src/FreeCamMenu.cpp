@@ -9,6 +9,7 @@
 #include "CellEntryCam.h"
 #include "CamBlur.h"
 #include "CamPath.h"
+#include "CamPathPrisma.h"
 #include "CamPathWindow.h"
 #include "SceneCam.h"
 #include "AmbientCam.h"
@@ -279,6 +280,7 @@ namespace FreeCamMenu {
         WriteINIFloat("CameraPath", "fSmoothness", c.smoothness);
         WriteINIFloat("CameraPath", "fAimHeight", c.aimHeight);
         WriteINIInt("CameraPath", "bShowPath", c.showPath ? 1 : 0);
+        WriteINIInt("CameraPath", "bPrismaEditor", c.prismaEditor ? 1 : 0);
         const auto& f = FovFx::Get();  // 0.18.0
         WriteINIInt("ActionFOV", "bEnabled", f.enabled ? 1 : 0);
         WriteINIFloat("ActionFOV", "fStrength", f.strength);
@@ -969,6 +971,15 @@ namespace FreeCamMenu {
             "Film anything: put cameras around a person or a thing, press Play, and the camera travels from one to the "
             "next - straight, in a curve, or circling round it.");
         if (ImGuiMCP::Button("Open the camera path window##cpOpen")) CamPathWindow::Toggle();
+        if (CamPathPrisma::Available()) {
+            ImGuiMCP::SameLine();
+            if (ImGuiMCP::Button("Open the PrismaUI editor##cpPrisma")) CamPathPrisma::Toggle();
+            changed |= ImGuiMCP::Checkbox("The window key opens the PrismaUI editor##cpPrismaKey", &cp.prismaEditor);
+            ImGuiMCP::TextColored(grey, "The editor: cameras on the left, the selected camera on the right, a timeline along the "
+                                        "bottom. Off: the key opens this mod's plain window instead.");
+        } else {
+            ImGuiMCP::TextColored(grey, "With PrismaUI installed the window key opens a full editor instead of this window.");
+        }
         ImGuiMCP::TextColored(grey, "1. Turn the free camera on (tfc) and fly to a spot.  2. Open the window (its key below) - "
                                     "the mouse comes back.  3. Add camera here.  4. Close the window, fly somewhere else, "
                                     "add another.  5. Play.");
@@ -1568,6 +1579,7 @@ namespace FreeCamMenu {
             c.smoothness = readFloat("CameraPath", "fSmoothness", cd.smoothness);
             c.aimHeight  = readFloat("CameraPath", "fAimHeight", cd.aimHeight);
             c.showPath   = readInt("CameraPath", "bShowPath", cd.showPath ? 1 : 0) != 0;
+            c.prismaEditor = readInt("CameraPath", "bPrismaEditor", cd.prismaEditor ? 1 : 0) != 0;
             CamPath::Clamp();
             auto&                 af = FovFx::Get();  // 0.18.0
             const FovFx::Settings ad{};

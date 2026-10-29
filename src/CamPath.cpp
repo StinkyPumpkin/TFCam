@@ -1,6 +1,7 @@
 #include "CamPath.h"
 #include "CamBlur.h"
 #include "CamFocus.h"
+#include "CamPathPrisma.h"
 #include "CamPathView.h"
 #include "CamPathWindow.h"
 #include "FreeCamController.h"
@@ -1719,11 +1720,19 @@ namespace CamPath {
         EndPlay(a_why);
     }
 
+    void ToggleEditor() {
+        if (s_settings.prismaEditor && CamPathPrisma::Available()) {
+            CamPathPrisma::Toggle();
+        } else {
+            CamPathWindow::Toggle();
+        }
+    }
+
     bool OnHotkey(std::uint32_t a_code) {
         if (a_code == 0) return false;
         auto is = [&](int a_key) { return a_key != 0 && a_code == static_cast<std::uint32_t>(a_key); };
         if (is(s_settings.openKey)) {
-            CamPathWindow::Toggle();
+            ToggleEditor();
             return true;
         }
         if (is(s_settings.addKey)) {

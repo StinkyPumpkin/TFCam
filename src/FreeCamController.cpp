@@ -1,4 +1,5 @@
 #include "FreeCamController.h"
+#include "CamPathPrisma.h"
 #include "FreezeTime.h"
 #include "FixedCam.h"
 #include "FovFx.h"
@@ -1243,6 +1244,10 @@ namespace FreeCam {
             if (SlccBridge::IsInjecting())
                 return RE::BSEventNotifyControl::kContinue;
             SlccBridge::Pump();
+
+            // 0.18.0: the PrismaUI Camera Path editor has focus - its keys are handled there, nothing reaches the game
+            if (CamPathPrisma::OnInput(a_events))
+                return RE::BSEventNotifyControl::kStop;
 
             // 0.9.0: mouse movement (and keys, if set) cancels the cell-entry camera move at once.
             CellEntryCam::OnInput(a_events);

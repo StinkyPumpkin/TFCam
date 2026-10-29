@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TFCam - Camera Path editor</title>
+<link rel="stylesheet" href="editor.css">
+</head>
+<body>
+<div id="app">
+
+<header id="top" class="panel">
+  <div class="brand">
+    <svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#E8B04B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h12v10H3z"></path><path d="M15 10l6-3v10l-6-3"></path></svg>
+    <h1>Camera Path</h1>
+  </div>
+  <label class="field-inline" for="open"><span class="dim">Path</span>
+    <select id="open" aria-label="Open a saved path"></select>
+  </label>
+  <span id="saveBox" class="save">
+    <input id="saveName" type="text" maxlength="40" placeholder="Name" aria-label="Save as">
+    <button type="button" class="btn" data-cmd="saveAs">Save as</button>
+  </span>
+  <span class="grow"></span>
+  <button type="button" class="pill" id="tgFollow" data-toggle="follow">Follow the pivot</button>
+  <button type="button" class="pill" id="tgLoop" data-toggle="loop">Loop</button>
+  <button type="button" class="pill" id="tgPath" data-toggle="showPath">Show the path</button>
+  <span class="sep"></span>
+  <button type="button" class="big" id="btFreeze" data-cmd="freeze"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v20M4 6l16 12M20 6L4 18"></path></svg><span id="freezeLabel">Freeze world</span></button>
+  <button type="button" class="big" id="btClean" data-toggle="clean"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12s3.5-7 9-7 9 7 9 7-3.5 7-9 7-9-7-9-7z"></path><path d="M4 4l16 16"></path></svg>Clean screen</button>
+  <button type="button" class="big rec" id="btVideo" data-cmd="video"><span class="dot"></span><span id="videoLabel">Record video</span></button>
+  <button type="button" class="icon" data-cmd="close" aria-label="Close the editor"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+</header>
+
+<div id="notice" class="notice" hidden></div>
+
+<section id="cams" class="panel" aria-label="Cameras">
+  <div class="head"><h2>Cameras</h2><span class="dim" id="camCount"></span></div>
+  <div id="camList" class="list"></div>
+  <button type="button" class="primary" id="btAdd" data-cmd="add"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>Add camera here</button>
+  <span class="dim small center" id="addHint">Where the free camera is, looking the way it looks</span>
+  <details class="more">
+    <summary>Smoothness, record, fix, clear</summary>
+    <div class="col">
+      <div class="slider"><label for="g-smooth"><span>Smoothness</span><span class="val" id="gv-smooth"></span></label>
+        <input id="g-smooth" type="range" min="0" max="100" step="1" value="30" data-global="smoothness"></div>
+      <div class="slider"><label for="g-aim"><span>Aim point higher / lower</span><span class="val" id="gv-aim"></span></label>
+        <input id="g-aim" type="range" min="-60" max="60" step="1" value="0" data-global="aimHeight"></div>
+      <button type="button" class="btn wide" id="btRecordPath" data-cmd="record">Record manual path (fly it)</button>
+      <button type="button" class="btn wide" id="btFix" data-cmd="fix">Fix camera here</button>
+      <label class="check"><input type="checkbox" id="watch"><span>Fixed camera turns to watch me</span></label>
+      <button type="button" class="btn wide danger" id="btClear">Clear all cameras</button>
+      <button type="button" class="btn wide" data-cmd="smf">Use the plain window instead</button>
+    </div>
+  </details>
+</section>
+
+<section id="insp" class="panel" aria-label="Selected camera">
+  <div class="head">
+    <h2 id="selTitle">Camera</h2>
+    <button type="button" class="icon" data-cam="goTo" aria-label="Put the free camera on this camera"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l18-8-8 18-2-8-8-2z"></path></svg></button>
+    <button type="button" class="icon" data-cam="here" aria-label="Move this camera to where the free camera is"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-11a7 7 0 0114 0c0 4.8-7 11-7 11z"></path><circle cx="12" cy="10" r="2.5"></circle></svg></button>
+    <button type="button" class="icon" data-cam="playFrom" aria-label="Play from this camera"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5l12 7-12 7z"></path></svg></button>
+    <button type="button" class="icon danger" data-cam="delete" aria-label="Delete this camera"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"></path></svg></button>
+  </div>
+  <div class="tabs" role="group" aria-label="Sections">
+    <button type="button" data-tab="shot">Shot</button>
+    <button type="button" data-tab="move">Move</button>
+    <button type="button" data-tab="fx">Effects</button>
+  </div>
+  <div id="inspBody" class="body"></div>
+</section>
+
+<section id="timeline" class="panel" aria-label="Timeline">
+  <div class="transport">
+    <button type="button" class="tbtn" data-cmd="rewind" aria-label="Rewind to camera 1"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M11 6L3 12l8 6zM21 6l-8 6 8 6z"></path></svg></button>
+    <button type="button" class="tbtn" data-cmd="backwards" aria-label="Play backwards"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M17 5L5 12l12 7z"></path></svg></button>
+    <button type="button" class="play" id="btPlay" data-cmd="play" aria-label="Play"><svg id="icPlay" aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5l12 7-12 7z"></path></svg><svg id="icPause" aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"></path></svg></button>
+    <button type="button" class="tbtn" data-cmd="stop" aria-label="Stop"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"></path></svg></button>
+    <div class="clock"><span id="time">0:00.0 / 0:00.0</span><span class="dim small" id="nowLabel"></span></div>
+    <span class="grow"></span>
+    <span class="dim small" id="lastEvent"></span>
+    <div class="legend">
+      <span><i class="sw straight"></i>Straight</span><span><i class="sw curve"></i>Curve</span><span><i class="sw around"></i>Around</span>
+      <span><i class="sw cut"></i>Cut</span><span><i class="sw wait"></i>Wait</span><span><i class="sw slow"></i>Slow motion</span>
+    </div>
+  </div>
+  <div id="track" class="track">
+    <div id="ruler" class="ruler"></div>
+    <div id="lane" class="lane"></div>
+    <div id="marks"></div>
+    <div id="playhead" class="playhead" aria-hidden="true"><i></i></div>
+    <input id="scrub" type="range" min="0" max="1" step="0.01" value="0" aria-label="Move along the path">
+  </div>
+  <div class="foot dim small" id="foot"></div>
+</section>
+
+</div>
+<script src="editor.js"></script>
+</body>
+</html>

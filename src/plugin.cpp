@@ -11,6 +11,7 @@
 #include "CamPath.h"
 #include "HUDHider.h"
 #include "FixedCam.h"
+#include "CamPathPrisma.h"
 #include "FrameFx.h"
 #include "VideoCapture.h"
 #include "FovFx.h"
@@ -114,6 +115,7 @@ namespace {
             // 0.7.7: every plugin is loaded now - FCFW's API and SLUI's 'TFCF' messages.
             FcfwBridge::Init();
             CamBlur::Install();  // 0.17.0: ENB SDK for the background blur (retried at kDataLoaded)
+            CamPathPrisma::Init();  // 0.18.0: the Camera Path editor as a PrismaUI view (when PrismaUI is installed)
             // Listen for SLUI's 'TFCF' only if TFCam will arm at kDataLoaded. Without the Address
             // Library TFCam stays inert; with no listener SLUI's Dispatch returns false and SLUI does
             // its own plain toggle, instead of the request being accepted and silently dropped.

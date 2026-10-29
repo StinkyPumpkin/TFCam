@@ -108,10 +108,12 @@ namespace CamPath {
         float smoothness = 0.3f;  // 0..1
         float aimHeight  = 0.0f;  // -60..60 units above the pivot's middle
         bool  showPath   = true;  // the path drawn in the world while the free camera is on (CamPathView)
+        bool  prismaEditor = true;  // the window key opens the PrismaUI editor when PrismaUI is installed (else the SMF window)
     };
 
     Settings& Get();
     void      Clamp();
+    void      ToggleEditor();  // any thread: the PrismaUI editor when there is one and it is chosen, else the SMF window
 
     // free camera Update hook (after the other drives)
     void Drive(RE::FreeCameraState* a_fcs, bool a_driving);
