@@ -133,7 +133,11 @@ namespace FixedCam {
             static void thunk(RE::TESCamera* a_camera) {
                 func(a_camera);
                 FrameWork();
-                if (s_on) ApplyRoot();
+                if (s_on) {
+                    ApplyRoot();
+                } else {
+                    FovFx::ApplyAimCam();  // the archer camera (Action FOV)
+                }
             }
             static inline REL::Relocation<decltype(thunk)> func;
         };

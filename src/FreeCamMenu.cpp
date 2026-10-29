@@ -286,6 +286,10 @@ namespace FreeCamMenu {
         WriteINIInt("ActionFOV", "bShouts", f.shouts ? 1 : 0);
         WriteINIInt("ActionFOV", "bSpeed", f.speedPlayer ? 1 : 0);
         WriteINIInt("ActionFOV", "bCameraSpeed", f.speedCamera ? 1 : 0);
+        WriteINIInt("ActionFOV", "bArcherCamera", f.aimCam ? 1 : 0);
+        WriteINIFloat("ActionFOV", "fArcherBack", f.aimBack);
+        WriteINIFloat("ActionFOV", "fArcherSide", f.aimSide);
+        WriteINIFloat("ActionFOV", "fArcherUp", f.aimUp);
     }
 
     // 0.16.0 conversation camera, TFCam.ini [Conversation].
@@ -974,6 +978,15 @@ namespace FreeCamMenu {
         ImGuiMCP::SetNextItemWidth(220.0f);
         changed |= ImGuiMCP::SliderFloat("How strong##afStrength", &f.strength, 0.0f, 2.0f, "%.1f", 0);
         changed |= ImGuiMCP::Checkbox("Bow: drawing pulls in, letting go snaps out##afBow", &f.bow);
+        changed |= ImGuiMCP::Checkbox("Archer camera: close behind your head while the string is drawn##afAim", &f.aimCam);
+        if (f.aimCam) {
+            ImGuiMCP::SetNextItemWidth(220.0f);
+            changed |= ImGuiMCP::SliderFloat("Behind the eyes##afAimBack", &f.aimBack, 10.0f, 80.0f, "%.0f", 0);
+            ImGuiMCP::SetNextItemWidth(220.0f);
+            changed |= ImGuiMCP::SliderFloat("To the side (- left / + right)##afAimSide", &f.aimSide, -30.0f, 30.0f, "%.0f", 0);
+            ImGuiMCP::SetNextItemWidth(220.0f);
+            changed |= ImGuiMCP::SliderFloat("Up / down##afAimUp", &f.aimUp, -15.0f, 20.0f, "%.0f", 0);
+        }
         changed |= ImGuiMCP::Checkbox("Power attacks punch in##afPower", &f.power);
         changed |= ImGuiMCP::Checkbox("Big spells warp out##afSpells", &f.spells);
         if (f.spells) {
@@ -1462,6 +1475,10 @@ namespace FreeCamMenu {
             af.shouts      = readInt("ActionFOV", "bShouts", ad.shouts ? 1 : 0) != 0;
             af.speedPlayer = readInt("ActionFOV", "bSpeed", ad.speedPlayer ? 1 : 0) != 0;
             af.speedCamera = readInt("ActionFOV", "bCameraSpeed", ad.speedCamera ? 1 : 0) != 0;
+            af.aimCam      = readInt("ActionFOV", "bArcherCamera", ad.aimCam ? 1 : 0) != 0;
+            af.aimBack     = readFloat("ActionFOV", "fArcherBack", ad.aimBack);
+            af.aimSide     = readFloat("ActionFOV", "fArcherSide", ad.aimSide);
+            af.aimUp       = readFloat("ActionFOV", "fArcherUp", ad.aimUp);
             FovFx::Clamp();
             SKSE::log::info("FovFx: action FOV {}", af.enabled ? "on" : "off");
             SKSE::log::info("CamBlur: background blur {} (strength {:.2f}{})", b.enabled ? "on" : "off", b.strength,

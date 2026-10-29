@@ -208,6 +208,12 @@ namespace FovFx {
         if (!std::isfinite(s.strength)) s.strength = 1.0f;
         s.strength   = std::clamp(s.strength, 0.0f, 2.0f);
         s.spellLevel = std::clamp(s.spellLevel, 0, 100);
+        if (!std::isfinite(s.aimBack)) s.aimBack = 25.0f;
+        if (!std::isfinite(s.aimSide)) s.aimSide = 20.0f;
+        if (!std::isfinite(s.aimUp)) s.aimUp = 5.0f;
+        s.aimBack = std::clamp(s.aimBack, 10.0f, 80.0f);
+        s.aimSide = std::clamp(s.aimSide, -30.0f, 30.0f);
+        s.aimUp   = std::clamp(s.aimUp, -15.0f, 20.0f);
     }
 
     void Install() {
@@ -215,6 +221,53 @@ namespace FovFx {
             src->AddEventSink(&s_sink);
             SKSE::log::info("FovFx: action events registered");
         }
+    }
+
+    // The archer camera: the view the game made, moved to just behind the eyes (its own aim direction is kept, so the
+    // crosshair still aims where you look). In over ~0.12 s as the string comes back, out over ~0.2 s.
+    void ApplyAimCam() {
+        static double s_aimLast = 0.0;
+        static float  s_aimW    = 0.0f;
+        const double  now       = Now();
+        const float   dt        = s_aimLast > 0.0 ? static_cast<float>(std::clamp(now - s_aimLast, 0.0, 0.1)) : 0.0f;
+        s_aimLast               = now;
+        auto* cam    = RE::PlayerCamera::GetSingleton();
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* ui     = RE::UI::GetSingleton();
+        if (!s_settings.enabled || !s_settings.aimCam || !cam || !cam->cameraRoot || !player || cam->IsInFreeCameraMode() ||
+            cam->IsInFirstPerson()) {
+            s_aimW = 0.0f;
+            return;
+        }
+        if (!(ui && ui->GameIsPaused())) {
+            const float target = s_bowDrawn ? 1.0f : 0.0f;
+            const float tau    = target > s_aimW ? 0.12f : 0.2f;
+            s_aimW += (target - s_aimW) * (dt > 0.0f ? 1.0f - std::exp(-dt / tau) : 0.0f);
+        }
+        if (s_aimW < 0.002f) return;
+        auto* body = player->Get3D2();
+        auto* head = body ? body->GetObjectByName("NPC Head [Head]") : nullptr;
+        if (!head) return;
+        auto*           root = cam->cameraRoot.get();
+        RE::NiTransform t    = root->world;
+        const auto&     m    = t.rotate.entry;
+        const RE::NiPoint3 right{ m[0][0], m[1][0], m[2][0] };
+        const RE::NiPoint3 fwd{ m[0][1], m[1][1], m[2][1] };
+        const RE::NiPoint3 up{ m[0][2], m[1][2], m[2][2] };
+        const float        h = player->GetAngleZ();
+        RE::NiPoint3       eye = head->world.translate + RE::NiPoint3{ std::sin(h) * 4.0f, std::cos(h) * 4.0f, 7.0f };
+        const RE::NiPoint3 want = eye - fwd * s_settings.aimBack + right * s_settings.aimSide + up * s_settings.aimUp;
+        const float        w    = SmoothStep(s_aimW);
+        t.translate             = t.translate + (want - t.translate) * w;
+        root->local             = root->parent ? root->parent->world.Invert() * t : t;
+        RE::NiUpdateData data{};
+        root->Update(data);
+        static bool s_logged = false;
+        if (!s_logged && s_aimW > 0.95f) {
+            s_logged = true;
+            SKSE::log::info("FovFx: archer camera in - {:.0f} units from the eyes", (want - eye).Length());
+        }
+        if (s_aimW < 0.05f) s_logged = false;
     }
 
     void Reset() {
@@ -252,7 +305,7 @@ namespace FovFx {
             for (const auto& e : events) Handle(e, player);
             // The bow's pull follows the attack state (drawing / held): the BowDraw action event does not always come
             // (10-29: an animation-event draw sent BeginDraw, EndDraw and BowRelease only).
-            if (s_settings.bow) {
+            if (s_settings.bow || s_settings.aimCam) {
                 using A           = RE::ATTACK_STATE_ENUM;
                 const A    st      = player->AsActorState()->GetAttackState();
                 const bool drawing = st == A::kBowDraw || st == A::kBowAttached || st == A::kBowDrawn;
@@ -300,7 +353,7 @@ namespace FovFx {
         }
 
         // the bow's pull while drawn, eased back after
-        const float bowTarget = s_bowDrawn ? kBowPull * SmoothStep(static_cast<float>(now - s_bowStart) / kBowPullTime) : 0.0f;
+        const float bowTarget = s_bowDrawn && s_settings.bow ? kBowPull * SmoothStep(static_cast<float>(now - s_bowStart) / kBowPullTime) : 0.0f;
         s_bowNow += (bowTarget - s_bowNow) * (dt > 0.0f ? 1.0f - std::exp(-dt / (s_bowDrawn ? 0.15f : 0.08f)) : 0.0f);
 
         float pulses = 0.0f;
