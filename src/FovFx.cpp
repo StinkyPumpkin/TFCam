@@ -213,8 +213,8 @@ namespace FovFx {
         if (!std::isfinite(s.aimBack)) s.aimBack = 61.0f;
         if (!std::isfinite(s.aimUp)) s.aimUp = -1.0f;
         s.aimTurn = std::clamp(s.aimTurn, -110.0f, 110.0f);
-        s.aimBack = std::clamp(s.aimBack, 10.0f, 120.0f);
-        s.aimUp   = std::clamp(s.aimUp, -20.0f, 30.0f);
+        s.aimBack = std::clamp(s.aimBack, 10.0f, 400.0f);  // 10-31: further out (was 120)
+        s.aimUp   = std::clamp(s.aimUp, -80.0f, 80.0f);    // 10-31: was -20..30
     }
 
     void Install() {

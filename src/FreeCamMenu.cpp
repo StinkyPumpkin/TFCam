@@ -272,6 +272,8 @@ namespace FreeCamMenu {
         WriteINIInt("Blur", "bEnabled", b.enabled ? 1 : 0);
         WriteINIFloat("Blur", "fStrength", b.strength);
         WriteINIInt("Blur", "bInFreeFly", b.inFreeFly ? 1 : 0);
+        WriteINIInt("Blur", "iStyle", b.style);  // 10-31: 0 edges (TFCam's own), 1 ENB depth of field
+        WriteINIFloat("Blur", "fSharpMiddle", b.sharp);
         const auto& c = CamPath::Get();
         WriteINIInt("CameraPath", "iOpenWindowKey", c.openKey);
         WriteINIInt("CameraPath", "iAddCameraKey", c.addKey);
@@ -828,26 +830,44 @@ namespace FreeCamMenu {
             auto&      bl       = CamBlur::Get();
             const auto bs       = CamBlur::GetStatus();
             bool       bChanged = false;
+            const bool enbStyle = bl.style == CamBlur::kStyleEnb;
             ImGuiMCP::SeparatorText("Background blur");
-            ImGuiMCP::BeginDisabled(!bs.linked);
+            // 10-31: two styles; the edge blur (TFCam's own image pass) is the default - the ENB depth of field blurred
+            // everything past the subject and could not go strong enough (user).
+            static const char* const kBlurStyles[] = { "Blurry round the edge, sharp in the middle (TFCam's own)",
+                "ENB's depth of field (sharp at the subject's distance)" };
+            ImGuiMCP::SetNextItemWidth(360.0f);
+            bChanged |= ImGuiMCP::Combo("How##blStyle", &bl.style, kBlurStyles, 2, -1);
+            ImGuiMCP::BeginDisabled(enbStyle && !bs.linked);
             bChanged |= ImGuiMCP::Checkbox("Blur the background##blOn", &bl.enabled);
             ImGuiMCP::SetNextItemWidth(200.0f);
             bChanged |= ImGuiMCP::SliderFloat("Strength##blStrength", &bl.strength, 0.0f, 1.0f, "%.2f");
+            if (!enbStyle) {
+                ImGuiMCP::SetNextItemWidth(200.0f);
+                bChanged |= ImGuiMCP::SliderFloat("Sharp middle (how far out)##blSharp", &bl.sharp, 0.05f, 0.9f, "%.2f");
+            }
             bChanged |= ImGuiMCP::Checkbox("Also in plain free-fly (sharp: the middle of the screen)##blFree", &bl.inFreeFly);
             ImGuiMCP::EndDisabled();
-            if (bs.error[0]) {
+            if (enbStyle && bs.error[0]) {
                 ImGuiMCP::TextColored({ 0.9f, 0.45f, 0.35f, 1.0f }, "%s", bs.error);
             } else if (bs.active) {
-                if (bs.distance > 0.0f) {
+                if (enbStyle && bs.distance > 0.0f) {
                     ImGuiMCP::Text("Now: sharp at %s, %.0f units away", bs.what, bs.distance);
                 } else {
                     ImGuiMCP::Text("Now: %s", bs.what);
                 }
             }
-            ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
-                "Keeps the subject sharp and blurs what is behind it while orbit, preset view, eye view, a camera path, the "
-                "idle camera or the conversation camera moves the camera. It uses ENB's depth of field, and ENB gets its own "
-                "values back the moment that camera stops (nothing is saved into your ENB preset). Needs ENB.");
+            if (enbStyle) {
+                ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+                    "Keeps the subject sharp and blurs what is behind it while orbit, preset view, eye view, a camera path, the "
+                    "idle camera or the conversation camera moves the camera. It uses ENB's depth of field, and ENB gets its own "
+                    "values back the moment that camera stops (nothing is saved into your ENB preset). Needs ENB.");
+            } else {
+                ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+                    "While orbit, preset view, eye view, a camera path, the idle camera or the conversation camera moves the "
+                    "camera: the picture blurs more and more toward the screen's edge and stays sharp in the middle, on the "
+                    "subject. TFCam's own image pass, before the HUD - no ENB needed. Strength 1 is a wash at the edge.");
+            }
             if (bChanged) {
                 CamBlur::Clamp();
                 SaveINI();
@@ -1095,9 +1115,9 @@ namespace FreeCamMenu {
             ImGuiMCP::SetNextItemWidth(220.0f);
             changed |= ImGuiMCP::SliderFloat("Round to your face (0 behind, 90 side-on)##afAimTurn", &f.aimTurn, -110.0f, 110.0f, "%.0f", 0);
             ImGuiMCP::SetNextItemWidth(220.0f);
-            changed |= ImGuiMCP::SliderFloat("Distance from your head##afAimBack", &f.aimBack, 10.0f, 120.0f, "%.0f", 0);
+            changed |= ImGuiMCP::SliderFloat("Distance from your head##afAimBack", &f.aimBack, 10.0f, 400.0f, "%.0f", 0);
             ImGuiMCP::SetNextItemWidth(220.0f);
-            changed |= ImGuiMCP::SliderFloat("Up / down##afAimUp", &f.aimUp, -20.0f, 30.0f, "%.0f", 0);
+            changed |= ImGuiMCP::SliderFloat("Up / down##afAimUp", &f.aimUp, -80.0f, 80.0f, "%.0f", 0);
             ImGuiMCP::TextColored(grey, "The middle of the screen is where the arrow will land: a line from the arrow tip "
                                         "along your aim. Minus turns go round your left side.");
             ImGuiMCP::TreePop();
@@ -1569,6 +1589,8 @@ namespace FreeCamMenu {
             b.enabled   = readInt("Blur", "bEnabled", bd.enabled ? 1 : 0) != 0;
             b.strength  = readFloat("Blur", "fStrength", bd.strength);
             b.inFreeFly = readInt("Blur", "bInFreeFly", bd.inFreeFly ? 1 : 0) != 0;
+            b.style     = readInt("Blur", "iStyle", bd.style);
+            b.sharp     = readFloat("Blur", "fSharpMiddle", bd.sharp);
             CamBlur::Clamp();
             auto&                  c = CamPath::Get();
             const CamPath::Settings cd{};
@@ -1621,7 +1643,8 @@ namespace FreeCamMenu {
             vf.key      = readInt("Video", "iKey", vd.key);
             VideoCapture::Clamp();
             SKSE::log::info("FovFx: action FOV {}", af.enabled ? "on" : "off");
-            SKSE::log::info("CamBlur: background blur {} (strength {:.2f}{})", b.enabled ? "on" : "off", b.strength,
+            SKSE::log::info("CamBlur: background blur {} ({}, strength {:.2f}, sharp middle {:.2f}{})", b.enabled ? "on" : "off",
+                b.style == CamBlur::kStyleEnb ? "ENB depth of field" : "edges", b.strength, b.sharp,
                 b.inFreeFly ? ", also in free-fly" : "");
         }
 

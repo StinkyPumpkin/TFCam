@@ -1,4 +1,5 @@
 #include "FrameFx.h"
+#include "CamBlur.h"
 #include "FixedCam.h"
 #include "VideoCapture.h"
 
@@ -42,7 +43,12 @@ cbuffer FxCB : register(b0) {
     float  gAspect;      // width / height
     float  gBars;        // uv height of each cinema bar, 0 = none
     float  gTaps;        // blur taps, 1 = no blur
+    float  gEdgeBlur;    // 10-31 edge blur: mip levels of blur at the screen's edge, 0 = off
+    float  gEdgeSharp;   // how far out from the sharp middle the blur starts (0..1, 1 = the edge)
     float  gPad;
+    float2 gEdgeCenter;  // uv the sharp middle sits on
+    float2 gInvSize;     // one texel
+    float2 gPad2;
 };
 Texture2D    gSrc : register(t0);
 SamplerState gLin : register(s0);
@@ -98,6 +104,27 @@ float4 PSFx(VsOut i) : SV_Target {
         }
         c += s * gStreaks * 0.35 * float3(0.45, 0.65, 1.0);
     }
+    [branch] if (gEdgeBlur > 0.0) {
+        // 10-31: blurry round the edge, sharp in the middle (a focus vignette). The picture's own smaller mips, more of
+        // them the further out - nine taps a texel apart at that mip so the mip's blocks do not show. 1 = the screen's
+        // edge (an ellipse), the corners further still.
+        float2 d = (uv - gEdgeCenter) * 2.0;
+        float  m = smoothstep(gEdgeSharp, 1.0, length(d));
+        [branch] if (m > 0.001) {
+            float  lod = gEdgeBlur * m;
+            float2 px  = gInvSize * exp2(lod) * 0.75;
+            float3 b   = gSrc.SampleLevel(gLin, uv, lod).rgb * 2.0;
+            b += gSrc.SampleLevel(gLin, uv + float2( px.x,  0.0), lod).rgb;
+            b += gSrc.SampleLevel(gLin, uv + float2(-px.x,  0.0), lod).rgb;
+            b += gSrc.SampleLevel(gLin, uv + float2( 0.0,  px.y), lod).rgb;
+            b += gSrc.SampleLevel(gLin, uv + float2( 0.0, -px.y), lod).rgb;
+            b += gSrc.SampleLevel(gLin, uv + float2( px.x,  px.y), lod).rgb;
+            b += gSrc.SampleLevel(gLin, uv + float2(-px.x,  px.y), lod).rgb;
+            b += gSrc.SampleLevel(gLin, uv + float2( px.x, -px.y), lod).rgb;
+            b += gSrc.SampleLevel(gLin, uv + float2(-px.x, -px.y), lod).rgb;
+            c = lerp(c, b / 10.0, saturate(m * 3.0));
+        }
+    }
     if (gVignette > 0.0) {
         float2 d = (i.uv - 0.5) * float2(gAspect, 1.0) * (2.0 / sqrt(gAspect * gAspect + 1.0));  // 1 in the corners
         c *= 1.0 - gVignette * smoothstep(0.35, 1.0, dot(d, d));
@@ -130,9 +157,14 @@ float2 PSChroma(VsOut i) : SV_Target {
             float aspect;
             float bars;
             float taps;
+            float edgeBlur;
+            float edgeSharp;
             float pad;
+            float edgeCenter[2];
+            float invSize[2];
+            float pad2[2];
         };
-        static_assert(sizeof(FxCB) == 48);
+        static_assert(sizeof(FxCB) == 80);
 
         struct Gpu {
             ID3D11Device*                    dev = nullptr;
@@ -150,6 +182,7 @@ float2 PSChroma(VsOut i) : SV_Target {
             ComPtr<ID3D11ShaderResourceView> videoSrv;  // never sRGB-decoded: the video wants the picture's own values
             UINT                             w = 0, h = 0;
             DXGI_FORMAT                      texFmt = DXGI_FORMAT_UNKNOWN, viewFmt = DXGI_FORMAT_UNKNOWN;
+            bool                             mips = false;  // 10-31: the copy has a mip chain (the edge blur reads it)
         };
         Gpu  g;
         int  s_init = 0;  // 0 not tried, 1 ready, -1 failed
@@ -267,22 +300,31 @@ float2 PSChroma(VsOut i) : SV_Target {
             D3D11_TEXTURE2D_DESC d{};
             d.Width            = a_td.Width;
             d.Height           = a_td.Height;
-            d.MipLevels        = 1;
+            d.MipLevels        = 0;  // 10-31: the whole chain - the edge blur samples the smaller mips
             d.ArraySize        = 1;
             d.Format           = TypelessOf(a_td.Format);
             d.SampleDesc.Count = 1;
             d.Usage            = D3D11_USAGE_DEFAULT;
-            d.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
+            d.BindFlags        = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;  // GenerateMips wants both
+            d.MiscFlags        = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+            g.mips             = true;
             if (FAILED(g.dev->CreateTexture2D(&d, nullptr, &g.copy))) {
-                SetStatus(std::format("off - no copy of the picture ({}x{}, format {})", a_td.Width, a_td.Height, static_cast<int>(a_td.Format)));
-                return false;
+                g.mips       = false;  // a format without mip generation: the copy as before, no edge blur
+                d.MipLevels  = 1;
+                d.BindFlags  = D3D11_BIND_SHADER_RESOURCE;
+                d.MiscFlags  = 0;
+                if (FAILED(g.dev->CreateTexture2D(&d, nullptr, &g.copy))) {
+                    SetStatus(std::format("off - no copy of the picture ({}x{}, format {})", a_td.Width, a_td.Height, static_cast<int>(a_td.Format)));
+                    return false;
+                }
             }
             D3D11_SHADER_RESOURCE_VIEW_DESC sv{};
             sv.ViewDimension       = D3D11_SRV_DIMENSION_TEXTURE2D;
-            sv.Texture2D.MipLevels = 1;
+            sv.Texture2D.MipLevels = g.mips ? static_cast<UINT>(-1) : 1;
             sv.Format              = a_view;
             const bool ok1         = SUCCEEDED(g.dev->CreateShaderResourceView(g.copy.Get(), &sv, &g.fxSrv));
             sv.Format              = PlainOf(a_view);
+            sv.Texture2D.MipLevels = 1;  // the video reads the full picture only
             const bool ok2         = SUCCEEDED(g.dev->CreateShaderResourceView(g.copy.Get(), &sv, &g.videoSrv));
             if (!ok1 || !ok2) {
                 g.copy.Reset();
@@ -293,8 +335,8 @@ float2 PSChroma(VsOut i) : SV_Target {
             g.h       = a_td.Height;
             g.texFmt  = a_td.Format;
             g.viewFmt = a_view;
-            SKSE::log::info("FrameFx: the picture is {}x{} (texture format {}, view {})", g.w, g.h, static_cast<int>(a_td.Format),
-                static_cast<int>(a_view));
+            SKSE::log::info("FrameFx: the picture is {}x{} (texture format {}, view {}{})", g.w, g.h, static_cast<int>(a_td.Format),
+                static_cast<int>(a_view), g.mips ? ", with mips" : ", no mips - no edge blur");
             return true;
         }
 
@@ -469,14 +511,74 @@ float2 PSChroma(VsOut i) : SV_Target {
 
         bool On(int a_when, bool a_camera) { return a_when == kWhenAlways || (a_when == kWhenCamera && a_camera); }
 
+        // ---- 10-31: the edge blur (Background blur, Edges style), eased so it never pops ---------------------------
+        struct EdgeNow {
+            float lod = 0.0f;  // mip levels of blur at the screen's edge
+            float cx = 0.5f, cy = 0.5f;
+        };
+
+        double Now() {
+            static const double freq = [] {
+                LARGE_INTEGER f;
+                ::QueryPerformanceFrequency(&f);
+                return static_cast<double>(f.QuadPart);
+            }();
+            LARGE_INTEGER t;
+            ::QueryPerformanceCounter(&t);
+            return static_cast<double>(t.QuadPart) / freq;
+        }
+
+        // Every frame (main thread): what CamBlur wants, eased in and out over ~0.25 s; the sharp middle follows the
+        // subject on screen (eased ~0.15 s), or sits in the middle.
+        EdgeNow EdgeTick() {
+            static EdgeNow s_now;
+            static double  s_last = 0.0;
+            const double   now    = Now();
+            const float    dt     = s_last > 0.0 ? static_cast<float>(std::clamp(now - s_last, 0.0, 0.1)) : 0.0f;
+            s_last                = now;
+            const auto want       = CamBlur::EdgeWant();
+            float      lod = 0.0f, cx = s_now.cx, cy = s_now.cy;
+            if (want.on && CamBlur::Get().style == CamBlur::kStyleEdges && g.mips) {
+                lod = 1.5f + 4.5f * std::clamp(want.strength, 0.0f, 1.0f);  // 0 -> 1.5 mips (soft), 1 -> 6 mips (a wash)
+                cx = 0.5f, cy = 0.5f;
+                if (want.haveSubject) {
+                    if (auto* nc = RE::Main::WorldRootCamera()) {
+                        float x = 0.0f, y = 0.0f, z = 0.0f;
+                        if (nc->WorldPtToScreenPt3(want.subject, x, y, z, 1e-5f) && z > 0.0f && std::isfinite(x) && std::isfinite(y)) {
+                            cx = std::clamp(x, 0.25f, 0.75f);
+                            cy = std::clamp(1.0f - y, 0.25f, 0.75f);
+                        }
+                    }
+                }
+            }
+            const float kl = dt > 0.0f ? 1.0f - std::exp(-dt / 0.25f) : 1.0f;
+            const float kc = dt > 0.0f ? 1.0f - std::exp(-dt / 0.15f) : 1.0f;
+            s_now.lod += (lod - s_now.lod) * kl;
+            if (lod <= 0.0f && s_now.lod < 0.02f) s_now.lod = 0.0f;
+            if (lod > 0.0f) {
+                s_now.cx += (cx - s_now.cx) * kc;
+                s_now.cy += (cy - s_now.cy) * kc;
+            }
+            return s_now;
+        }
+
         // The effects' constants for this frame; false = nothing to do.
-        bool Constants(const Motion& a_m, UINT a_w, UINT a_h, FxCB& a_cb) {
+        bool Constants(const Motion& a_m, const EdgeNow& a_e, UINT a_w, UINT a_h, FxCB& a_cb) {
             const auto& s      = s_settings;
             const bool  camera = CameraShot();
             a_cb               = {};
             a_cb.aspect        = a_h > 0 ? static_cast<float>(a_w) / static_cast<float>(a_h) : 1.7778f;
             a_cb.taps          = 1.0f;
+            a_cb.invSize[0]    = a_w > 0 ? 1.0f / static_cast<float>(a_w) : 0.0f;
+            a_cb.invSize[1]    = a_h > 0 ? 1.0f / static_cast<float>(a_h) : 0.0f;
             bool any           = false;
+            if (a_e.lod > 0.01f && g.mips) {
+                a_cb.edgeBlur      = a_e.lod;
+                a_cb.edgeSharp     = CamBlur::Get().sharp;
+                a_cb.edgeCenter[0] = a_e.cx;
+                a_cb.edgeCenter[1] = a_e.cy;
+                any                = true;
+            }
             if (On(s.motionBlur, camera) && a_m.valid) {
                 float bx = a_m.x * s.shutter, by = a_m.y * s.shutter;
                 const float px  = std::hypot(bx * static_cast<float>(a_w), by * static_cast<float>(a_h));
@@ -509,10 +611,11 @@ float2 PSChroma(VsOut i) : SV_Target {
         }
 
         void Frame() {
-            const Motion m   = Measure();  // every frame, so the next frame's motion is right
-            const bool   rec = VideoCapture::WantsFrames();
-            const auto&  s   = s_settings;
-            if (!rec && s.motionBlur == kWhenOff && s.lens == kWhenOff) return;
+            const Motion  m   = Measure();  // every frame, so the next frame's motion is right
+            const EdgeNow e   = EdgeTick();  // every frame, so it eases
+            const bool    rec = VideoCapture::WantsFrames();
+            const auto&   s   = s_settings;
+            if (!rec && s.motionBlur == kWhenOff && s.lens == kWhenOff && e.lod <= 0.01f) return;
             if (!EnsureInit()) return;
             // The frame buffer, not whatever is bound: the menu draw binds it itself after this hook, so usually
             // nothing is bound here, and during a load another target can be (seen: 1920x1080 R8).
@@ -534,20 +637,22 @@ float2 PSChroma(VsOut i) : SV_Target {
                 SetStatus(std::format("off - the picture is multisampled ({}x) or not a plain texture", td.SampleDesc.Count));
                 return;
             }
-            FxCB       cb{};
-            const bool fx = Constants(m, td.Width, td.Height, cb);
-            if (!fx && !rec) return;
             if (!EnsureCopy(td, rd.Format)) return;
+            FxCB       cb{};
+            const bool fx = Constants(m, e, td.Width, td.Height, cb);
+            if (!fx && !rec) return;
             StateBackup backup;
             backup.Capture(g.ctx);
-            g.ctx->CopyResource(g.copy.Get(), tex.Get());
+            // the top mip only (the copy may have a mip chain, the frame buffer has not)
+            g.ctx->CopySubresourceRegion(g.copy.Get(), 0, 0, 0, 0, tex.Get(), 0, nullptr);
             if (fx) {
+                if (cb.edgeBlur > 0.0f) g.ctx->GenerateMips(g.fxSrv.Get());  // 10-31: the edge blur's smaller pictures
                 D3D11_MAPPED_SUBRESOURCE map{};
                 if (SUCCEEDED(g.ctx->Map(g.cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) {
                     std::memcpy(map.pData, &cb, sizeof(cb));
                     g.ctx->Unmap(g.cb.Get(), 0);
                     Draw(rtv.Get(), g.fxSrv.Get(), td.Width, td.Height, g.ps[0].Get());
-                    if (rec) g.ctx->CopyResource(g.copy.Get(), tex.Get());  // the video gets the effects too
+                    if (rec) g.ctx->CopySubresourceRegion(g.copy.Get(), 0, 0, 0, 0, tex.Get(), 0, nullptr);  // the video gets the effects too
                 }
             }
             if (rec) {

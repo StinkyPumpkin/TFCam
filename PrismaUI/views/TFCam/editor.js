@@ -20,7 +20,7 @@
   // camera options shown as sliders: the slider's own number <-> the camera's value
   var F = {
     wait: { min: 0, max: 10, step: 0.1, get: function (c) { return c.wait; }, put: function (v) { return v; }, text: function (v) { return v.toFixed(1) + ' s'; } },
-    fov: { min: 10, max: 120, step: 1, get: function (c) { return c.fov; }, put: function (v) { return v; }, text: function (v) { return Math.round(v) + '°'; } },
+    fov: { min: 5, max: 150, step: 1, get: function (c) { return c.fov; }, put: function (v) { return v; }, text: function (v) { return Math.round(v) + '°'; } },
     time: { min: 0.5, max: 30, step: 0.1, get: function (c) { return c.time; }, put: function (v) { return v; }, text: function (v) { return v.toFixed(1) + ' s'; } },
     bendSide: pct(-100, 100, 'bendSide', true), bendUp: pct(-100, 100, 'bendUp', true),
     turns: { min: 0, max: 10, step: 1, get: function (c) { return c.turns; }, put: function (v) { return Math.round(v); }, text: function (v) { return String(Math.round(v)); } },

@@ -284,7 +284,7 @@ namespace CamPathWindow {
                     ImGuiMCP::SetNextItemWidth(220.0f);
                     changed |= ImGuiMCP::SliderFloat("Wait here (seconds)##wait", &a_c.wait, 0.0f, 10.0f, "%.1f", 0);
                     ImGuiMCP::SetNextItemWidth(220.0f);
-                    changed |= ImGuiMCP::SliderFloat("Zoom (field of view)##fov", &a_c.fov, 10.0f, 120.0f, "%.0f", 0);
+                    changed |= ImGuiMCP::SliderFloat("Zoom (field of view)##fov", &a_c.fov, 5.0f, 150.0f, "%.0f", 0);
                     Tip("Smaller = zoomed in. Two cameras on the same spot with different zoom + Crash zoom = a crash zoom.");
                     changed |= ImGuiMCP::Checkbox("Blur the background##blur", &a_c.blur);
                     if (a_c.blur) {
