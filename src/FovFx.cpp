@@ -1,4 +1,5 @@
 #include "FovFx.h"
+#include "CamBlur.h"
 #include "CamCollision.h"
 
 #include <Windows.h>
@@ -215,13 +216,34 @@ namespace FovFx {
         s.aimTurn = std::clamp(s.aimTurn, -110.0f, 110.0f);
         s.aimBack = std::clamp(s.aimBack, 10.0f, 400.0f);  // 10-31: further out (was 120)
         s.aimUp   = std::clamp(s.aimUp, -80.0f, 80.0f);    // 10-31: was -20..30
+        if (!std::isfinite(s.aimDotSize)) s.aimDotSize = 3.0f;
+        s.aimDotSize = std::clamp(s.aimDotSize, 1.0f, 10.0f);
     }
+
+    namespace {
+        // 10-31: the archer view, for the image pass (main thread)
+        bool         s_pubOn = false;
+        float        s_pubIn = 0.0f;
+        RE::NiPoint3 s_pubAim{};
+        bool         s_hwya = false;
+    }
+
+    bool ArcherAim(RE::NiPoint3& a_aimAt, float& a_in) {
+        a_aimAt = s_pubAim;
+        a_in    = s_pubIn;
+        return s_pubOn;
+    }
+
+    bool HitWhereYouAim() { return s_hwya; }
 
     void Install() {
         if (auto* src = SKSE::GetActionEventSource()) {
             src->AddEventSink(&s_sink);
             SKSE::log::info("FovFx: action events registered");
         }
+        s_hwya = ::GetModuleHandleW(L"HitWhereYouAim.dll") != nullptr;
+        SKSE::log::info("FovFx: Hit Where You Aim {} - the archer dot sits {}", s_hwya ? "loaded" : "not loaded",
+            s_hwya ? "in the middle of the screen" : "on the arrow's own line");
     }
 
     namespace {
@@ -287,6 +309,9 @@ namespace FovFx {
             s_haveHead = false;
             s_wasDrawn = false;
             s_wallOff  = {};
+            s_pubOn    = false;
+            s_pubIn    = 0.0f;
+            CamBlur::Archer(false, {});
             return;
         }
         if (s_wasDrawn && !s_bowDrawn) s_holdUntil = now + kAimHold;
@@ -300,6 +325,9 @@ namespace FovFx {
             s_haveAim  = false;
             s_haveHead = false;
             s_wallOff  = {};
+            s_pubOn    = false;
+            s_pubIn    = 0.0f;
+            CamBlur::Archer(false, {});
             return;
         }
         auto* body = player->Get3D2();
@@ -390,6 +418,11 @@ namespace FovFx {
         root->local = root->parent ? root->parent->world.Invert() * t : t;
         RE::NiUpdateData data{};
         root->Update(data);
+        // 10-31: the image pass draws the dot there and, with the box on, blurs round the edge
+        s_pubOn  = true;
+        s_pubIn  = s_aimW;
+        s_pubAim = aimAt;
+        CamBlur::Archer(s_settings.aimBlur, aimAt);
         static bool s_logged = false;
         if (!s_logged && s_aimW > 0.95f) {
             s_logged = true;

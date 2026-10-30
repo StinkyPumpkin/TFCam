@@ -100,6 +100,7 @@ namespace CamBlur {
         bool   s_axisLogged  = false;
         char   s_lastWhat[96] = {};
         Edge   s_edge;               // 10-31: for the image pass (Edges style); main thread
+        Edge   s_archer;             // 10-31: the archer camera's (FovFx); main thread
         std::atomic<bool> s_noShader{ false };  // set by the render thread, cleared on a fresh tick of the box
 
         void SetError(std::string_view a_text) {
@@ -326,7 +327,14 @@ namespace CamBlur {
 
     Edge EdgeWant() {
         if (s_extUntil > 0.0 && Now() > s_extUntil) s_edge.on = false;  // that mod's camera stopped calling
-        return s_edge;
+        return s_edge.on ? s_edge : s_archer;
+    }
+
+    void Archer(bool a_on, const RE::NiPoint3& a_subject) {
+        s_archer.on          = a_on;
+        s_archer.strength    = s_settings.strength;
+        s_archer.haveSubject = a_on;
+        s_archer.subject     = a_subject;
     }
 
     void Install() {

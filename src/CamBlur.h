@@ -36,6 +36,10 @@ namespace CamBlur {
     };
     Edge EdgeWant();
 
+    // 10-31: the archer camera (FovFx) while the string is drawn - its own box, the Background blur strength and sharp
+    // middle; a_subject = where the arrow will land. Main thread, every frame it is on; a_on false ends it.
+    void Archer(bool a_on, const RE::NiPoint3& a_subject);
+
     Settings& Get();
     void      Clamp();
 

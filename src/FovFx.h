@@ -23,7 +23,15 @@ namespace FovFx {
         float aimTurn = 22.0f;  // degrees round your head from straight behind (90 = side-on), to your right
         float aimBack = 61.0f;  // units from the eyes
         float aimUp   = -1.0f;  // units above the eyes
+        bool  aimDot     = true;   // 10-31: a tiny dot where the arrow will land (the game's crosshair is not needed)
+        float aimDotSize = 3.0f;   // its radius in pixels at 1080p
+        bool  aimBlur    = false;  // 10-31: the Background blur's edge blur while the string is drawn
     };
+
+    // 10-31: the archer view for the image pass (the dot): true while the string is drawn and the short hold after;
+    // a_aimAt = where the arrow will land, a_in = how far in the archer view is (0..1). Main thread.
+    bool ArcherAim(RE::NiPoint3& a_aimAt, float& a_in);
+    bool HitWhereYouAim();  // that mod is loaded: the arrow goes through the middle of the screen whatever the view
 
     Settings& Get();
     void      Clamp();

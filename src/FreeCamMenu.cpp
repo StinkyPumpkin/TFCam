@@ -297,6 +297,9 @@ namespace FreeCamMenu {
         WriteINIFloat("ActionFOV", "fArcherTurn", f.aimTurn);
         WriteINIFloat("ActionFOV", "fArcherDistance", f.aimBack);
         WriteINIFloat("ActionFOV", "fArcherUp", f.aimUp);
+        WriteINIInt("ActionFOV", "bArcherDot", f.aimDot ? 1 : 0);  // 10-31
+        WriteINIFloat("ActionFOV", "fArcherDotSize", f.aimDotSize);
+        WriteINIInt("ActionFOV", "bArcherBlur", f.aimBlur ? 1 : 0);
         const auto& x = FrameFx::Get();  // 0.18.0
         WriteINIInt("ImageFX", "iMotionBlur", x.motionBlur);
         WriteINIFloat("ImageFX", "fShutter", x.shutter);
@@ -1120,6 +1123,17 @@ namespace FreeCamMenu {
             changed |= ImGuiMCP::SliderFloat("Up / down##afAimUp", &f.aimUp, -80.0f, 80.0f, "%.0f", 0);
             ImGuiMCP::TextColored(grey, "The middle of the screen is where the arrow will land: a line from the arrow tip "
                                         "along your aim. Minus turns go round your left side.");
+            // 10-31: the dot (user: "only a tiny dot, not the Skyrim one") and the edge blur while the string is drawn
+            changed |= ImGuiMCP::Checkbox("A tiny dot where the arrow will land##afAimDot", &f.aimDot);
+            if (f.aimDot) {
+                ImGuiMCP::SetNextItemWidth(220.0f);
+                changed |= ImGuiMCP::SliderFloat("Dot size (pixels at 1080p)##afAimDotSize", &f.aimDotSize, 1.0f, 10.0f, "%.0f", 0);
+            }
+            changed |= ImGuiMCP::Checkbox("Blur round the edge of the screen while the string is drawn##afAimBlur", &f.aimBlur);
+            if (f.aimBlur) {
+                ImGuiMCP::TextColored(grey, "Strength and the sharp middle come from Background blur on the Scene page "
+                                            "(the \"blurry round the edge\" style).");
+            }
             ImGuiMCP::TreePop();
         }
         changed |= ImGuiMCP::Checkbox("Power attacks punch in##afPower", &f.power);
@@ -1618,6 +1632,9 @@ namespace FreeCamMenu {
             af.aimTurn     = readFloat("ActionFOV", "fArcherTurn", ad.aimTurn);
             af.aimBack     = readFloat("ActionFOV", "fArcherDistance", ad.aimBack);
             af.aimUp       = readFloat("ActionFOV", "fArcherUp", ad.aimUp);
+            af.aimDot      = readInt("ActionFOV", "bArcherDot", ad.aimDot ? 1 : 0) != 0;
+            af.aimDotSize  = readFloat("ActionFOV", "fArcherDotSize", ad.aimDotSize);
+            af.aimBlur     = readInt("ActionFOV", "bArcherBlur", ad.aimBlur ? 1 : 0) != 0;
             FovFx::Clamp();
             auto&                   xf = FrameFx::Get();  // 0.18.0
             const FrameFx::Settings xd{};

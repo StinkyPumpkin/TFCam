@@ -1,6 +1,7 @@
 #include "FrameFx.h"
 #include "CamBlur.h"
 #include "FixedCam.h"
+#include "FovFx.h"
 #include "VideoCapture.h"
 
 #include <Windows.h>
@@ -48,6 +49,9 @@ cbuffer FxCB : register(b0) {
     float  gPad;
     float2 gEdgeCenter;  // uv the sharp middle sits on
     float2 gInvSize;     // one texel
+    float2 gDotCenter;   // 10-31 the archer dot: uv where the arrow will land
+    float  gDotSize;     // its radius, pixels
+    float  gDotOn;       // 0..1
     float2 gPad2;
 };
 Texture2D    gSrc : register(t0);
@@ -129,6 +133,14 @@ float4 PSFx(VsOut i) : SV_Target {
         float2 d = (i.uv - 0.5) * float2(gAspect, 1.0) * (2.0 / sqrt(gAspect * gAspect + 1.0));  // 1 in the corners
         c *= 1.0 - gVignette * smoothstep(0.35, 1.0, dot(d, d));
     }
+    [branch] if (gDotOn > 0.0) {
+        // 10-31: a tiny white dot with a dark rim where the arrow will land (the archer camera)
+        float dd   = length((i.uv - gDotCenter) / gInvSize);  // pixels
+        float core = 1.0 - smoothstep(gDotSize - 0.7, gDotSize + 0.7, dd);
+        float rim  = 1.0 - smoothstep(gDotSize + 1.2, gDotSize + 2.4, dd);
+        c = lerp(c, float3(0.0, 0.0, 0.0), rim * 0.75 * gDotOn);
+        c = lerp(c, float3(1.0, 1.0, 1.0), core * gDotOn);
+    }
     return float4(c, 1.0);
 }
 
@@ -162,9 +174,12 @@ float2 PSChroma(VsOut i) : SV_Target {
             float pad;
             float edgeCenter[2];
             float invSize[2];
+            float dotCenter[2];
+            float dotSize;
+            float dotOn;
             float pad2[2];
         };
-        static_assert(sizeof(FxCB) == 80);
+        static_assert(sizeof(FxCB) == 96);
 
         struct Gpu {
             ID3D11Device*                    dev = nullptr;
@@ -538,7 +553,8 @@ float2 PSChroma(VsOut i) : SV_Target {
             s_last                = now;
             const auto want       = CamBlur::EdgeWant();
             float      lod = 0.0f, cx = s_now.cx, cy = s_now.cy;
-            if (want.on && CamBlur::Get().style == CamBlur::kStyleEdges && g.mips) {
+            // (not gated on g.mips here: the copy is only made once the pass runs, and this is what makes it run)
+            if (want.on && CamBlur::Get().style == CamBlur::kStyleEdges) {
                 lod = 1.5f + 4.5f * std::clamp(want.strength, 0.0f, 1.0f);  // 0 -> 1.5 mips (soft), 1 -> 6 mips (a wash)
                 cx = 0.5f, cy = 0.5f;
                 if (want.haveSubject) {
@@ -562,8 +578,34 @@ float2 PSChroma(VsOut i) : SV_Target {
             return s_now;
         }
 
+        // ---- 10-31: the archer dot - where the arrow will land, while the string is drawn ---------------------------
+        struct DotNow {
+            float on = 0.0f;  // 0..1
+            float cx = 0.5f, cy = 0.5f;
+        };
+
+        DotNow DotTick() {
+            DotNow       d;
+            RE::NiPoint3 aim{};
+            float        in = 0.0f;
+            if (!FovFx::Get().aimDot || !FovFx::ArcherAim(aim, in) || in < 0.6f) return d;
+            d.on = std::clamp((in - 0.6f) / 0.3f, 0.0f, 1.0f);
+            if (FovFx::HitWhereYouAim()) return d;  // through the middle of the screen, whatever the view
+            // the arrow's own line: the aim point on screen (the view settles on it in a moment)
+            if (auto* nc = RE::Main::WorldRootCamera()) {
+                float x = 0.0f, y = 0.0f, z = 0.0f;
+                if (nc->WorldPtToScreenPt3(aim, x, y, z, 1e-5f) && z > 0.0f && std::isfinite(x) && std::isfinite(y)) {
+                    d.cx = std::clamp(x, 0.0f, 1.0f);
+                    d.cy = std::clamp(1.0f - y, 0.0f, 1.0f);
+                } else {
+                    d.on = 0.0f;
+                }
+            }
+            return d;
+        }
+
         // The effects' constants for this frame; false = nothing to do.
-        bool Constants(const Motion& a_m, const EdgeNow& a_e, UINT a_w, UINT a_h, FxCB& a_cb) {
+        bool Constants(const Motion& a_m, const EdgeNow& a_e, const DotNow& a_d, UINT a_w, UINT a_h, FxCB& a_cb) {
             const auto& s      = s_settings;
             const bool  camera = CameraShot();
             a_cb               = {};
@@ -578,6 +620,13 @@ float2 PSChroma(VsOut i) : SV_Target {
                 a_cb.edgeCenter[0] = a_e.cx;
                 a_cb.edgeCenter[1] = a_e.cy;
                 any                = true;
+            }
+            if (a_d.on > 0.0f) {
+                a_cb.dotCenter[0] = a_d.cx;
+                a_cb.dotCenter[1] = a_d.cy;
+                a_cb.dotSize      = FovFx::Get().aimDotSize * (std::max)(static_cast<float>(a_h) / 1080.0f, 0.5f);
+                a_cb.dotOn        = a_d.on;
+                any               = true;
             }
             if (On(s.motionBlur, camera) && a_m.valid) {
                 float bx = a_m.x * s.shutter, by = a_m.y * s.shutter;
@@ -613,9 +662,10 @@ float2 PSChroma(VsOut i) : SV_Target {
         void Frame() {
             const Motion  m   = Measure();  // every frame, so the next frame's motion is right
             const EdgeNow e   = EdgeTick();  // every frame, so it eases
+            const DotNow  dot = DotTick();
             const bool    rec = VideoCapture::WantsFrames();
             const auto&   s   = s_settings;
-            if (!rec && s.motionBlur == kWhenOff && s.lens == kWhenOff && e.lod <= 0.01f) return;
+            if (!rec && s.motionBlur == kWhenOff && s.lens == kWhenOff && e.lod <= 0.01f && dot.on <= 0.0f) return;
             if (!EnsureInit()) return;
             // The frame buffer, not whatever is bound: the menu draw binds it itself after this hook, so usually
             // nothing is bound here, and during a load another target can be (seen: 1920x1080 R8).
@@ -639,7 +689,7 @@ float2 PSChroma(VsOut i) : SV_Target {
             }
             if (!EnsureCopy(td, rd.Format)) return;
             FxCB       cb{};
-            const bool fx = Constants(m, e, td.Width, td.Height, cb);
+            const bool fx = Constants(m, e, dot, td.Width, td.Height, cb);
             if (!fx && !rec) return;
             StateBackup backup;
             backup.Capture(g.ctx);
