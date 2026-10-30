@@ -23,10 +23,13 @@ namespace FovFx {
         float aimTurn = 22.0f;  // degrees round your head from straight behind (90 = side-on), to your right
         float aimBack = 61.0f;  // units from the eyes
         float aimUp   = -1.0f;  // units above the eyes
-        bool  aimDot     = true;   // 10-31: a tiny dot where the arrow will land (the game's crosshair is not needed)
-        float aimDotSize = 3.0f;   // its radius in pixels at 1080p
-        bool  aimBlur    = false;  // 10-31: the Background blur's edge blur while the string is drawn
+        bool  aimDot      = true;   // 10-31: a tiny dot where the arrow will land (the game's crosshair is not needed)
+        float aimDotSize  = 1.2f;   // its radius in pixels at 1080p (user 10-31: "much smaller" than 3)
+        bool  aimBlur     = false;  // 10-31: the Background blur's edge blur while the string is drawn
+        float aimVignette = 0.0f;   // 10-31: darker corners while the string is drawn, 0..1
     };
+
+    float ArcherVignette();  // 0..1 this frame (aimVignette faded with the archer view). Main thread.
 
     // 10-31: the archer view for the image pass (the dot): true while the string is drawn and the short hold after;
     // a_aimAt = where the arrow will land, a_in = how far in the archer view is (0..1). Main thread.

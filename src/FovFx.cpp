@@ -1,4 +1,5 @@
 #include "FovFx.h"
+#include "AimDot.h"
 #include "CamBlur.h"
 #include "CamCollision.h"
 
@@ -214,8 +215,10 @@ namespace FovFx {
         s.aimTurn = std::clamp(s.aimTurn, -110.0f, 110.0f);
         s.aimBack = std::clamp(s.aimBack, 10.0f, 400.0f);  // 10-31: further out (was 120)
         s.aimUp   = std::clamp(s.aimUp, -80.0f, 80.0f);    // 10-31: was -20..30
-        if (!std::isfinite(s.aimDotSize)) s.aimDotSize = 3.0f;
-        s.aimDotSize = std::clamp(s.aimDotSize, 1.0f, 10.0f);
+        if (!std::isfinite(s.aimDotSize)) s.aimDotSize = 1.2f;
+        s.aimDotSize = std::clamp(s.aimDotSize, 0.5f, 8.0f);
+        if (!std::isfinite(s.aimVignette)) s.aimVignette = 0.0f;
+        s.aimVignette = std::clamp(s.aimVignette, 0.0f, 1.0f);
     }
 
     namespace {
@@ -233,6 +236,8 @@ namespace FovFx {
     }
 
     bool HitWhereYouAim() { return s_hwya; }
+
+    float ArcherVignette() { return s_pubOn ? s_settings.aimVignette * std::clamp(s_pubIn, 0.0f, 1.0f) : 0.0f; }
 
     void Install() {
         if (auto* src = SKSE::GetActionEventSource()) {
@@ -399,10 +404,36 @@ namespace FovFx {
             }
             want = want + s_wallOff;
         }
-        RE::NiPoint3       look  = aimAt - want;
-        look                     = look * (1.0f / (std::max)(look.Length(), 1e-3f));
-        const float        w     = SmoothStep(s_aimW);
-        t.translate              = t.translate + (want - t.translate) * w;
+        // 10-31: when the projectiles go through the middle of the screen anyway (TFCam's own aim or Hit Where You Aim)
+        // the view keeps your aim's direction - looking at the arrow line's hit made the world swing whenever that
+        // hit jumped between a near tree and the far sky ("the crosshair jumps around", user). The arrow-line look
+        // stays for the case where nothing corrects the arrow.
+        RE::NiPoint3 look = AimDot::Active() || s_hwya ? dir : aimAt - want;
+        look              = look * (1.0f / (std::max)(look.Length(), 1e-3f));
+        const float w     = SmoothStep(s_aimW);
+        {
+            // 10-31: round the eyes on an arc, not a straight line - the line from the game's camera (behind you) to the
+            // spot beside your head passed through your shoulder and bow arm (seen 0.4 s into the pull). Direction
+            // slerped, distance eased in log space, so the camera stays outside you all the way.
+            const RE::NiPoint3 v0 = t.translate - eye, v1 = want - eye;
+            const float        l0 = v0.Length(), l1 = v1.Length();
+            if (l0 > 1e-3f && l1 > 1e-3f) {
+                const RE::NiPoint3 d0 = v0 * (1.0f / l0), d1 = v1 * (1.0f / l1);
+                const float        c  = std::clamp(d0.Dot(d1), -1.0f, 1.0f);
+                const float        a  = std::acos(c);
+                RE::NiPoint3       d;
+                if (a > 1e-3f && a < 3.1405f) {
+                    const float s = std::sin(a);
+                    d             = d0 * (std::sin((1.0f - w) * a) / s) + d1 * (std::sin(w * a) / s);
+                } else {
+                    d = d0 + (d1 - d0) * w;
+                }
+                d           = d * (1.0f / (std::max)(d.Length(), 1e-3f));
+                t.translate = eye + d * std::exp(std::log(l0) + (std::log(l1) - std::log(l0)) * w);
+            } else {
+                t.translate = t.translate + (want - t.translate) * w;
+            }
+        }
         RE::NiPoint3 fwd = view + (look - view) * w;
         fwd              = fwd * (1.0f / (std::max)(fwd.Length(), 1e-3f));
         RE::NiPoint3 right{ fwd.y, -fwd.x, 0.0f };

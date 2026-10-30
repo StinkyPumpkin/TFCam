@@ -301,6 +301,7 @@ namespace FreeCamMenu {
         WriteINIInt("ActionFOV", "bArcherDot", f.aimDot ? 1 : 0);  // 10-31
         WriteINIFloat("ActionFOV", "fArcherDotSize", f.aimDotSize);
         WriteINIInt("ActionFOV", "bArcherBlur", f.aimBlur ? 1 : 0);
+        WriteINIFloat("ActionFOV", "fArcherVignette", f.aimVignette);
         WriteINIInt("AimDot", "bHitTheDot", AimDot::Get().enabled ? 1 : 0);  // 10-31
         const auto& x = FrameFx::Get();  // 0.18.0
         WriteINIInt("ImageFX", "iMotionBlur", x.motionBlur);
@@ -1129,7 +1130,7 @@ namespace FreeCamMenu {
             changed |= ImGuiMCP::Checkbox("A tiny dot where the arrow will land##afAimDot", &f.aimDot);
             if (f.aimDot) {
                 ImGuiMCP::SetNextItemWidth(220.0f);
-                changed |= ImGuiMCP::SliderFloat("Dot size (pixels at 1080p)##afAimDotSize", &f.aimDotSize, 1.0f, 10.0f, "%.0f", 0);
+                changed |= ImGuiMCP::SliderFloat("Dot size (pixels at 1080p)##afAimDotSize", &f.aimDotSize, 0.5f, 8.0f, "%.1f", 0);
             }
             {
                 // 10-31: TFCam's own "hit where you aim" - one switch, no menu (user)
@@ -1139,6 +1140,8 @@ namespace FreeCamMenu {
                 changed |= adChange;
             }
             changed |= ImGuiMCP::Checkbox("Blur round the edge of the screen while the string is drawn##afAimBlur", &f.aimBlur);
+            ImGuiMCP::SetNextItemWidth(220.0f);
+            changed |= ImGuiMCP::SliderFloat("Vignette (darker corners) while the string is drawn##afAimVig", &f.aimVignette, 0.0f, 1.0f, "%.2f", 0);
             if (f.aimBlur) {
                 ImGuiMCP::TextColored(grey, "Strength and the sharp middle come from Background blur on the Scene page "
                                             "(the \"blurry round the edge\" style).");
@@ -1644,6 +1647,7 @@ namespace FreeCamMenu {
             af.aimDot      = readInt("ActionFOV", "bArcherDot", ad.aimDot ? 1 : 0) != 0;
             af.aimDotSize  = readFloat("ActionFOV", "fArcherDotSize", ad.aimDotSize);
             af.aimBlur     = readInt("ActionFOV", "bArcherBlur", ad.aimBlur ? 1 : 0) != 0;
+            af.aimVignette = readFloat("ActionFOV", "fArcherVignette", ad.aimVignette);
             AimDot::Get().enabled = readInt("AimDot", "bHitTheDot", AimDot::Settings{}.enabled ? 1 : 0) != 0;
             FovFx::Clamp();
             auto&                   xf = FrameFx::Get();  // 0.18.0

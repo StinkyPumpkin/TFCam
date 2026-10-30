@@ -662,6 +662,10 @@ float2 PSChroma(VsOut i) : SV_Target {
                 a_cb.bars       = s.bars ? (std::max)(0.0f, 0.5f * (1.0f - a_cb.aspect / 2.39f)) : 0.0f;
                 any = any || s.distortion != 0.0f || s.fringe > 0.0f || s.vignette > 0.0f || s.streaks > 0.0f || a_cb.bars > 0.0f;
             }
+            if (const float av = FovFx::ArcherVignette(); av > 0.001f) {  // 10-31: darker corners while the string is drawn
+                a_cb.vignette = (std::max)(a_cb.vignette, av);
+                any           = true;
+            }
             return any;
         }
 
