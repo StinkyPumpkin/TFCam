@@ -120,6 +120,11 @@ namespace CamCollision {
             return nl > 0.5f && std::fabs(a_normal.z / nl) < 0.7f;  // an upright surface
         }
 
+        // 10-30: the game's own camera bodies - the third-person camera's collision sphere (kCameraSphere, no reference) sits
+        // where the camera was last frame, so a probe toward where it goes next met it every frame and the archer camera
+        // lurched in and out while the string was held. Nothing else lives on these layers.
+        bool IsCameraLayer(RE::COL_LAYER a_layer) { return a_layer == RE::COL_LAYER::kCameraSphere || a_layer == RE::COL_LAYER::kCameraPick; }
+
         bool IsCharacterLayer(RE::COL_LAYER a_layer) {
             switch (a_layer) {
             case RE::COL_LAYER::kBiped:
@@ -162,7 +167,7 @@ namespace CamCollision {
                 auto*       ref   = coll ? RE::TESHavokUtilities::FindCollidableRef(*coll) : nullptr;
                 const RE::NiPoint3 hitNormal{ pick.rayOutput.normal.quad.m128_f32[0], pick.rayOutput.normal.quad.m128_f32[1],
                     pick.rayOutput.normal.quad.m128_f32[2] };
-                if (IsCharacterLayer(layer) || (ref && ref->IsActor()) || IsSmallProp(layer, ref) || IsPassThrough(layer, ref, hitNormal) ||
+                if (IsCameraLayer(layer) || IsCharacterLayer(layer) || (ref && ref->IsActor()) || IsSmallProp(layer, ref) || IsPassThrough(layer, ref, hitNormal) ||
                     frac * len < kSkipNear) {
                     start = frac + 1.0f / len;  // step 1 unit past it and look again
                     continue;
