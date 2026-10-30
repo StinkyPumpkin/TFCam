@@ -22,3 +22,7 @@ License as published by the Free Software Foundation, version 3 of the License.
 
 This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
 warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+The "arrows and spells go where the dot is" aim (src/AimDot.cpp) is adapted from Hit Where You Aim by tossaponk
+(https://github.com/tossaponk/HitWhereYouAim, GPL-3.0-or-later): its hook sites, crosshair ray and angle maths, under
+the same GNU General Public License version 3.

@@ -7,6 +7,7 @@
 #include "CameraLight.h"
 #include "HUDHider.h"
 #include "CellEntryCam.h"
+#include "AimDot.h"
 #include "CamBlur.h"
 #include "CamPath.h"
 #include "CamPathPrisma.h"
@@ -300,6 +301,7 @@ namespace FreeCamMenu {
         WriteINIInt("ActionFOV", "bArcherDot", f.aimDot ? 1 : 0);  // 10-31
         WriteINIFloat("ActionFOV", "fArcherDotSize", f.aimDotSize);
         WriteINIInt("ActionFOV", "bArcherBlur", f.aimBlur ? 1 : 0);
+        WriteINIInt("AimDot", "bHitTheDot", AimDot::Get().enabled ? 1 : 0);  // 10-31
         const auto& x = FrameFx::Get();  // 0.18.0
         WriteINIInt("ImageFX", "iMotionBlur", x.motionBlur);
         WriteINIFloat("ImageFX", "fShutter", x.shutter);
@@ -1129,6 +1131,13 @@ namespace FreeCamMenu {
                 ImGuiMCP::SetNextItemWidth(220.0f);
                 changed |= ImGuiMCP::SliderFloat("Dot size (pixels at 1080p)##afAimDotSize", &f.aimDotSize, 1.0f, 10.0f, "%.0f", 0);
             }
+            {
+                // 10-31: TFCam's own "hit where you aim" - one switch, no menu (user)
+                auto& ad       = AimDot::Get();
+                bool  adChange = ImGuiMCP::Checkbox("Arrows and spells go where the dot is (TFCam's own aim)##afHitDot", &ad.enabled);
+                ImGuiMCP::TextColored(grey, "Aim: %s", AimDot::Status());
+                changed |= adChange;
+            }
             changed |= ImGuiMCP::Checkbox("Blur round the edge of the screen while the string is drawn##afAimBlur", &f.aimBlur);
             if (f.aimBlur) {
                 ImGuiMCP::TextColored(grey, "Strength and the sharp middle come from Background blur on the Scene page "
@@ -1635,6 +1644,7 @@ namespace FreeCamMenu {
             af.aimDot      = readInt("ActionFOV", "bArcherDot", ad.aimDot ? 1 : 0) != 0;
             af.aimDotSize  = readFloat("ActionFOV", "fArcherDotSize", ad.aimDotSize);
             af.aimBlur     = readInt("ActionFOV", "bArcherBlur", ad.aimBlur ? 1 : 0) != 0;
+            AimDot::Get().enabled = readInt("AimDot", "bHitTheDot", AimDot::Settings{}.enabled ? 1 : 0) != 0;
             FovFx::Clamp();
             auto&                   xf = FrameFx::Get();  // 0.18.0
             const FrameFx::Settings xd{};

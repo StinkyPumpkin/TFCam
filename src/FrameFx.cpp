@@ -1,4 +1,5 @@
 #include "FrameFx.h"
+#include "AimDot.h"
 #include "CamBlur.h"
 #include "FixedCam.h"
 #include "FovFx.h"
@@ -588,9 +589,14 @@ float2 PSChroma(VsOut i) : SV_Target {
             DotNow       d;
             RE::NiPoint3 aim{};
             float        in = 0.0f;
-            if (!FovFx::Get().aimDot || !FovFx::ArcherAim(aim, in) || in < 0.6f) return d;
+            if (!FovFx::Get().aimDot || CameraShot()) return d;  // never in the free / fixed camera
+            if (AimDot::Active() || FovFx::HitWhereYouAim()) {
+                // the projectiles go through the middle of the screen: the dot sits there whenever something ranged is out
+                if (AimDot::DotWanted()) d.on = 1.0f;
+                return d;
+            }
+            if (!FovFx::ArcherAim(aim, in) || in < 0.6f) return d;
             d.on = std::clamp((in - 0.6f) / 0.3f, 0.0f, 1.0f);
-            if (FovFx::HitWhereYouAim()) return d;  // through the middle of the screen, whatever the view
             // the arrow's own line: the aim point on screen (the view settles on it in a moment)
             if (auto* nc = RE::Main::WorldRootCamera()) {
                 float x = 0.0f, y = 0.0f, z = 0.0f;

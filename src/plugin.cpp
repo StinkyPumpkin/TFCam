@@ -5,6 +5,7 @@
 #include "SceneTracker.h"
 #include "CellEntryCam.h"
 #include "SceneCam.h"
+#include "AimDot.h"
 #include "AmbientCam.h"
 #include "ConvoCam.h"
 #include "CamBlur.h"
@@ -130,8 +131,9 @@ namespace {
                 break;
             }
             // One reservation for every trampoline hook: CommonLib sets the trampoline up only on the FIRST
-            // AllocTrampoline call, so a second call adds nothing. 14 bytes per write_call<5>: FixedCam + FrameFx.
-            SKSE::AllocTrampoline(2 * 14);
+            // AllocTrampoline call, so a second call adds nothing. 14 bytes per write_call<5>: FixedCam + FrameFx +
+            // AimDot's 6 (launch angles, flame yaw/pitch, beam yaw/pitch, projectile init).
+            SKSE::AllocTrampoline(8 * 14);
             FreeCam::Install();
             CellEntryCam::Install();  // 0.9.0: zoom + orbit after a loading screen into a new cell
             SlccBridge::Install();
@@ -143,6 +145,7 @@ namespace {
             FixedCam::Install();       // 0.18.0: fixed camera (third-person view override) + the full freeze's frame tick
             FovFx::Install();          // 0.18.0: action FOV (its frame tick rides FixedCam's camera hook)
             FrameFx::Install();        // 0.18.0: image effects + the video recorder's picture, before the UI
+            AimDot::Install();         // 10-31: arrows and spells go where the dot is (unless Hit Where You Aim is loaded)
             FreeCamMenu::Register();
             FreeCamMenu::ApplyGameSettings();
             break;

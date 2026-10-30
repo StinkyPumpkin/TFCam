@@ -14,7 +14,7 @@ namespace FovFx {
     namespace {
         // degrees at strength 1 (+ = wider / out, - = narrower / in)
         constexpr float kBowPull     = -8.0f;   // reached after drawing for kBowPullTime
-        constexpr float kBowPullTime = 1.2f;
+        constexpr float kBowPullTime = 0.6f;    // 10-31: about a pull (was 1.2, from the quiver)
         constexpr float kBowRelease  = 7.0f;
         constexpr float kPowerPunch  = -10.0f;
         constexpr float kSpellWarp   = 9.0f;
@@ -119,10 +119,8 @@ namespace FovFx {
             }
             switch (a_p.type) {
             case T::kBowDraw:
-                if (s.bow) {
-                    s_bowDrawn = true;
-                    s_bowStart = Now();
-                }
+                // 10-31: nothing here - this event comes with the arrow leaving the quiver; the attack state in Tick()
+                // (kBowAttached: the string being pulled) turns s_bowDrawn on, so the view moves with the pull.
                 break;
             case T::kBowRelease:
                 if (s.bow) {
@@ -318,7 +316,7 @@ namespace FovFx {
         s_wasDrawn = s_bowDrawn;
         if (!(ui && ui->GameIsPaused())) {
             const float target = s_bowDrawn || now < s_holdUntil ? 1.0f : 0.0f;
-            const float tau    = target > s_aimW ? 0.12f : 0.2f;
+            const float tau    = target > s_aimW ? 0.22f : 0.2f;  // 10-31: in over the pull (was 0.12)
             s_aimW += (target - s_aimW) * (dt > 0.0f ? 1.0f - std::exp(-dt / tau) : 0.0f);
         }
         if (s_aimW < 0.002f) {
@@ -470,7 +468,9 @@ namespace FovFx {
             if (s_settings.bow || s_settings.aimCam) {
                 using A           = RE::ATTACK_STATE_ENUM;
                 const A    st      = player->AsActorState()->GetAttackState();
-                const bool drawing = st == A::kBowDraw || st == A::kBowAttached || st == A::kBowDrawn;
+                // 10-31: from kBowAttached, not kBowDraw - kBowDraw is the arrow coming out of the quiver; the string is pulled
+                // between the arrow attaching and kBowDrawn, and the user wants the view to move WITH the pull.
+                const bool drawing = st == A::kBowAttached || st == A::kBowDrawn;
                 if (drawing && !s_bowDrawn) s_bowStart = now;
                 s_bowDrawn = drawing;
             }

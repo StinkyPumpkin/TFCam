@@ -92,6 +92,7 @@ add_commonlibsse_plugin(${PROJECT_NAME} MINIMUM_SKSE_VERSION 0.0.0 SOURCES
     src/CamPathWindow.cpp
     src/FixedCam.cpp
     src/FovFx.cpp
+    src/AimDot.cpp
     src/FrameFx.cpp
     src/VideoCapture.cpp
 )
