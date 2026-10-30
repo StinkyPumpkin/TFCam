@@ -272,6 +272,8 @@ namespace FovFx {
         static bool         s_haveAim   = false;
         static RE::NiPoint3 s_wallOff{};          // how far a wall has moved the camera in (eased)
         static double       s_wallHold  = 0.0;    // stays in this long after the last push
+        static RE::NiPoint3 s_headOff{};          // 10-31: the head's offset from your feet, in your own frame, eased
+        static bool         s_haveHead  = false;  //        (the hold animation sways the head; the camera must not sway)
         const double        now         = Now();
         const float         dt          = s_aimLast > 0.0 ? static_cast<float>(std::clamp(now - s_aimLast, 0.0, 0.1)) : 0.0f;
         s_aimLast                       = now;
@@ -282,6 +284,7 @@ namespace FovFx {
             cam->IsInFirstPerson()) {
             s_aimW     = 0.0f;
             s_haveAim  = false;
+            s_haveHead = false;
             s_wasDrawn = false;
             s_wallOff  = {};
             return;
@@ -294,8 +297,9 @@ namespace FovFx {
             s_aimW += (target - s_aimW) * (dt > 0.0f ? 1.0f - std::exp(-dt / tau) : 0.0f);
         }
         if (s_aimW < 0.002f) {
-            s_haveAim = false;
-            s_wallOff = {};
+            s_haveAim  = false;
+            s_haveHead = false;
+            s_wallOff  = {};
             return;
         }
         auto* body = player->Get3D2();
@@ -311,7 +315,24 @@ namespace FovFx {
         const RE::NiPoint3 r{ f.y, -f.x, 0.0f };  // your right
         const float        flat = std::hypot(view.x, view.y);
         const RE::NiPoint3 dir{ f.x * flat, f.y * flat, view.z };  // the aim heading at the view's height (unit length)
-        const RE::NiPoint3 eye = head->world.translate + RE::NiPoint3{ std::sin(h) * 4.0f, std::cos(h) * 4.0f, 7.0f };
+        // The eyes, steadied (10-31): the head bone sways through the hold animation and the camera hung off it, so the
+        // shot swayed too. The head's offset from your feet is kept in your own frame (turning with you) and eased; your
+        // feet move the camera at once, the sway does not.
+        RE::NiPoint3 eye;
+        {
+            const RE::NiPoint3 feet = player->GetPosition();
+            const RE::NiPoint3 off  = head->world.translate - feet;
+            const float        ch = std::cos(h), sh = std::sin(h);
+            const RE::NiPoint3 local{ off.x * ch - off.y * sh, off.x * sh + off.y * ch, off.z };  // turned by -h
+            if (!s_haveHead || dt <= 0.0f) {
+                s_headOff  = local;
+                s_haveHead = true;
+            } else {
+                s_headOff = s_headOff + (local - s_headOff) * (1.0f - std::exp(-dt / 0.3f));
+            }
+            const RE::NiPoint3 back{ s_headOff.x * ch + s_headOff.y * sh, -s_headOff.x * sh + s_headOff.y * ch, s_headOff.z };  // by +h
+            eye = feet + back + RE::NiPoint3{ sh * 4.0f, ch * 4.0f, 7.0f };
+        }
         if (s_bowDrawn || !s_haveAim) {  // after the release the aim point stays put
             // the arrow tip: just past the bow hand, on the line from the string hand
             RE::NiPoint3 tip  = eye + dir * 40.0f;
@@ -326,14 +347,19 @@ namespace FovFx {
             if (!s_haveAim || s_reach <= 0.0f) {
                 s_reach = reach;
             } else if (dt > 0.0f) {  // eased in log space: near and far steps feel the same
-                s_reach = std::exp(std::log(s_reach) + (std::log(reach) - std::log(s_reach)) * (1.0f - std::exp(-dt / 0.12f)));
+                s_reach = std::exp(std::log(s_reach) + (std::log(reach) - std::log(s_reach)) * (1.0f - std::exp(-dt / 0.25f)));
             }
             s_aimAt   = tip + dir * (std::max)(s_reach, 50.0f);
             s_haveAim = true;
         }
         const RE::NiPoint3 aimAt = s_aimAt;
         const float        th    = s_settings.aimTurn * kDegToRad;
-        RE::NiPoint3       want  = eye + (r * std::sin(th) - f * std::cos(th)) * s_settings.aimBack + RE::NiPoint3{ 0.0f, 0.0f, s_settings.aimUp };
+        // The camera sits round the eyes in the AIM's frame (10-31): back along the way the arrow flies (pitched with
+        // your view), round to your right, up across that. Looking up puts the camera below and behind the eyes, looking
+        // down above them - you stay in the shot either way. Before, the offset was flat and a raised aim point left
+        // you under the frame.
+        const RE::NiPoint3 upP{ r.y * dir.z - r.z * dir.y, r.z * dir.x - r.x * dir.z, r.x * dir.y - r.y * dir.x };  // r x dir
+        RE::NiPoint3       want = eye + (r * std::sin(th) - dir * std::cos(th)) * s_settings.aimBack + upP * s_settings.aimUp;
         {
             // Walls (10-29): the free camera's rules (TFCam > Collision) - in front of anything solid between your eyes and
             // the camera, people passed. In quickly, held a moment once clear, out gently; looking at the same aim point.
