@@ -1,4 +1,5 @@
 #include "FixedCam.h"
+#include "AimDot.h"
 #include "CamFocus.h"
 #include "CamPath.h"
 #include "CamPathPrisma.h"
@@ -157,6 +158,7 @@ namespace FixedCam {
                 } else {
                     FovFx::ApplyAimCam();  // the archer camera (Action FOV)
                 }
+                AimDot::CrosshairTick();  // the game's crosshair off while the dot is the crosshair
             }
             static inline REL::Relocation<decltype(thunk)> func;
         };

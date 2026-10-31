@@ -1,8 +1,11 @@
 #include "AimDot.h"
+#include "FovFx.h"
 
 #include <Windows.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -379,6 +382,54 @@ namespace AimDot {
         if (ui && (ui->GameIsPaused() || ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) || ui->IsMenuOpen(RE::Console::MENU_NAME))) return false;
         if (!player->AsActorState()->IsWeaponDrawn()) return false;
         return Ranged(player->GetEquippedObject(false)) || Ranged(player->GetEquippedObject(true));
+    }
+
+    bool DotInCharge() { return FovFx::Get().aimDot && (Active() || (FovFx::HitWhereYouAim() && FovFx::Get().enabled)); }
+
+    namespace {
+        std::atomic<bool> s_crosshairOff{ false };  // we switched the game's crosshair off (UI thread writes it)
+
+        // UI thread: the HUD's own switch, the one the game uses (SkyHUD / Edge UI keep it; its SetCrosshairTarget
+        // honours it on every target change).
+        void SetGameCrosshair(bool a_on) {
+            auto* tasks = SKSE::GetTaskInterface();
+            if (!tasks) return;
+            tasks->AddUITask([a_on]() {
+                auto* ui = RE::UI::GetSingleton();
+                if (!ui) return;
+                auto view = ui->GetMovieView(RE::HUDMenu::MENU_NAME);
+                if (!view) return;
+                RE::GFxValue hud;
+                if (!view->GetVariable(&hud, "_root.HUDMovieBaseInstance") || !hud.IsObject()) return;
+                if (!a_on) {
+                    RE::GFxValue enabled;
+                    if (hud.GetMember("bCrosshairEnabled", &enabled) && enabled.IsBool() && !enabled.GetBool()) {
+                        return;  // already off (ours, or the game's own)
+                    }
+                } else if (!s_crosshairOff.load()) {
+                    return;  // never ours to give back
+                }
+                RE::GFxValue arg(a_on);
+                hud.Invoke("SetCrosshairEnabled", nullptr, &arg, 1);
+                const bool wasOff = s_crosshairOff.exchange(!a_on);
+                if (wasOff == a_on) SKSE::log::info("AimDot: the game's crosshair {}", a_on ? "is back" : "is off - the dot is the crosshair");
+            });
+        }
+    }
+
+    void CrosshairTick() {
+        using clock = std::chrono::steady_clock;
+        static clock::time_point s_next{};
+        const bool hide = s_settings.hideGameCrosshair && DotInCharge();
+        if (!hide) {
+            if (s_crosshairOff.load()) SetGameCrosshair(true);  // the task clears the flag; a repeat ask is a no-op
+            return;
+        }
+        // Again now and then: a load or another mod may switch it back on.
+        const auto now = clock::now();
+        if (now < s_next) return;
+        s_next = now + std::chrono::milliseconds(250);
+        SetGameCrosshair(false);
     }
 
     const char* Status() { return !s_settings.enabled && !s_hwya && s_hooks > 0 ? s_offStatus.c_str() : s_status.c_str(); }

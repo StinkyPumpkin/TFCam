@@ -385,6 +385,7 @@ namespace FreeCamMenu {
         WriteINIInt("ActionFOV", "bArcherBlur", f.aimBlur ? 1 : 0);
         WriteINIFloat("ActionFOV", "fArcherVignette", f.aimVignette);
         WriteINIInt("AimDot", "bHitTheDot", AimDot::Get().enabled ? 1 : 0);  // 10-31
+        WriteINIInt("AimDot", "bHideGameCrosshair", AimDot::Get().hideGameCrosshair ? 1 : 0);
         const auto& x = FrameFx::Get();  // 0.18.0
         WriteINIInt("ImageFX", "iMotionBlur", x.motionBlur);
         WriteINIFloat("ImageFX", "fShutter", x.shutter);
@@ -1733,6 +1734,7 @@ namespace FreeCamMenu {
             af.aimBlur     = readInt("ActionFOV", "bArcherBlur", ad.aimBlur ? 1 : 0) != 0;
             af.aimVignette = readFloat("ActionFOV", "fArcherVignette", ad.aimVignette);
             AimDot::Get().enabled = readInt("AimDot", "bHitTheDot", AimDot::Settings{}.enabled ? 1 : 0) != 0;
+            AimDot::Get().hideGameCrosshair = readInt("AimDot", "bHideGameCrosshair", AimDot::Settings{}.hideGameCrosshair ? 1 : 0) != 0;
             FovFx::Clamp();
             auto&                   xf = FrameFx::Get();  // 0.18.0
             const FrameFx::Settings xd{};
