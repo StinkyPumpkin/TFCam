@@ -55,6 +55,75 @@ camera's frustum.
 Settings: `TFCam.ini` sections `[Idle]`, `[Furniture]` and `[Collision]` (written by the page; an older file uses the
 defaults).
 
+## Conversation camera (0.16.0)
+
+Page: **SKSE Menu Framework > FreeCam > Idle & Furniture > Conversation**. Off by default (tick *Conversation camera on*).
+When you talk to an NPC in third person, TFCam's free camera takes over and films the conversation like a film scene:
+
+- *Over your shoulder* while the NPC speaks (the NPC sits off to one side of the frame), and a *reverse shot* while it is your turn:
+  over the NPC's shoulder, or a wide two-shot from the side (*Wide two-shot*). A shot stays at least *A shot stays at least* seconds.
+- Every move is smooth: the camera is held in cylindrical coordinates (angle, radius, height) round the midpoint of the two speakers and each
+  is damped, so a change of shot swings round the pair instead of cutting through them. *Handheld sway* adds a slow drift.
+- The camera starts on the **release** of the Activate tap, once the game has started the dialogue (the game acts on the release; starting the
+  free camera before it kept the dialogue from opening), and ends after the Dialogue Menu closes, easing back behind the player. It is
+  not started for a bark with no dialogue menu, for dead / hostile / in-combat NPCs, while sneaking, in a SexLab scene, with a menu open or
+  while another free camera is on. First person keeps the game's view (*Third person only*).
+- Walls: the framed look point goes through the same wall handling as the other automatic cameras.
+- The game's mouse edge-pan in dialogue (`fPCDialogueLookSpeed`) is held at 0 while the camera films, and put back after. *No mouse edge-pan
+  in any dialogue* (`bNoEdgePan`) holds it at 0 for every dialogue.
+
+Not done yet: a dialogue the NPC starts by itself (a quest scene that walks up to you and talks) is not filmed, because the camera has no
+Activate press to start from; the game's own view is used there.
+
+Settings: `TFCam.ini` section `[Conversation]`: `bEnabled`, `bThirdPersonOnly`, `fBlendIn`, `fBlendOut`, `fShotSwitch`, `fMinShotSeconds`,
+`fDistance`, `fShoulder`, `fHeight`, `fLookShift`, `fFovNpc`, `fFovWide`, `bAlternate`, `iReverseKind`, `bSwapSide`, `fDrift`, `bNoEdgePan`.
+
+## Action FOV, archer camera and aim dot (0.18.0)
+
+Page: **SKSE Menu Framework > FreeCam > Action FOV**. Action FOV is off by default (tick *On*).
+
+- **Action FOV**: drawing a bow pulls the view in, letting the arrow go snaps it out, power attacks punch in, big spells
+  (from a chosen skill level) and shouts warp it out, and moving fast stretches it wide. It is an offset on the render
+  camera's view, on top of whatever FOV you or another mod use; the game's own FOV value is never written.
+- **Archer camera** (part of Action FOV, *Archer camera* tick box): while the string is drawn the third-person camera
+  glides on an arc to a spot close round your head, so your face, the drawn bow and where the arrow flies are all in the
+  shot. It moves in as the string is pulled (not when the arrow is nocked) and back out after the shot. The offset turns
+  with your aim, so looking up or down keeps you in frame, and it holds steady against the bow-hold animation's sway.
+  Walls pull it in front of anything solid. *Round to your face* (0 behind, 90 side-on), *Distance from your head*
+  (10..400) and *Up / down* (-80..80) place it.
+- **Aim dot**: a tiny white dot with a dark rim where your arrows and spells go. With TFCam's own aim on (below), or
+  with Hit Where You Aim installed and Action FOV on, it sits in the middle of the screen whenever a bow, crossbow,
+  staff or spell is out, in first and third person. Otherwise it only shows in the archer camera, where the arrow's
+  own line meets the world. Never in the free camera. *Dot size* sets it.
+- **Arrows and spells go where the dot is** (`[AimDot] bHitTheDot`, **off by default**): arrows, bolts,
+  fire-and-forget spells, flames and beams are aimed at what the middle of the screen looks at, from whatever camera
+  renders the picture (the archer camera included); arrows still drop, the game's own ballistic solver is used. Adapted
+  from Hit Where You Aim by tossaponk (GPL-3.0-or-later, see `NOTICE.txt`), without its options. `TFCam.log` says how
+  many of its 4 hooks went in ("AimDot: ...").
+- While the string is drawn, optionally: the Background blur's edge blur (*Blur round the edge*) and darker corners
+  (*Vignette*, 0..1).
+- **Background blur** (Scene Camera page) has a new default style, *Blurry round the edge, sharp in the middle*: TFCam's
+  own image pass blurs the picture more and more toward the screen's edge, the sharp middle on the subject, before the
+  HUD and without ENB. The ENB depth of field stays as the other style.
+
+The dot, the edge blur and the vignette are drawn by TFCam's own pass at the game's menu draw (after ENB, before the
+HUD and menus). Not on VR.
+
+**With Hit Where You Aim** (Nexus 193960): keep it, both work together. TFCam's own aim switches itself off whenever
+`HitWhereYouAim.dll` is loaded (the menu and `TFCam.log` say "Hit Where You Aim is loaded - it aims the projectiles,
+TFCam stays out"), so the two never aim the same shot. Hit Where You Aim aims through the middle of the picture the game
+renders, which is the archer camera's view while the string is drawn, and the dot sits there. TFCam's box is for players
+without Hit Where You Aim.
+
+**With SmoothCam**: its arrow prediction, arc line, 3D crosshair and world crosshair options move the crosshair to
+SmoothCam's own guess of the vanilla arrow, which is not where either aim sends it. Turn those off in SmoothCam when you
+use the dot.
+
+Settings: `TFCam.ini` section `[ActionFOV]`: `bEnabled`, `fStrength`, `bBow`, `bPowerAttacks`, `bSpells`, `iSpellLevel`,
+`bShouts`, `bSpeed`, `bCameraSpeed`, `bArcherCamera`, `fArcherTurn`, `fArcherDistance`, `fArcherUp`, `bArcherDot`,
+`fArcherDotSize`, `bArcherBlur`, `fArcherVignette`; `[AimDot]` `bHitTheDot` (0); `[Blur]` `iStyle` (0 edges, 1 ENB),
+`fSharpMiddle`.
+
 ## Scene Camera (0.10.0, extended in 0.13.0)
 
 TFCam's free camera can work as a scene camera for SexLab P+ scenes (with SexLab P+'s automatic free camera on, a scene
@@ -113,6 +182,29 @@ What it does is logged to `TFCam.log` in SKSE's log folder (`Documents/My Games/
 the scene / stage ids, shots saved / recalled / deleted, refusals, automatic free camera waits and drops).
 
 ## Changelog
+
+**0.18.0**
+- *Action FOV* (`[ActionFOV]`, off by default): the view reacts to bow draws and releases, power attacks, big spells,
+  shouts and speed.
+- *Archer camera*: close round your head while the bow string is drawn, gliding in on an arc as the string is pulled;
+  keeps you in frame when aiming up or down, steady against the hold sway, walls respected.
+- *Aim dot* and *arrows and spells go where the dot is* (off by default; adapted from Hit Where You Aim, stays out of
+  its way when it is loaded); optional edge blur and vignette while the string is drawn.
+- *Background blur*: a new default style, blurry round the edge and sharp in the middle, drawn by TFCam itself (no ENB
+  needed); the ENB depth of field is the other style.
+- Walls: the game's own camera collision sphere no longer counts as a wall (it sits where the camera was last frame,
+  so the archer camera kept bumping into it).
+- Settings: changes made on TFCam's pages are kept again under Mod Organizer 2. `TFCam.ini` is now written with plain
+  file writes; the Windows INI call TFCam used before never reached the file under MO2, so changes were lost at the
+  next start.
+
+**0.16.0** (fork by CageTV)
+- *Conversation camera* (`[Conversation]`, off by default): a film-style camera for dialogue in third person. Over-the-shoulder shot while the
+  NPC speaks, reverse shot (over the NPC's shoulder or a wide two-shot) on your turn, smooth swings round the pair, optional sway, back behind
+  the player when the conversation ends. It starts on the release of the Activate tap once the game has opened the dialogue, and works for
+  NPCs that are in a scene. Not filmed yet: dialogue an NPC starts by itself.
+- The game's mouse edge-pan in dialogue is held off while the camera films; `bNoEdgePan` turns it off for every dialogue.
+- A conversation camera page on *Idle & Furniture* with a sliders / tick box for every setting.
 
 **0.15.1** (fork by CageTV)
 - *Walls* rework: the camera slides along a wall instead of being pulled toward the player, so passing a wall no longer

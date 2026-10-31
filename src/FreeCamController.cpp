@@ -1,5 +1,6 @@
 #include "FreeCamController.h"
 #include "FreezeTime.h"
+#include "FovFx.h"
 #include "FreeCamMenu.h"
 #include "CameraLight.h"
 #include "HUDHider.h"
@@ -9,7 +10,10 @@
 #include "CellEntryCam.h"
 #include "SceneCam.h"
 #include "AmbientCam.h"
+#include "ConvoCam.h"
 #include "CamCollision.h"
+#include "CamBlur.h"
+#include "CamPath.h"
 
 #include <RE/I/INISettingCollection.h>
 #include <RE/A/AttackBlockHandler.h>
@@ -31,6 +35,8 @@ namespace FreeCam {
     static Settings s_settings;
     static std::atomic<void (*)()> s_snapHandler{ nullptr };  // 0.9.2: photo tool owns the screenshot key
     static float    s_rollAngle = 0.0f;
+    static float    s_extraRoll = 0.0f;  // 0.17.0: orbit roll / camera path roll on top of s_rollAngle
+    static float    s_apiRoll   = 0.0f;  // 0.17.0: TFCamAPI v5 - another mod's free camera (PhotoStudio)
     static float    s_baseFOV   = 0.0f;
     static bool     s_altSlow   = false;  // Alt slow-mode active
     static bool     s_slowHeld  = false;  // configurable slow key currently held (fed by the input sink)
@@ -252,10 +258,14 @@ namespace FreeCam {
     static std::atomic<bool> s_beginOffMainLogged{ false };
     static std::atomic<bool> s_endOffMainLogged{ false };
 
+    bool OnMainThreadNow();
+
     static bool OnMainThread() {
         const auto main = s_mainThreadId.load();
         return main != 0 && static_cast<std::uint32_t>(::GetCurrentThreadId()) == main;
     }
+
+    bool OnMainThreadNow() { return OnMainThread(); }
 
     static bool HookWorkRunsInline() {
         return OnMainThread() && s_hookBatchesPending.load() == 0;
@@ -383,6 +393,21 @@ namespace FreeCam {
 
     float GetRollRadians() { return s_rollAngle; }
 
+    float GetExtraRoll() { return s_extraRoll; }
+
+    void SetExtraRoll(float a_roll) {
+        if (std::isfinite(a_roll)) s_extraRoll = a_roll;
+    }
+
+    void SetApiRoll(float a_roll) {
+        if (!std::isfinite(a_roll)) return;
+        if ((a_roll != 0.0f) != (s_apiRoll != 0.0f)) {
+            SKSE::log::info("FreeCam: another mod's camera roll {} ({:.1f} degrees)", a_roll != 0.0f ? "set" : "cleared",
+                a_roll * 57.29578f);
+        }
+        s_apiRoll = a_roll;
+    }
+
     void SetRollRadians(float a_roll) {
         if (std::isfinite(a_roll)) s_rollAngle = a_roll;
     }
@@ -420,8 +445,15 @@ namespace FreeCam {
             // only ever reads back the state's pitch/yaw fields and its own roll variable. SLCC hooks the same call
             // site and keeps its own post-layer rotation (its log: baseRot/finalRot + roll). This multiply touches
             // only the returned quaternion, after all of them, so nothing feeds back and nothing is fought over.
-            if (s_rollAngle != 0.0f) {
-                float halfAngle = s_rollAngle * 0.5f;
+            const float roll = s_rollAngle + s_extraRoll + s_apiRoll;  // 0.17.0: + the orbit's / a path's / an API roll
+            static bool s_apiRollSeen = false;  // 0.17.0: one log line the first time another mod's roll reaches the camera
+            if (s_apiRoll != 0.0f && !s_apiRollSeen) {
+                s_apiRollSeen = true;
+                SKSE::log::info("FreeCam: another mod's roll ({:.1f} degrees) applied to the free camera's rotation",
+                    s_apiRoll * 57.29578f);
+            }
+            if (roll != 0.0f) {
+                float halfAngle = roll * 0.5f;
                 float cH = std::cos(halfAngle);
                 float sH = std::sin(halfAngle);
 
@@ -595,6 +627,8 @@ namespace FreeCam {
                     SKSE::log::info("FreeCam: roll cleared - an FCFW timeline / SLCC {} the camera without a free cam exit",
                         driving ? "released" : "took");
                     s_rollAngle = 0.0f;
+                    s_extraRoll = 0.0f;
+                    s_apiRoll   = 0.0f;
                 }
                 s_prevDriving = driving;
             }
@@ -815,7 +849,10 @@ namespace FreeCam {
             if (a_this) {
                 SceneCam::Drive(AsFreeCam(a_this), prePitch, preYaw, driving);
                 AmbientCam::Drive(AsFreeCam(a_this), driving);  // 0.11.0: idle / furniture camera, after the Scene Camera
+                ConvoCam::Drive(AsFreeCam(a_this), driving);    // 0.16.0: conversation camera
+                CamPath::Drive(AsFreeCam(a_this), driving);     // 0.17.0: camera path (stops the others when it plays)
                 CamCollision::Apply(AsFreeCam(a_this), driving);  // 0.12.0: walls, for whatever an automatic camera wrote
+                CamBlur::Update(AsFreeCam(a_this), driving);    // 0.17.0: background blur, from the final pose
             }
 
             // Save the live free-cam transform as the menu-restore anchor — while no
@@ -846,6 +883,8 @@ namespace FreeCam {
 
             // 0.7.10: cheap bookkeeping stays on the calling thread (it may be a Papyrus VM thread).
             s_rollAngle = 0.0f;
+            s_extraRoll = 0.0f;
+            s_apiRoll   = 0.0f;
             // Start the menu-restore anchor fresh — never restore a previous session's
             // (or zero) position on entry. The first Update frame captures the real spot.
             s_menuSaveValid = false;
@@ -870,6 +909,7 @@ namespace FreeCam {
             // 0.7.10: FOV capture, HUD hide and the SLCC bridge on the main thread (inline when already there).
             const bool ranInline = RunHookWork([driven, slccOwned, timeline, selfToggle, thread] {
                 if (driven) {
+                    FovFx::Reset();  // 0.18.0: no action-FOV offset in the FOV the free camera keeps
                     auto* cam = RE::PlayerCamera::GetSingleton();
                     s_baseFOV = cam ? WorldFOV(cam) : 0.0f;
                     HUDHider::OnFreeCamEnter();
@@ -909,6 +949,8 @@ namespace FreeCam {
             const bool wasTFCam   = s_sessionDriven;
             const bool selfToggle = SlccBridge::IsSelfToggle();  // read now: a queued callback runs after the toggle
             s_rollAngle          = 0.0f;
+            s_extraRoll          = 0.0f;
+            s_apiRoll            = 0.0f;
             s_sessionDriven      = false;
             s_entryPosePending   = false;
             s_menuSaveValid      = false;  // invalidate menu-restore anchor on exit
@@ -962,6 +1004,8 @@ namespace FreeCam {
             // (ExitWorkAfterVanilla then puts the session's base FOV back as before).
             SceneCam::OnFreeCamEnd();
             AmbientCam::OnFreeCamEnd();
+            CamPath::OnFreeCamEnd();          // 0.17.0
+            CamBlur::Off("free camera ended");  // 0.17.0
         }
 
         // Main thread only. s_baseFOV is main-thread state since 0.7.10 (the Begin batch sets it, this reads it), so a
@@ -1097,6 +1141,17 @@ namespace FreeCam {
     struct ActivateBlockHook {
         static void thunk(RE::ActivateHandler* a_this, RE::ButtonEvent* a_event,
                           RE::PlayerControlsData* a_data) {
+            // 0.16.0: the conversation camera begins right after the game has handled the RELEASE of this tap (it acts on the
+            // release); the release itself must reach the game first.
+            if (a_event) {
+                if (a_event->IsDown()) {
+                    ConvoCam::NotePress(a_event);
+                } else if (ConvoCam::PendingRelease(a_event)) {
+                    func(a_this, a_event, a_data);
+                    ConvoCam::BeginPending();
+                    return;
+                }
+            }
             if (IsActive() && (s_settings.disableActivate || s_snapHandler.load())) {
                 return;
             }
@@ -1278,7 +1333,7 @@ namespace FreeCam {
                     // 0.10.0: Scene Camera keys (all unset by default). Only the key-down of a key bound here is
                     // eaten, and the `continue` sits below every other global hotkey, so it cannot hide one (the 0.7.4
                     // trap); a key also bound to reset does the Scene Camera job on its press instead.
-                    if (!AnyMenuOpen() && SceneCam::OnHotkey(code)) {
+                    if (!AnyMenuOpen() && (SceneCam::OnHotkey(code) || CamPath::OnHotkey(code))) {
                         active  = IsActive();
                         driving = active && !CameraOwnedElsewhere();
                         ConsumeButton(btn);

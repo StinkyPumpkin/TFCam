@@ -120,6 +120,11 @@ namespace CamCollision {
             return nl > 0.5f && std::fabs(a_normal.z / nl) < 0.7f;  // an upright surface
         }
 
+        // 10-30: the game's own camera bodies - the third-person camera's collision sphere (kCameraSphere, no reference) sits
+        // where the camera was last frame, so a probe toward where it goes next met it every frame and the archer camera
+        // lurched in and out while the string was held. Nothing else lives on these layers.
+        bool IsCameraLayer(RE::COL_LAYER a_layer) { return a_layer == RE::COL_LAYER::kCameraSphere || a_layer == RE::COL_LAYER::kCameraPick; }
+
         bool IsCharacterLayer(RE::COL_LAYER a_layer) {
             switch (a_layer) {
             case RE::COL_LAYER::kBiped:
@@ -162,7 +167,7 @@ namespace CamCollision {
                 auto*       ref   = coll ? RE::TESHavokUtilities::FindCollidableRef(*coll) : nullptr;
                 const RE::NiPoint3 hitNormal{ pick.rayOutput.normal.quad.m128_f32[0], pick.rayOutput.normal.quad.m128_f32[1],
                     pick.rayOutput.normal.quad.m128_f32[2] };
-                if (IsCharacterLayer(layer) || (ref && ref->IsActor()) || IsSmallProp(layer, ref) || IsPassThrough(layer, ref, hitNormal) ||
+                if (IsCameraLayer(layer) || IsCharacterLayer(layer) || (ref && ref->IsActor()) || IsSmallProp(layer, ref) || IsPassThrough(layer, ref, hitNormal) ||
                     frac * len < kSkipNear) {
                     start = frac + 1.0f / len;  // step 1 unit past it and look again
                     continue;
@@ -359,6 +364,37 @@ namespace CamCollision {
         } else {
             s_off = {};
         }
+    }
+
+    RE::NiPoint3 ClearSpot(const RE::NiPoint3& a_pivot, const RE::NiPoint3& a_cam) {
+        if (!s_cfg.enabled) return a_cam;
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* cell   = player ? player->GetParentCell() : nullptr;
+        auto* world  = cell ? cell->GetbhkWorld() : nullptr;
+        if (!world) return a_cam;
+        const RE::NiPoint3 v = a_cam - a_pivot;
+        const float        d = Len(v);
+        if (!(d > kMinDist) || !std::isfinite(d)) return a_cam;
+        const RE::NiPoint3 dir = v * (1.0f / d);
+        RE::NiPoint3       side{ dir.y, -dir.x, 0.0f };
+        if (const float sl = Len(side); sl > 0.01f) {
+            side = side * (1.0f / sl);
+        } else {
+            side = { 1.0f, 0.0f, 0.0f };
+        }
+        float       nearClip = 15.0f;
+        const float reach    = NearPlaneReach(nearClip);
+        const float r        = std::clamp(reach, s_cfg.margin * kProbeFrac, kMaxSide);
+        const float margin   = (std::max)(s_cfg.margin, nearClip + 4.0f);
+        const Solved sol     = Solve(world, a_pivot, a_cam, side, r, margin);
+        if (sol.moved && Now() >= s_nextLog) {
+            s_nextLog       = Now() + 0.5;
+            const auto text = std::format("archer camera: moved {:.0f} units off the wall of {:08X} (layer {})", Len(sol.pos - a_cam),
+                sol.nearest.ref, sol.nearest.layer);
+            SKSE::log::info("CamCollision: {}", text);
+            NotePush(text);
+        }
+        return sol.pos;
     }
 
     std::string MenuStatus() {

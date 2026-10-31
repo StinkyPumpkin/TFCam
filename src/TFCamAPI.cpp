@@ -1,6 +1,7 @@
 #include "TFCamAPI.h"
 #include "FreeCamController.h"
 #include "SceneCam.h"
+#include "CamBlur.h"
 
 // 0.9.2: cross-plugin API (TFCamAPI.h). PEM and Whore Horde's photo studio take over the
 // screenshot key while the player flies the camera for a photo.
@@ -10,9 +11,11 @@
 // 0.13.0: v3 = ITFCam3 (orbit aim / sway / target, automatic free camera for saved shots, status with the free-camera
 // state, delete the scene's shots). Still one object: RequestTFCamAPI(1) / (2) return the same pointer as before.
 // 0.15.0: v4 = ITFCam4 (preset views, set cam pos). Same object again.
+// 0.17.0: v5 = ITFCam5 (background blur and an extra roll for another mod's camera). Same object again; these run in
+// the caller's (game) thread - no task: the blur must follow the camera the same frame.
 namespace
 {
-    class TFCamAPIImpl final : public TFCAM_API::ITFCam4
+    class TFCamAPIImpl final : public TFCAM_API::ITFCam5
     {
     public:
         void SetSnapHandler(TFCAM_API::SnapHandler a_handler) noexcept override
@@ -112,6 +115,24 @@ namespace
             return Guard([&] { return SceneCam::ApiGetPreset4(a_out); });
         }
 
+        void SetBlurSubject(bool a_on, float a_x, float a_y, float a_z, float a_strength) noexcept override
+        {
+            Guard([&] {
+                CamBlur::External(a_on, RE::NiPoint3{ a_x, a_y, a_z }, a_strength);
+                return true;
+            });
+        }
+
+        bool BlurAvailable() noexcept override
+        {
+            return Guard([] { return CamBlur::Available(); });
+        }
+
+        void SetCameraRoll(float a_radians) noexcept override
+        {
+            FreeCam::SetApiRoll(a_radians);
+        }
+
     private:
         // Nothing may leave a noexcept call into another DLL (a failed task allocation would otherwise terminate).
         template <class F>
@@ -140,6 +161,8 @@ extern "C" __declspec(dllexport) void* RequestTFCamAPI(std::uint32_t a_version)
         return static_cast<TFCAM_API::ITFCam3*>(&g_api);
     case TFCAM_API::kVersion4:
         return static_cast<TFCAM_API::ITFCam4*>(&g_api);
+    case TFCAM_API::kVersion5:
+        return static_cast<TFCAM_API::ITFCam5*>(&g_api);
     default:
         return nullptr;
     }

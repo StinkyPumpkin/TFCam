@@ -50,6 +50,11 @@ namespace FreeCam {
     float GetRollDegrees();
     float GetRollRadians();          // 0.10.0: Scene Camera reads / blends the roll (saved shots carry it)
     void  SetRollRadians(float a_roll);
+    // 0.17.0: a second roll on top of the free camera's own (Q / E), owned by whatever moves the camera: the orbit's
+    // roll / roll speed, a camera path's points. Not saved in shots; cleared when the free camera begins / ends.
+    float GetExtraRoll();
+    void  SetExtraRoll(float a_roll);
+    void  SetApiRoll(float a_roll);  // 0.17.0 TFCamAPI v5: another mod's free camera (PhotoStudio), cleared at Begin / End
     void  ResetAll();
     bool  IsActive();       // vanilla free camera is on - whoever drives it (input blocks key on this)
 
@@ -71,6 +76,7 @@ namespace FreeCam {
     // 0.7.9 diagnostics. SKSEPluginLoad runs on the game's main thread (kDataLoaded does NOT: it runs on the
     // data-loading thread), so that is where the main thread id is recorded.
     void        NoteMainThread();
+    bool        OnMainThreadNow();  // 0.16.0: the calling thread is the game's main thread
     std::string ThreadTag();  // "thread N (main)" / "thread N (NOT the main thread ...)"
 
     // 0.7.9 scripted-tfc guard (SlccBridge's console tfc wrapper). Poser Hotkeys Plus closes ANY free camera on

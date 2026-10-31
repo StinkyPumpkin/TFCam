@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "")
-project(TFCam VERSION 0.15.1 LANGUAGES CXX)
+project(TFCam VERSION 0.18.0 LANGUAGES CXX)
 
 if(DEFINED ENV{SKYRIM_MODS_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_MODS_FOLDER}")
     set(OUTPUT_FOLDER "$ENV{SKYRIM_MODS_FOLDER}/FreeCam--Claude")
@@ -80,9 +80,17 @@ add_commonlibsse_plugin(${PROJECT_NAME} MINIMUM_SKSE_VERSION 0.0.0 SOURCES
     src/CellEntryCam.cpp
     src/TFCamAPI.cpp
     src/SceneCam.cpp
+    src/ConvoCam.cpp
     src/SceneShots.cpp
     src/AmbientCam.cpp
     src/CamCollision.cpp
+    src/CamFocus.cpp
+    src/CamBlur.cpp
+    src/CamPath.cpp
+    src/FixedCam.cpp
+    src/FovFx.cpp
+    src/AimDot.cpp
+    src/FrameFx.cpp
 )
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 target_precompile_headers(${PROJECT_NAME} PRIVATE PCH.h)
