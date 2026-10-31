@@ -29,7 +29,7 @@ namespace AimDot {
     bool DotInCharge();
 
     // 10-31: "the crosshair should be disabled unless a bow or spell is equipped". While the dot is in charge the game's
-    // own crosshair is switched off (HUD SetCrosshairEnabled), so the only crosshair is the dot, which shows with
+    // own crosshair is hidden (the HUD's Crosshair clip), so the only crosshair is the dot, which shows with
     // something ranged out. Every frame, main thread.
     void CrosshairTick();
 
