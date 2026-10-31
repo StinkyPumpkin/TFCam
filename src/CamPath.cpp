@@ -1320,6 +1320,7 @@ namespace CamPath {
         // Backwards to camera 1 at a_rate (< 0): from where the path is, or from its end when it is not playing.
         void Reverse(float a_rate, const char* a_what) {
             if (s_play.on) {
+                if (s_play.paused && s_play.editGen != s_editGen.load() && !SeekNow(s_play.elapsed)) return;  // as Toggle
                 s_play.rate   = a_rate;
                 s_play.paused = false;
                 Event(a_what);

@@ -239,6 +239,12 @@
     show($('icPlay'), !playing);
     show($('icPause'), playing);
     $('btPlay').setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    var back = !!(S.playing && S.rewinding);  // going backwards: the backwards button pauses
+    show($('icBack'), !back);
+    show($('icBackPause'), back);
+    setOn($('btBack'), back);
+    $('btBack').title = back ? 'Pause' : 'Play backwards';
+    $('btBack').setAttribute('aria-label', back ? 'Pause' : 'Play backwards');
     var sc = slowCam(lay, cur), bs = $('btSlow');
     bs.disabled = sc < 0;
     bs.dataset.at = sc;
@@ -445,6 +451,7 @@
     var el = e.target.closest('button');
     if (!el) return;
     if (el.id === 'btMenu') { setMenu(!menuOpen); return; }
+    if (el.id === 'btBack') { cmd(S.playing && S.rewinding ? 'pause' : 'backwards'); return; }
     if (el.id === 'btSlow') {  // TFCam starts the slow down where the path is paused; the card opens on its options
       var at = +el.dataset.at;
       if (at >= 0) { cmd('slowHere|' + at); sel = at; tab = 'move'; render(true); }
@@ -625,7 +632,9 @@
   }
   function previewCmd(s) {
     var a = s.split('|');
-    if (a[0] === 'play') { S.playing = !(S.playing && !S.paused); S.paused = false; }
+    if (a[0] === 'play') { S.playing = !(S.playing && !S.paused && !S.rewinding); S.paused = false; S.rewinding = false; }
+    else if (a[0] === 'backwards') { S.playing = true; S.paused = false; S.rewinding = true; }
+    else if (a[0] === 'pause') { S.paused = true; S.rewinding = false; }
     else if (a[0] === 'stop') { S.playing = false; }
     else if (a[0] === 'freeze') { S.frozen = !S.frozen; }
     else if (a[0] === 'video') { S.video = !S.video; }

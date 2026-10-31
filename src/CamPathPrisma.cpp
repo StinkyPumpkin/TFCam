@@ -299,6 +299,9 @@ namespace CamPathPrisma {
                 } else {
                     CamPath::RequestPlay(1);
                 }
+            } else if (cmd == "pause") {  // the backwards button while it plays backwards
+                const auto s = CamPath::GetSnapshot();
+                if (s.playing && !s.paused) CamPath::RequestPause();
             } else if (cmd == "stop") {
                 CamPath::RequestPlay(0);
             } else if (cmd == "rewind") {
