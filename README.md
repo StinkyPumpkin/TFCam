@@ -188,6 +188,9 @@ the scene / stage ids, shots saved / recalled / deleted, refusals, automatic fre
 **0.18.1**
 - While the aim dot is the crosshair, the game's own crosshair is off: with a sword or bare hands there is none, with a
   bow, crossbow, staff or spell out there is the dot (`[AimDot] bHideGameCrosshair=0` keeps the game's crosshair).
+- Idle and furniture camera: a menu key (Tab and the others) brings the normal camera back at once. Before, Tab's menu
+  took the free camera and the game gave it back when the menu closed, so you stayed in the free camera through the
+  inventory (Show Player In Inventory could not show you).
 
 **0.18.0**
 - *Action FOV* (`[ActionFOV]`, off by default): the view reacts to bow draws and releases, power attacks, big spells,
