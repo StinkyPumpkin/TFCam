@@ -2023,6 +2023,7 @@ namespace CamPath {
             auto ref = CamFocus::ConsoleRef();
             if (!ref) {
                 Notify("Camera path: nothing selected in the console");
+                Event("pivot: nothing was clicked in the console");
                 return;
             }
             SetPivot(1, ref, "the console's selection", a_cam);

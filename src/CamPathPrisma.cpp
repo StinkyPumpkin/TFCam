@@ -14,6 +14,7 @@
 #include <cmath>
 #include <format>
 #include <functional>
+#include <numbers>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -34,6 +35,14 @@ namespace CamPathPrisma {
         bool        s_dirty     = true;
         std::string s_lastJson;
         long long   s_closedAt  = 0;
+        // Console button: the editor steps aside and the console opens; when it closes, what was clicked in it becomes
+        // camera s_consoleCam's pivot (the editor takes every key, so the console could not be opened beside it)
+        int    s_consoleCam   = -1;
+        bool   s_consoleSeen  = false;
+        double s_consoleSince = 0.0;
+
+        void Hide();
+        void Show();
 
         long long NowMs() {
             return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -83,6 +92,23 @@ namespace CamPathPrisma {
         }
 
         std::string KeyText(int a_code) { return a_code ? std::string(FreeCamMenu::KeyName(a_code)) : std::string(); }
+
+        // Which way camera a_i's orbit goes, for the editor (it offers Left / Right only, user 10-31): the camera's own
+        // choice, else the short way round as WayAngle plays it. 0 = not an orbit, or no pivot at either end.
+        int OrbitWay(const CamPath::Snapshot& a_s, std::size_t a_i) {
+            const auto& c = a_s.cams[a_i];
+            if (c.move != CamPath::kMoveAround) return 0;
+            if (c.way != CamPath::kWayShortest) return c.way;
+            const std::size_t n = a_s.cams.size();
+            const std::size_t k = a_i + 1 < n ? a_i + 1 : (a_s.loop && n > 1 ? 0 : n);
+            if (k >= n) return 0;
+            const auto&         d   = a_s.cams[k];
+            const RE::NiPoint3* mid = c.havePivot ? &c.pivotPos : (d.havePivot ? &d.pivotPos : nullptr);
+            if (!mid) return 0;
+            const float a0 = std::atan2(c.pos.x - mid->x, c.pos.y - mid->y);
+            const float a1 = std::atan2(d.pos.x - mid->x, d.pos.y - mid->y);
+            return std::remainder(a1 - a0, 2.0f * std::numbers::pi_v<float>) < 0.0f ? CamPath::kWayLeft : CamPath::kWayRight;
+        }
 
         std::string StateJson() {
             const auto  s   = CamPath::GetSnapshot();
@@ -140,6 +166,7 @@ namespace CamPathPrisma {
                 Bool(j, "smooth", c.smooth);
                 Num(j, "turns", c.turns);
                 Num(j, "way", c.way);
+                Num(j, "wayNow", OrbitWay(s, i));
                 Bool(j, "zoomTrick", c.zoomTrick);
                 Num(j, "bendSide", c.bendSide);
                 Num(j, "bendUp", c.bendUp);
@@ -284,8 +311,17 @@ namespace CamPathPrisma {
                 CamPath::RequestPickPivot(I(a, 1, 0));
             } else if (cmd == "me") {
                 CamPath::RequestPivotMe(I(a, 1, 0));
-            } else if (cmd == "console") {
-                CamPath::RequestPivotConsole(I(a, 1, 0));
+            } else if (cmd == "console") {  // Tick finishes it when the console closes
+                s_consoleCam   = I(a, 1, 0);
+                s_consoleSeen  = false;
+                s_consoleSince = Now();
+                if (!s_aside) {
+                    s_aside = true;
+                    Hide();
+                }
+                if (auto* q = RE::UIMessageQueue::GetSingleton()) q->AddMessage(RE::Console::MENU_NAME, RE::UI_MESSAGE_TYPE::kShow, nullptr);
+                RE::SendHUDMessage::ShowHUDMessage("Click who or what to use as the pivot, then close the console");
+                SKSE::log::info("CamPathPrisma: console pick for camera {} - the console opens", s_consoleCam + 1);
             } else if (cmd == "none") {
                 CamPath::RequestPivotNone(I(a, 1, 0));
             } else if (cmd == "follow") {
@@ -406,18 +442,20 @@ namespace CamPathPrisma {
     void Open() {
         if (!Available() || s_open) return;
         CamPathWindow::AutoHide(false);
-        s_open      = true;
-        s_aside     = false;
-        s_lastAside = false;
-        s_typing    = false;
+        s_open       = true;
+        s_aside      = false;
+        s_lastAside  = false;
+        s_typing     = false;
+        s_consoleCam = -1;
         Show();
         SKSE::log::info("CamPathPrisma: editor open");
     }
 
     void Close() {
         if (!Available() || !s_open) return;
-        s_open  = false;
-        s_typing = false;
+        s_open       = false;
+        s_typing     = false;
+        s_consoleCam = -1;
         if (!s_aside) Hide();
         s_aside    = false;
         s_closedAt = NowMs();
@@ -447,6 +485,24 @@ namespace CamPathPrisma {
 
     void Tick() {
         if (!Available() || !s_open) return;
+        if (s_consoleCam >= 0) {  // Console button: back when the console closes (or never opened)
+            auto* ui = RE::UI::GetSingleton();
+            if (ui && ui->IsMenuOpen(RE::Console::MENU_NAME)) {
+                s_consoleSeen = true;
+                return;
+            }
+            if (!s_consoleSeen && Now() - s_consoleSince < 3.0) return;
+            const int cam = std::exchange(s_consoleCam, -1);
+            if (s_consoleSeen) {
+                CamPath::RequestPivotConsole(cam);
+            } else {
+                SKSE::log::warn("CamPathPrisma: the console did not open - no pivot picked");
+            }
+            s_aside     = false;
+            s_lastAside = false;
+            Show();
+            return;
+        }
         // a playing path with Clean screen: the editor steps aside, and comes back when it pauses or ends
         const auto s     = CamPath::GetSnapshot();
         const bool aside = s.cleanScreen && s.playing && !s.paused;

@@ -8,9 +8,8 @@
   'use strict';
 
   var MOVES = ['straight', 'curve', 'around', 'cut'];
-  var MOVE_NAMES = ['Straight', 'Curve', 'Around', 'Cut'];
+  var MOVE_NAMES = ['Straight', 'Curve', 'Orbit', 'Cut'];
   var LOOKS = ['The pivot', 'As I set it', 'Where it goes'];
-  var WAYS = ['Shortest', 'Left', 'Right'];
   var BONES = ['Middle', 'Head', 'Eyes', 'Chest', 'Hips', 'Bum', 'Groin', 'Hands', 'Feet'];
   var PRESETS = [
     ['Steady', [0.33, 0.33, 0.67, 0.67]], ['Slow start and stop', [0.42, 0, 0.58, 1]], ['Slow start', [0.42, 0, 1, 1]],
@@ -239,6 +238,14 @@
     });
     return h + '</div>';
   }
+  // an orbit goes left or right; a camera still on "the short way" (0, older paths) shows the way it goes (wayNow)
+  function wayOpts(c) {
+    var cur = c.way || c.wayNow || 0, h = '<div class="segbtns" role="group">';
+    [[1, 'Left'], [2, 'Right']].forEach(function (w) {
+      h += '<button type="button" class="opt' + (w[0] === cur ? ' on' : '') + '" aria-pressed="' + (w[0] === cur) + '" data-opt="way" data-val="' + w[0] + '">' + w[1] + '</button>';
+    });
+    return h + '</div>';
+  }
   function check(field, label, on) {
     return '<label class="check"><input type="checkbox" data-flag="' + field + '"' + (on ? ' checked' : '') + '><span>' + label + '</span></label>';
   }
@@ -293,7 +300,7 @@
     });
     h += '</div>';
     if (tab === 'shot') {
-      h += '<div class="group"><span class="cap">Pivot - what it is about</span><div class="row">' +
+      h += '<div class="group"><div class="row">' +
         '<span class="pivot' + (c.pivotKind >= 0 ? '' : ' none') + '">' + esc(c.pivotKind >= 0 ? c.pivot : 'No pivot') + '</span>' +
         '<button type="button" class="btn" data-cam="pick">Pick</button><button type="button" class="btn" data-cam="me">Me</button>' +
         '<button type="button" class="btn" data-cam="console">Console</button><button type="button" class="btn" data-cam="none">None</button></div>';
@@ -302,7 +309,7 @@
         BONES.forEach(function (b, k) { h += '<option value="' + k + '"' + (k === c.bone ? ' selected' : '') + '>' + b + '</option>'; });
         h += '</select></label>';
       }
-      h += '<span class="dim small">Pick: what the middle of the screen points at. Console: what was clicked in the console.</span></div>';
+      h += '<span class="dim small">Pick: what the middle of the screen points at. Console: opens the console - click who you want, then close it.</span></div>';
       h += '<div class="group"><span class="cap">Looks at</span>' + opts('look', LOOKS, c.look) +
         (c.pivotKind < 0 && c.look === 0 ? '<span class="dim small">No pivot yet - it looks the way you set it.</span>' : '') + '</div>';
       h += slider('wait', 'Wait here', c);
@@ -316,7 +323,7 @@
         var nx = nextOf(sel);
         h += '<div class="group"><span class="cap">Then to camera ' + nx + '</span>' + opts('move', MOVE_NAMES, c.move);
         if (c.move === 2 && c.pivotKind < 0 && (!S.cams[nx - 1] || S.cams[nx - 1].pivotKind < 0)) {
-          h += '<span class="dim small">No pivot here or at camera ' + nx + ' to go round - it curves there instead.</span>';
+          h += '<span class="dim small">No pivot here or at camera ' + nx + ' to orbit - it curves there instead.</span>';
         }
         h += '</div>';
         if (c.move !== 3) {
@@ -325,7 +332,7 @@
           h += curveEditor(c);
           if (c.move !== 2) h += slider('bendSide', 'Bend left / right', c) + slider('bendUp', 'Bend down / up', c);
           h += slider('turns', 'Extra full turns', c);
-          h += '<div class="group"><span class="cap">Which way round</span>' + opts('way', WAYS, c.way) + '</div>';
+          if (c.move === 2) h += '<div class="group"><span class="cap">Which way round</span>' + wayOpts(c) + '</div>';
           h += check('zoomTrick', 'Zoom trick (the pivot keeps its size, the background stretches)', c.zoomTrick);
         } else {
           h += '<div class="note">The camera jumps straight to camera ' + nx + ', like a cut in a film.</div>';
@@ -569,10 +576,10 @@
   fit();
 
   // ---- outside the game: demo data ---------------------------------------------------------------------------------------
-  // #cam picks camera 2, #more shows every setting, #menu opens the menu, #many uses 22 cameras, #shot / #fx pick a tab;
+  // #cam picks camera 2 (#first: camera 1, an orbit), #more shows every setting, #menu opens the menu, #many uses 22 cameras, #shot / #fx pick a tab;
   // ?bg=<url> puts a picture behind it.
   function cam(o) {
-    var base = { pivot: 'none', pivotKind: -1, bone: 0, look: 1, wait: 0, fov: 70, move: 1, time: 3, seconds: 3, smooth: false, turns: 0, way: 0, zoomTrick: false,
+    var base = { pivot: 'none', pivotKind: -1, bone: 0, look: 1, wait: 0, fov: 70, move: 1, time: 3, seconds: 3, smooth: false, turns: 0, way: 0, wayNow: 0, zoomTrick: false,
       bendSide: 0, bendUp: 0, blur: false, blurStrength: 0.6, shake: 0, crashZoom: false, slowMo: false, slowAt: 0.66, slowSpeed: 0.4, slowLength: 0.2,
       slowWorld: false, slowCamera: true, elastic: 0, sling: 0, curveOn: false, curve: [0.42, 0, 0.58, 1] };
     for (var k in o) base[k] = o[k];
@@ -586,6 +593,7 @@
     else if (a[0] === 'video') { S.video = !S.video; }
     else if (a[0] === 'seek') { S.playing = false; scrubAt = +a[1]; }
     else if (a[0] === 'add') { S.cams.push(cam({})); S.lastEvent = 'camera ' + S.cams.length + ' added'; }
+    else if (a[0] === 'console') { S.lastEvent = 'pivot for camera ' + (+a[1] + 1) + ': Lydia (the console\'s selection)'; S.cams[+a[1]].pivot = 'Lydia'; S.cams[+a[1]].pivotKind = 1; }
     render(false);
   }
   setTimeout(function () {
@@ -603,7 +611,7 @@
     badge.textContent = 'Preview outside the game - demo data';
     document.body.appendChild(badge);
     var cams = [
-      cam({ pivot: 'Adrianne', pivotKind: 1, bone: 1, look: 0, wait: 0.2, fov: 62, move: 2, time: 1.9, seconds: 2.2, slowMo: true, curveOn: true }),
+      cam({ pivot: 'Adrianne', pivotKind: 1, bone: 1, look: 0, wait: 0.2, fov: 62, move: 2, time: 1.9, seconds: 2.2, slowMo: true, curveOn: true, wayNow: 2 }),
       cam({ pivot: 'Adrianne', pivotKind: 1, look: 0, fov: 55, move: 1, time: 3, seconds: 3, bendSide: 0.25, bendUp: 0.1, shake: 0.15, elastic: 0.3, curveOn: true, curve: [0.1, 0.7, 0.3, 1] }),
       cam({ look: 1, wait: 1, move: 3, seconds: 0 }),
       cam({ pivot: 'you', pivotKind: 0, bone: 2, look: 0, wait: 1.5, fov: 40, crashZoom: true })
@@ -624,6 +632,7 @@
     };
     S.total = layout().total;
     if (has('cam')) sel = 1;
+    if (has('first')) sel = 0;
     if (has('more')) expanded = true;
     if (has('shot')) tab = 'shot';
     if (has('fx')) tab = 'fx';
