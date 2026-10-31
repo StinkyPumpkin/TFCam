@@ -26,6 +26,10 @@
 #include <cstdio>
 #include <format>
 #include <fstream>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace FreeCamMenu {
 
@@ -151,14 +155,92 @@ namespace FreeCamMenu {
     // 0.7.9: every write is checked. The live TFCam.ini (mods\TFCam 0.7.2) was last written 2026-09-22 although the
     // user changed checkboxes on 09-24 and 09-26, and even a same-value WritePrivateProfileString bumps the file time
     // - so either those saves failed or never ran. SaveINI now says which, in TFCam.log.
+    // 0.18.0: that was it - under Mod Organizer 2, WritePrivateProfileStringA writes never reach the file (reads do), so
+    // nothing changed on these pages survived a restart (10-31: the archer camera's angle and distance kept coming back;
+    // TFCam.ini untouched since a hand edit). TFCam.ini is now written with plain file I/O, which MO2's virtual file
+    // system passes to the real file: one save sets all its keys in memory and writes the file once.
     static bool  s_saveWriteOk  = true;
     static DWORD s_saveWriteErr = 0;
+    static std::mutex s_iniLock;
+    static thread_local std::vector<std::string>* s_iniBatch = nullptr;  // a save in progress on this thread
+
+    static std::vector<std::string> ReadIniLines() {
+        std::vector<std::string> lines;
+        std::ifstream in(GetINIPath(), std::ios::binary);
+        for (std::string l; std::getline(in, l);) {
+            if (!l.empty() && l.back() == '\r') l.pop_back();
+            lines.push_back(std::move(l));
+        }
+        return lines;
+    }
+
+    static bool WriteIniLines(const std::vector<std::string>& a_lines) {
+        std::ofstream out(GetINIPath(), std::ios::binary | std::ios::trunc);
+        if (out) {
+            for (const auto& l : a_lines) out << l << "\r\n";
+            out.flush();
+        }
+        if (!out) {
+            s_saveWriteErr = GetLastError();
+            return false;
+        }
+        return true;
+    }
+
+    static std::string_view IniTrim(std::string_view a_s) {
+        const auto b = a_s.find_first_not_of(" \t");
+        if (b == std::string_view::npos) return {};
+        const auto e = a_s.find_last_not_of(" \t");
+        return a_s.substr(b, e - b + 1);
+    }
+
+    static bool IniEq(std::string_view a_a, std::string_view a_b) {
+        return a_a.size() == a_b.size() && _strnicmp(a_a.data(), a_b.data(), a_a.size()) == 0;
+    }
+
+    // key=value in [section]: replaced where it is, else added after the section's last entry (or in a new section).
+    static void IniSet(std::vector<std::string>& a_lines, std::string_view a_section, std::string_view a_key, std::string_view a_value) {
+        const std::string header = "[" + std::string(a_section) + "]";
+        const std::string entry  = std::string(a_key) + "=" + std::string(a_value);
+        std::size_t       i      = 0;
+        while (i < a_lines.size() && !IniEq(IniTrim(a_lines[i]), header)) ++i;
+        if (i == a_lines.size()) {
+            if (!a_lines.empty() && !IniTrim(a_lines.back()).empty()) a_lines.emplace_back();
+            a_lines.push_back(header);
+            a_lines.push_back(entry);
+            return;
+        }
+        std::size_t last = i;
+        for (std::size_t j = i + 1; j < a_lines.size(); ++j) {
+            const std::string_view t = IniTrim(a_lines[j]);
+            if (!t.empty() && t.front() == '[') break;
+            if (!t.empty() && t.front() != ';') last = j;
+            const auto eq = t.find('=');
+            if (eq != std::string_view::npos && IniEq(IniTrim(t.substr(0, eq)), a_key)) {
+                a_lines[j] = entry;
+                return;
+            }
+        }
+        a_lines.insert(a_lines.begin() + static_cast<std::ptrdiff_t>(last + 1), entry);
+    }
+
+    // Runs a_fill with every WriteINI* call collected in memory, then writes TFCam.ini once.
+    template <class F>
+    static void IniBatch(F&& a_fill) {
+        std::scoped_lock lock(s_iniLock);
+        auto lines = ReadIniLines();
+        s_iniBatch = &lines;
+        a_fill();
+        s_iniBatch = nullptr;
+        if (!WriteIniLines(lines)) s_saveWriteOk = false;
+    }
 
     static void WriteINIString(const char* section, const char* key, const char* val) {
-        if (!WritePrivateProfileStringA(section, key, val, GetINIPath()) && s_saveWriteOk) {
-            s_saveWriteOk  = false;
-            s_saveWriteErr = GetLastError();
+        if (s_iniBatch) {
+            IniSet(*s_iniBatch, section, key, val);
+            return;
         }
+        IniBatch([&] { IniSet(*s_iniBatch, section, key, val); });  // a single key outside a save
     }
 
     static void WriteINIFloat(const char* section, const char* key, float val) {
@@ -184,7 +266,7 @@ namespace FreeCamMenu {
     static void SaveINI() {
         s_saveWriteOk  = true;
         s_saveWriteErr = 0;
-        SaveINIValues();
+        IniBatch([] { SaveINIValues(); });
 
         // Read one value back through the same path (MO2's virtual file system included).
         const int  back     = static_cast<int>(GetPrivateProfileIntA("Camera", "bDisableSpace", -1, GetINIPath()));
@@ -400,7 +482,7 @@ namespace FreeCamMenu {
     void SaveSceneCamSettings() {
         s_saveWriteOk  = true;
         s_saveWriteErr = 0;
-        WriteSceneCamValues();
+        IniBatch([] { WriteSceneCamValues(); });
         const auto& sc = SceneCam::GetConfig();
         if (s_saveWriteOk) {
             SKSE::log::info("FreeCamMenu: Scene Camera settings saved - radius {:.0f}, tilt {:.0f}, speed {:.0f}, orbit FOV "
@@ -1085,6 +1167,8 @@ namespace FreeCamMenu {
                 auto& ad       = AimDot::Get();
                 bool  adChange = ImGuiMCP::Checkbox("Arrows and spells go where the dot is (TFCam's own aim)##afHitDot", &ad.enabled);
                 ImGuiMCP::TextColored(grey, "Aim: %s", AimDot::Status());
+                ImGuiMCP::TextColored(grey, "Off by default. With Hit Where You Aim installed TFCam leaves the aiming to it, "
+                                            "and the dot sits where that mod sends the arrows.");
                 changed |= adChange;
             }
             changed |= ImGuiMCP::Checkbox("Blur round the edge of the screen while the string is drawn##afAimBlur", &f.aimBlur);
