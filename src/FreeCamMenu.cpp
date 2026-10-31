@@ -372,6 +372,7 @@ namespace FreeCamMenu {
         WriteINIInt("ActionFOV", "bArcherBlur", f.aimBlur ? 1 : 0);
         WriteINIFloat("ActionFOV", "fArcherVignette", f.aimVignette);
         WriteINIInt("AimDot", "bHitTheDot", AimDot::Get().enabled ? 1 : 0);
+        WriteINIInt("AimDot", "bHideGameCrosshair", AimDot::Get().hideGameCrosshair ? 1 : 0);
         const auto& c = CamPath::Get();
         WriteINIInt("CameraPath", "bCurved", c.curved ? 1 : 0);
         WriteINIInt("CameraPath", "bCut", c.snap ? 1 : 0);
@@ -1683,6 +1684,7 @@ namespace FreeCamMenu {
             af.aimBlur     = readInt("ActionFOV", "bArcherBlur", ad.aimBlur ? 1 : 0) != 0;
             af.aimVignette = readFloat("ActionFOV", "fArcherVignette", ad.aimVignette);
             AimDot::Get().enabled = readInt("AimDot", "bHitTheDot", AimDot::Settings{}.enabled ? 1 : 0) != 0;
+            AimDot::Get().hideGameCrosshair = readInt("AimDot", "bHideGameCrosshair", AimDot::Settings{}.hideGameCrosshair ? 1 : 0) != 0;
             FovFx::Clamp();
             SKSE::log::info("FovFx: action FOV {}", af.enabled ? "on" : "off");
             SKSE::log::info("CamBlur: background blur {} ({}, strength {:.2f}, sharp middle {:.2f}{})", b.enabled ? "on" : "off",

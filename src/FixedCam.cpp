@@ -1,4 +1,5 @@
 #include "FixedCam.h"
+#include "AimDot.h"
 #include "FovFx.h"
 
 #include <cstdint>
@@ -13,6 +14,7 @@ namespace FixedCam {
                 func(a_camera);
                 FovFx::Tick();         // its offset goes on top of everyone's FOV
                 FovFx::ApplyAimCam();  // the archer camera (Action FOV)
+                AimDot::CrosshairTick();  // the game's crosshair off while the dot is the crosshair
             }
             static inline REL::Relocation<decltype(thunk)> func;
         };

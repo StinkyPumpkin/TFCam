@@ -94,7 +94,9 @@ Page: **SKSE Menu Framework > FreeCam > Action FOV**. Action FOV is off by defau
 - **Aim dot**: a tiny white dot with a dark rim where your arrows and spells go. With TFCam's own aim on (below), or
   with Hit Where You Aim installed and Action FOV on, it sits in the middle of the screen whenever a bow, crossbow,
   staff or spell is out, in first and third person. Otherwise it only shows in the archer camera, where the arrow's
-  own line meets the world. Never in the free camera. *Dot size* sets it.
+  own line meets the world. Never in the free camera. *Dot size* sets it. While the dot sits in the middle like that,
+  the game's own crosshair is switched off (`[AimDot] bHideGameCrosshair`, on), so the only crosshair is the dot and it
+  only shows with something ranged out.
 - **Arrows and spells go where the dot is** (`[AimDot] bHitTheDot`, **off by default**): arrows, bolts,
   fire-and-forget spells, flames and beams are aimed at what the middle of the screen looks at, from whatever camera
   renders the picture (the archer camera included); arrows still drop, the game's own ballistic solver is used. Adapted
@@ -121,7 +123,7 @@ use the dot.
 
 Settings: `TFCam.ini` section `[ActionFOV]`: `bEnabled`, `fStrength`, `bBow`, `bPowerAttacks`, `bSpells`, `iSpellLevel`,
 `bShouts`, `bSpeed`, `bCameraSpeed`, `bArcherCamera`, `fArcherTurn`, `fArcherDistance`, `fArcherUp`, `bArcherDot`,
-`fArcherDotSize`, `bArcherBlur`, `fArcherVignette`; `[AimDot]` `bHitTheDot` (0); `[Blur]` `iStyle` (0 edges, 1 ENB),
+`fArcherDotSize`, `bArcherBlur`, `fArcherVignette`; `[AimDot]` `bHitTheDot` (0), `bHideGameCrosshair` (1); `[Blur]` `iStyle` (0 edges, 1 ENB),
 `fSharpMiddle`.
 
 ## Scene Camera (0.10.0, extended in 0.13.0)
@@ -182,6 +184,10 @@ What it does is logged to `TFCam.log` in SKSE's log folder (`Documents/My Games/
 the scene / stage ids, shots saved / recalled / deleted, refusals, automatic free camera waits and drops).
 
 ## Changelog
+
+**0.18.1**
+- While the aim dot is the crosshair, the game's own crosshair is off: with a sword or bare hands there is none, with a
+  bow, crossbow, staff or spell out there is the dot (`[AimDot] bHideGameCrosshair=0` keeps the game's crosshair).
 
 **0.18.0**
 - *Action FOV* (`[ActionFOV]`, off by default): the view reacts to bow draws and releases, power attacks, big spells,

@@ -455,7 +455,7 @@ float4 PSFx(VsOut i) : SV_Target {
             // The projectiles go through the middle of the screen (TFCam's own aim, or Hit Where You Aim): the dot sits
             // there whenever something ranged is out. With Hit Where You Aim only while Action FOV is on, so a player who
             // turned nothing on in TFCam sees no change.
-            if (AimDot::Active() || (FovFx::HitWhereYouAim() && FovFx::Get().enabled)) {
+            if (AimDot::DotInCharge()) {
                 if (AimDot::DotWanted()) d.on = 1.0f;
                 return d;
             }
