@@ -168,6 +168,7 @@ namespace CamPathPrisma {
                 Num(j, "way", c.way);
                 Num(j, "wayNow", OrbitWay(s, i));
                 Bool(j, "zoomTrick", c.zoomTrick);
+                Num(j, "dolly", c.dolly);
                 Num(j, "bendSide", c.bendSide);
                 Num(j, "bendUp", c.bendUp);
                 Bool(j, "blur", c.blur);
@@ -240,6 +241,7 @@ namespace CamPathPrisma {
             else if (field == "turns") c.turns = static_cast<int>(v);
             else if (field == "way") c.way = static_cast<int>(v);
             else if (field == "zoomTrick") c.zoomTrick = b;
+            else if (field == "dolly") c.dolly = v;
             else if (field == "bendSide") c.bendSide = v;
             else if (field == "bendUp") c.bendUp = v;
             else if (field == "bone") c.bone = static_cast<int>(v);
@@ -256,7 +258,13 @@ namespace CamPathPrisma {
             else if (field == "elastic") c.elastic = v;
             else if (field == "sling") c.sling = v;
             else if (field == "curveOn") c.curveOn = b;
-            else if (field == "curve") {  // x1|y1|x2|y2: turns the camera's own curve on
+            else if (field == "slow") {  // at|speed|length: the camera slows down on part of the way
+                c.slowMo     = true;
+                c.slowCamera = true;
+                c.slowAt     = F(a_a, 3, c.slowAt);
+                c.slowSpeed  = F(a_a, 4, c.slowSpeed);
+                c.slowLength = F(a_a, 5, c.slowLength);
+            } else if (field == "curve") {  // x1|y1|x2|y2: turns the camera's own curve on
                 c.curveOn = true;
                 c.curveX1 = F(a_a, 3, c.curveX1);
                 c.curveY1 = F(a_a, 4, c.curveY1);
@@ -299,6 +307,8 @@ namespace CamPathPrisma {
                 CamPath::RequestPlayBackwards();
             } else if (cmd == "seek") {
                 CamPath::RequestSeek(F(a, 1));
+            } else if (cmd == "slowHere") {
+                CamPath::RequestSlowHere(I(a, 1, -1));
             } else if (cmd == "playFrom") {
                 CamPath::RequestPlayFrom(I(a, 1, 0));
             } else if (cmd == "goTo") {

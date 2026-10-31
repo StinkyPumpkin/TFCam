@@ -34,7 +34,7 @@
     <button type="button" class="btn" data-cmd="saveAs">Save</button>
   </div>
   <div class="mgroup">
-    <button type="button" class="tg" id="tgFollow" data-toggle="follow"><i></i>Follow the pivot</button>
+    <button type="button" class="tg" id="tgFollow" data-toggle="follow" title="The cameras move and turn with their pivots (someone walking)"><i></i>Follow moving</button>
     <button type="button" class="tg" id="tgLoop" data-toggle="loop"><i></i>Loop</button>
     <button type="button" class="tg" id="tgPath" data-toggle="showPath"><i></i>Show the path in the world</button>
     <button type="button" class="tg" id="tgClean" data-toggle="clean"><i></i>Hide this while it plays</button>
@@ -62,6 +62,7 @@
   <button type="button" class="play" id="btPlay" data-cmd="play" aria-label="Play"><svg id="icPlay" aria-hidden="true" viewBox="0 0 24 24"><path d="M7 4.5l13 7.5-13 7.5z"></path></svg><svg id="icPause" aria-hidden="true" viewBox="0 0 24 24" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"></path></svg></button>
   <button type="button" class="ib" data-cmd="stop" title="Stop" aria-label="Stop"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 7h10v10H7z"></path></svg></button>
   <span class="time" id="time">0:00.0 / 0:00.0</span>
+  <button type="button" class="btn slowhere" id="btSlow" disabled>Slow down here</button>
   <div id="track" class="track">
     <div id="lane" class="lane"></div>
     <div id="playhead" class="playhead" aria-hidden="true"></div>

@@ -18,10 +18,9 @@
 //                   wait there N seconds, background blur on/off (+ strength).
 // On to the next:   Straight line / smooth Curve through the cameras / Around the pivot (distance, height and angle
 //                   round the pivot blend - a big circle at one camera and a small one at the next is a spiral) / Cut
-//                   (jump there at once), extra full turns (round the pivot, or turning in place when both cameras
-//                   keep their own view), which way round, seconds, slow start + stop, bend left / right and up /
-//                   down (straight line and curve), zoom trick (dolly zoom: the FOV changes so the pivot keeps its
-//                   size).
+//                   (jump there at once), extra full turns and which way round (orbits only, 10-31), seconds, slow
+//                   start + stop, bend left / right and up / down (straight line and curve), zoom trick ("Dolly":
+//                   the FOV changes so the pivot keeps its size; while waiting the camera can push in / pull back).
 // Play from any camera, play backwards, rewind (backwards at 2x to camera 1), and a camera added while the path plays
 // goes into the path at that moment.
 // Effects: the pivot's point (head, eyes, chest, hips, bum, groin, hands, feet of an actor), camera shake (a bumpy
@@ -77,7 +76,8 @@ namespace CamPath {
         bool  smooth    = true;  // slow start and stop
         int   turns     = 0;     // extra full turns
         int   way       = kWayShortest;
-        bool  zoomTrick = false;
+        bool  zoomTrick = false;  // "Dolly" in the editor: the zoom keeps the pivot's size while the camera moves
+        float dolly     = 0.0f;   // -1..1 (zoom trick on): while waiting here the camera pulls back (-) / pushes in (+)
         float bendSide  = 0.0f;  // -1..1: bends left / right (1 = the middle sits half the distance off the line)
         float bendUp    = 0.0f;  // -1..1: bends down / up
         int   bone      = kBoneMiddle;  // the pivot's point (actors)
@@ -170,6 +170,8 @@ namespace CamPath {
     // The path slider: the camera goes to a_seconds into the path and waits there, paused (Play goes on from it). The
     // path starts paused when it is not playing, or again when it was edited since Play (the slider shows the edit).
     void RequestSeek(float a_seconds);
+    // Paused during camera a_cam's move: that move slows down from this point (how long / how slow are edited after).
+    void RequestSlowHere(int a_cam);
     // Camera a_cam's pivot.
     void RequestPickPivot(int a_cam);     // what the free camera points at
     void RequestPivotConsole(int a_cam);  // the console's selected reference

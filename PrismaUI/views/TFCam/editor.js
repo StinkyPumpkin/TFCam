@@ -9,12 +9,8 @@
 
   var MOVES = ['straight', 'curve', 'around', 'cut'];
   var MOVE_NAMES = ['Straight', 'Curve', 'Orbit', 'Cut'];
-  var LOOKS = ['The pivot', 'As I set it', 'Where it goes'];
+  var LOOKS = ['The pivot', 'Fixed', 'Direction of travel'];
   var BONES = ['Middle', 'Head', 'Eyes', 'Chest', 'Hips', 'Bum', 'Groin', 'Hands', 'Feet'];
-  var PRESETS = [
-    ['Steady', [0.33, 0.33, 0.67, 0.67]], ['Slow start and stop', [0.42, 0, 0.58, 1]], ['Slow start', [0.42, 0, 1, 1]],
-    ['Slow stop', [0, 0, 0.58, 1]], ['Fast start, long glide', [0.1, 0.7, 0.3, 1]], ['Hold, then rush', [0.8, 0, 0.9, 0.3]]
-  ];
 
   // camera options shown as sliders: the slider's own number <-> the camera's value
   var F = {
@@ -24,8 +20,11 @@
     bendSide: pct(-100, 100, 'bendSide', true), bendUp: pct(-100, 100, 'bendUp', true),
     turns: { min: 0, max: 10, step: 1, get: function (c) { return c.turns; }, put: function (v) { return Math.round(v); }, text: function (v) { return String(Math.round(v)); } },
     shake: pct(0, 100, 'shake'), elastic: pct(0, 100, 'elastic'), sling: pct(0, 100, 'sling'),
-    slowAt: pct(0, 100, 'slowAt', false, '%'), slowLength: pct(5, 100, 'slowLength', false, '%'), blurStrength: pct(10, 100, 'blurStrength'),
-    slowSpeed: { min: 0, max: 95, step: 1, get: function (c) { return Math.round((1 - c.slowSpeed) * 100); }, put: function (v) { return 1 - v / 100; }, text: function (v) { return Math.round(v) + '%'; } }
+    blurStrength: pct(10, 100, 'blurStrength'), dolly: pct(-100, 100, 'dolly', true),
+    // the slow down: how long it lasts on screen, how slow (see slowEdit)
+    slowFor: { min: 0.2, max: function (c) { return Math.max(0.3, Math.floor(c.time * (1 - slowStart(c)) / Math.sqrt(c.slowSpeed) * 10) / 10); }, step: 0.1,
+      get: function (c) { return Math.round(c.time * c.slowLength / Math.sqrt(c.slowSpeed) * 10) / 10; }, put: function (v) { return v; }, text: function (v) { return v.toFixed(1) + ' s'; } },
+    slowHow: { min: 5, max: 90, step: 1, get: function (c) { return Math.round(c.slowSpeed * 100); }, put: function (v) { return v / 100; }, text: function (v) { return Math.round(v) + '% speed'; } }
   };
   function pct(min, max, key, signed, unit) {
     return {
@@ -84,7 +83,7 @@
         if (c.move === 3) {
           out.segs.push({ kind: 'cut', t: t, d: 0, cam: i });
         } else {
-          out.segs.push({ kind: MOVES[c.move], t: t, d: c.seconds, cam: i, slow: c.slowMo ? c : null });
+          out.segs.push({ kind: MOVES[c.move], t: t, d: c.seconds, cam: i, slow: c.slowMo ? slowSpan(c) : null });
           t += c.seconds;
         }
       }
@@ -105,8 +104,25 @@
     if (!hasNext(i)) return 'the path ends here';
     if (c.move === 3) return 'cut to ' + nextOf(i);
     var t = MOVE_NAMES[c.move].toLowerCase() + ' to ' + nextOf(i) + ', ' + c.seconds.toFixed(1) + ' s';
-    if (c.slowMo) t += c.slowCamera ? ', slow motion' : ', bullet time';
+    if (c.slowMo) t += c.slowCamera ? ', slows down' : ', bullet time';
     return t;
+  }
+
+  // The slow down is a dip in speed from slowAt - slowLength / 2 over slowLength of the way (normal time); on screen it
+  // lasts time x length / sqrt(speed) (the dip's average). Where it sits in the move's own seconds, for the timeline:
+  function slowStart(c) { return Math.max(0, c.slowAt - c.slowLength / 2); }
+  function slowSpan(c) {
+    var wind = c.sling > 0.001 ? 0.4 + 0.5 * c.sling : 0;  // the slingshot's wind-up comes first (TFCam's WindTime)
+    return { at: wind + slowStart(c) * c.time, d: c.time * c.slowLength / (c.slowCamera ? Math.sqrt(c.slowSpeed) : 1) };
+  }
+  // the move the paused path is in, for Slow down here; -1 = none
+  function slowCam(lay, t) {
+    if (!S.playing || !S.paused || scrubbing) return -1;
+    for (var k = 0; k < lay.segs.length; k++) {
+      var s = lay.segs[k];
+      if (s.kind !== 'wait' && s.kind !== 'cut' && t > s.t + 0.02 && t < s.t + s.d - 0.05) return s.cam;
+    }
+    return -1;
   }
 
   // ---- drawing --------------------------------------------------------------------------------------------------------
@@ -194,9 +210,9 @@
     var h = '';
     lay.segs.forEach(function (s) {
       if (s.kind === 'cut') { h += '<i class="seg cut" style="left:' + x(s.t) + 'px"></i>'; return; }
-      var w = Math.max(x(s.d) - 2, 2);
-      var band = s.slow ? '<b class="slowband" style="left:' + Math.max(0, (s.slow.slowAt - s.slow.slowLength / 2) * w) +
-        'px;width:' + s.slow.slowLength * w + 'px"></b>' : '';
+      var w = Math.max(x(s.d) - 2, 2), d = Math.max(s.d, 0.001);
+      var band = s.slow ? '<b class="slowband" style="left:' + Math.min(s.slow.at / d, 1) * w +
+        'px;width:' + Math.min(s.slow.d / d, 1) * w + 'px"></b>' : '';
       h += '<i class="seg ' + s.kind + (s.cam === sel && s.kind !== 'wait' ? ' sel' : '') + '" style="left:' + (x(s.t) + 1) +
         'px;width:' + w + 'px">' + band + '</i>';
     });
@@ -223,12 +239,17 @@
     show($('icPlay'), !playing);
     show($('icPause'), playing);
     $('btPlay').setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    var sc = slowCam(lay, cur), bs = $('btSlow');
+    bs.disabled = sc < 0;
+    bs.dataset.at = sc;
+    bs.title = sc < 0 ? 'Pause during a move, then press this to slow the camera down from there'
+      : 'Slow the camera down from here, on the way from ' + (sc + 1) + ' to ' + nextOf(sc);
   }
 
   function slider(field, label, c, note) {
-    var f = F[field], v = f.get(c);
+    var f = F[field], v = f.get(c), max = typeof f.max === 'function' ? f.max(c) : f.max;
     return '<div class="slider"><label for="f-' + field + '"><span>' + label + '</span><span class="val" id="v-' + field + '">' + f.text(v) + '</span></label>' +
-      '<input id="f-' + field + '" type="range" min="' + f.min + '" max="' + f.max + '" step="' + f.step + '" value="' + v + '" data-field="' + field + '">' +
+      '<input id="f-' + field + '" type="range" min="' + f.min + '" max="' + max + '" step="' + f.step + '" value="' + v + '" data-field="' + field + '">' +
       (note ? '<span class="dim small">' + note + '</span>' : '') + '</div>';
   }
   function opts(field, names, cur) {
@@ -249,20 +270,6 @@
   function check(field, label, on) {
     return '<label class="check"><input type="checkbox" data-flag="' + field + '"' + (on ? ' checked' : '') + '><span>' + label + '</span></label>';
   }
-  function same(a, b) { for (var k = 0; k < 4; k++) if (Math.abs(a[k] - b[k]) > 0.005) return false; return true; }
-  function speedValue(c) {
-    if (!c.curveOn) return 'auto';
-    for (var k = 0; k < PRESETS.length; k++) if (same(c.curve, PRESETS[k][1])) return String(k);
-    return 'custom';
-  }
-  function speedSelect(c) {
-    var v = speedValue(c);
-    var h = '<label class="row" for="f-speed"><span>Speed</span><select id="f-speed" data-select="speed">' +
-      '<option value="auto"' + (v === 'auto' ? ' selected' : '') + '>Automatic</option>';
-    PRESETS.forEach(function (p, k) { h += '<option value="' + k + '"' + (v === String(k) ? ' selected' : '') + '>' + p[0] + '</option>'; });
-    if (v === 'custom') h += '<option value="custom" selected>Drawn by hand</option>';
-    return h + '</select></label>';
-  }
 
   function renderCard() {
     var card = $('card');
@@ -275,7 +282,7 @@
     $('cSub').textContent = moveText(c, sel) + (c.wait > 0 ? ' · waits ' + c.wait.toFixed(1) + ' s' : '');
     $('cBody').innerHTML = expanded ? full(c) : quick(c);
     $('btMore').textContent = expanded ? 'Fewer settings' : 'More settings';
-    if (expanded && tab === 'move') drawCurve(curveOf(c), c.curveOn);
+    if (expanded && tab !== 'shot') drawCurve(curveOf(c), c.curveOn);
     placeCard();
   }
 
@@ -284,7 +291,7 @@
     var h = '';
     if (hasNext(sel)) {
       h += '<div class="group"><span class="cap">Then to camera ' + nextOf(sel) + '</span>' + opts('move', MOVE_NAMES, c.move) + '</div>';
-      if (c.move !== 3) h += slider('time', 'Seconds to get there', c) + speedSelect(c);
+      if (c.move !== 3) h += slider('time', 'Seconds to get there', c) + (c.slowMo ? slowGroup(c) : '');
     } else {
       h += '<div class="note">The last camera: the path ends here.' + (S.loop ? '' : ' Turn Loop on in the menu to go on to camera 1.') + '</div>';
     }
@@ -292,10 +299,29 @@
     return h;
   }
 
-  // every setting, in three tabs
+  // what happens while the camera waits here and stares
+  function waitFx(c) {
+    var h = check('zoomTrick', 'Dolly (the pivot keeps its size, the background stretches)', c.zoomTrick);
+    if (c.zoomTrick) {
+      h += '<div class="indent">' + slider('dolly', 'Pull back / push in while waiting', c,
+        c.pivotKind < 0 ? 'Needs a pivot.' : (c.wait <= 0 ? 'Needs a wait here.' : '')) + '</div>';
+    }
+    h += slider('shake', 'Camera shake', c);
+    h += check('blur', 'Blur the background', c.blur);
+    if (c.blur) h += '<div class="indent">' + slider('blurStrength', 'How much', c) + '</div>';
+    return h;
+  }
+
+  // the slow down on the way on: made by Slow down here (pause during the move), then how long and how slow
+  function slowGroup(c) {
+    return '<div class="group"><span class="cap">Slow down</span>' + slider('slowFor', 'How long', c) + slider('slowHow', 'How slow', c) +
+      '<button type="button" class="btn" data-slow="off">Remove the slow down</button></div>';
+  }
+
+  // every setting, in two tabs
   function full(c) {
     var h = '<div class="tabs" role="group">';
-    [['shot', 'Shot'], ['move', 'Move'], ['fx', 'Effects']].forEach(function (t) {
+    [['shot', 'Shot'], ['move', 'Move']].forEach(function (t) {
       h += '<button type="button" class="' + (tab === t[0] ? 'on' : '') + '" data-tab="' + t[0] + '">' + t[1] + '</button>';
     });
     h += '</div>';
@@ -311,12 +337,11 @@
       }
       h += '<span class="dim small">Pick: what the middle of the screen points at. Console: opens the console - click who you want, then close it.</span></div>';
       h += '<div class="group"><span class="cap">Looks at</span>' + opts('look', LOOKS, c.look) +
-        (c.pivotKind < 0 && c.look === 0 ? '<span class="dim small">No pivot yet - it looks the way you set it.</span>' : '') + '</div>';
-      h += slider('wait', 'Wait here', c);
+        (c.pivotKind < 0 && c.look === 0 ? '<span class="dim small">No pivot yet - it stays fixed.</span>' : '') + '</div>';
       h += slider('fov', 'Zoom (field of view)', c, 'Smaller is zoomed in.');
-      h += check('blur', 'Blur the background', c.blur);
-      if (c.blur) h += slider('blurStrength', 'How much', c);
-    } else if (tab === 'move') {
+      h += slider('wait', 'Wait here', c);
+      h += waitFx(c);
+    } else {
       if (!hasNext(sel)) {
         h += '<div class="note">The last camera: the path ends here. Turn Loop on to go on to camera 1.</div>';
       } else {
@@ -326,47 +351,39 @@
           h += '<span class="dim small">No pivot here or at camera ' + nx + ' to orbit - it curves there instead.</span>';
         }
         h += '</div>';
+        if (c.move === 2) h += '<div class="group"><span class="cap">Which way round</span>' + wayOpts(c) + '</div>' + slider('turns', 'Extra full turns', c);
         if (c.move !== 3) {
           var extra = c.seconds - c.time;
           h += slider('time', 'Seconds to get there', c, extra > 0.05 ? 'With its effects it takes ' + c.seconds.toFixed(1) + ' s.' : '');
           h += curveEditor(c);
           if (c.move !== 2) h += slider('bendSide', 'Bend left / right', c) + slider('bendUp', 'Bend down / up', c);
-          h += slider('turns', 'Extra full turns', c);
-          if (c.move === 2) h += '<div class="group"><span class="cap">Which way round</span>' + wayOpts(c) + '</div>';
-          h += check('zoomTrick', 'Zoom trick (the pivot keeps its size, the background stretches)', c.zoomTrick);
+          h += c.slowMo ? slowGroup(c) : '<span class="dim small">To slow part of the way down: play, pause where it should start, then press Slow down here.</span>';
+          h += slider('elastic', 'Elastic arrival', c) + slider('sling', 'Slingshot', c);
+          h += check('crashZoom', 'Crash zoom to the next camera', c.crashZoom);
         } else {
           h += '<div class="note">The camera jumps straight to camera ' + nx + ', like a cut in a film.</div>';
-        }
-      }
-    } else {
-      h += slider('shake', 'Camera shake', c);
-      if (hasNext(sel) && c.move !== 3) {
-        h += slider('elastic', 'Elastic arrival', c) + slider('sling', 'Slingshot', c);
-        h += check('crashZoom', 'Crash zoom to the next camera', c.crashZoom);
-        h += check('slowMo', 'Slow motion on the way', c.slowMo);
-        if (c.slowMo) {
-          h += '<div class="indent">' + slider('slowAt', 'Where (% of the way)', c) + slider('slowSpeed', 'Slow down by', c) +
-            slider('slowLength', 'How much of the way', c) + check('bullet', 'Bullet time - only the world slows', !c.slowCamera);
-          if (c.slowCamera) h += check('slowWorld', 'The world slows down too', c.slowWorld);
-          h += '</div>';
         }
       }
     }
     return h;
   }
 
-  function curveOf(c) { return c.curveOn ? c.curve : (c.smooth ? [0.42, 0, 0.58, 1] : [0.33, 0.33, 0.67, 0.67]); }
+  // The automatic speed as a curve (TFCam's Ease, a cubic Hermite = this bezier): a slow start where the camera waits
+  // (or the path starts), a slow stop where the next one waits (or the path ends), "smooth" both.
+  function curveOf(c) {
+    if (c.curveOn) return c.curve;
+    var n = S.cams.length, nx = nextOf(sel) - 1, cn = S.cams[nx] || c;
+    var slowIn = c.sling <= 0.001 && (c.smooth || c.wait > 0 || (!S.loop && sel === 0));
+    var slowOut = c.elastic <= 0.001 && (c.smooth || cn.wait > 0 || (!S.loop && nx === n - 1));
+    return [1 / 3, slowIn ? 0 : 1 / 3, 2 / 3, slowOut ? 1 : 2 / 3];
+  }
   function curveEditor(c) {
-    var v = speedValue(c);
-    var h = '<div class="group"><span class="cap">Speed - drag the round handles</span><div class="curvebox">' +
-      '<canvas id="curve" width="160" height="160" aria-label="Speed curve: time across, how far along up"></canvas><div class="presets">' +
-      '<button type="button" class="chip' + (v === 'auto' ? ' on' : '') + '" data-preset="auto">Automatic</button>';
-    PRESETS.forEach(function (p, k) {
-      h += '<button type="button" class="chip' + (v === String(k) ? ' on' : '') + '" data-preset="' + k + '">' + p[0] + '</button>';
-    });
-    h += '</div></div><span class="dim small">Steep is fast, flat is slow.</span>';
-    if (!c.curveOn) h += check('smooth', 'Automatic: always start and stop slowly', c.smooth);
-    return h + '</div>';
+    return '<div class="group"><span class="cap">Speed - drag the round handles</span><div class="curvebox">' +
+      '<canvas id="curve" width="160" height="160" aria-label="Speed curve: time across, how far along up"></canvas><div class="curveside">' +
+      '<span class="dim small">Time goes across, the way up. Steep is fast, flat is slow.</span>' +
+      (c.curveOn ? '<button type="button" class="btn" data-preset="auto" title="Back to the automatic speed">Reset</button>'
+        : '<span class="dim small">Automatic until you drag a handle.</span>') +
+      '</div></div></div>';
   }
   function curveGeom(cnv) {
     var w = cnv.width, p = Math.round(w * 0.09), l = w - 2 * p;
@@ -428,6 +445,12 @@
     var el = e.target.closest('button');
     if (!el) return;
     if (el.id === 'btMenu') { setMenu(!menuOpen); return; }
+    if (el.id === 'btSlow') {  // TFCam starts the slow down where the path is paused; the card opens on its options
+      var at = +el.dataset.at;
+      if (at >= 0) { cmd('slowHere|' + at); sel = at; tab = 'move'; render(true); }
+      return;
+    }
+    if (el.dataset.slow === 'off') { local('slowMo', false); cmd('edit|' + sel + '|slowMo|0'); render(true); return; }
     if (el.id === 'btMore') { expanded = !expanded; render(true); return; }
     if (el.dataset.close === 'card') { sel = -1; render(true); return; }
     if (el.dataset.sel !== undefined) {  // a camera on the timeline: pick it and jump there; again closes the card
@@ -457,12 +480,21 @@
     }
   });
 
-  function setSpeed(v) {
+  function setSpeed(v) {  // only Reset is left: back to the automatic speed
     var c = S.cams[sel];
-    if (!c) return;
-    if (v === 'auto') { c.curveOn = false; cmd('edit|' + sel + '|curveOn|0'); }
-    else if (v !== 'custom') { var p = PRESETS[+v][1]; c.curveOn = true; c.curve = p.slice(); cmd('edit|' + sel + '|curve|' + p.join('|')); }
+    if (!c || v !== 'auto') return;
+    c.curveOn = false;
+    cmd('edit|' + sel + '|curveOn|0');
     render(true);
+  }
+
+  // How long (seconds on screen) or how slow: the slow down keeps where it starts (see slowSpan)
+  function slowEdit(c, field, v) {
+    var start = slowStart(c), speed = c.slowSpeed, secs = c.time * c.slowLength / Math.sqrt(speed);
+    if (field === 'slowHow') speed = v / 100; else secs = v;
+    var len = Math.min(Math.max(secs * Math.sqrt(speed) / Math.max(c.time, 0.1), 0.05), Math.max(1 - start, 0.05));
+    c.slowMo = true; c.slowCamera = true; c.slowSpeed = speed; c.slowLength = len; c.slowAt = Math.min(start + len / 2, 1);
+    return 'edit|' + sel + '|slow|' + c.slowAt.toFixed(3) + '|' + speed.toFixed(3) + '|' + len.toFixed(3);
   }
 
   document.addEventListener('input', function (e) {
@@ -480,6 +512,11 @@
     busy = true;
     var f = F[field], v = +el.value;
     $('v-' + field).textContent = f.text(v);
+    if (field === 'slowFor' || field === 'slowHow') {
+      var line = slowEdit(S.cams[sel], field, v);
+      throttled('edit-slow', function () { cmd(line); });
+      return;
+    }
     local(field, f.put(v));
     throttled('edit-' + field, function () { cmd('edit|' + sel + '|' + field + '|' + f.put(v)); });
   });
@@ -491,16 +528,16 @@
     if (el.dataset.global) { busy = false; cmd(el.dataset.global + '|' + (el.dataset.global === 'smoothness' ? +el.value / 100 : +el.value)); return; }
     if (!S || !S.cams[sel]) return;
     if (el.dataset.field) {
-      cmd('edit|' + sel + '|' + el.dataset.field + '|' + F[el.dataset.field].put(+el.value));
+      var fd = el.dataset.field;
+      cmd(fd === 'slowFor' || fd === 'slowHow' ? slowEdit(S.cams[sel], fd, +el.value) : 'edit|' + sel + '|' + fd + '|' + F[fd].put(+el.value));
       busy = false; render(true); return;
     }
     if (el.dataset.flag) {
       var flag = el.dataset.flag, on = el.checked;
-      if (flag === 'bullet') { local('slowCamera', !on); cmd('edit|' + sel + '|slowCamera|' + (on ? 0 : 1)); }
-      else { local(flag, on); cmd('edit|' + sel + '|' + flag + '|' + (on ? 1 : 0)); }
+      local(flag, on); cmd('edit|' + sel + '|' + flag + '|' + (on ? 1 : 0));
+      if (flag === 'zoomTrick' && on && !S.cams[sel].dolly) { local('dolly', 0.3); cmd('edit|' + sel + '|dolly|0.3'); }  // a gentle push in
       render(true); return;
     }
-    if (el.dataset.select === 'speed') { setSpeed(el.value); return; }
     if (el.dataset.select === 'bone') { local('bone', +el.value); cmd('edit|' + sel + '|bone|' + el.value); render(true); }
   });
 
@@ -576,10 +613,11 @@
   fit();
 
   // ---- outside the game: demo data ---------------------------------------------------------------------------------------
-  // #cam picks camera 2 (#first: camera 1, an orbit), #more shows every setting, #menu opens the menu, #many uses 22 cameras, #shot / #fx pick a tab;
+  // #cam picks camera 2 (#first: camera 1, an orbit), #more shows every setting, #menu opens the menu, #many uses 22 cameras, #shot picks
+  // that tab, #paused pauses the path half-way from camera 2 to 3 (Slow down here);
   // ?bg=<url> puts a picture behind it.
   function cam(o) {
-    var base = { pivot: 'none', pivotKind: -1, bone: 0, look: 1, wait: 0, fov: 70, move: 1, time: 3, seconds: 3, smooth: false, turns: 0, way: 0, wayNow: 0, zoomTrick: false,
+    var base = { pivot: 'none', pivotKind: -1, bone: 0, look: 1, wait: 0, fov: 70, move: 1, time: 3, seconds: 3, smooth: false, turns: 0, way: 0, wayNow: 0, zoomTrick: false, dolly: 0,
       bendSide: 0, bendUp: 0, blur: false, blurStrength: 0.6, shake: 0, crashZoom: false, slowMo: false, slowAt: 0.66, slowSpeed: 0.4, slowLength: 0.2,
       slowWorld: false, slowCamera: true, elastic: 0, sling: 0, curveOn: false, curve: [0.42, 0, 0.58, 1] };
     for (var k in o) base[k] = o[k];
@@ -594,6 +632,18 @@
     else if (a[0] === 'seek') { S.playing = false; scrubAt = +a[1]; }
     else if (a[0] === 'add') { S.cams.push(cam({})); S.lastEvent = 'camera ' + S.cams.length + ' added'; }
     else if (a[0] === 'console') { S.lastEvent = 'pivot for camera ' + (+a[1] + 1) + ': Lydia (the console\'s selection)'; S.cams[+a[1]].pivot = 'Lydia'; S.cams[+a[1]].pivotKind = 1; }
+    else if (a[0] === 'slowHere') {  // as TFCam does it, from the paused moment (no slow down on that move before)
+      var lay = layout(), k = +a[1], c = S.cams[k], sg = lay.segs.filter(function (g) { return g.cam === k && g.kind !== 'wait'; })[0];
+      var f = Math.min(Math.max((S.progress * lay.total - sg.t) / c.time, 0), 0.95), len = Math.min(Math.max(1.5 * Math.sqrt(0.3) / c.time, 0.05), 1 - f);
+      c.slowMo = true; c.slowCamera = true; c.slowSpeed = 0.3; c.slowLength = len; c.slowAt = f + len / 2;
+      c.seconds = c.time * (1 - len + len / Math.sqrt(0.3));
+      S.lastEvent = 'camera ' + (k + 1) + ' slows down from here - set how long and how slow';
+    }
+    else if (a[0] === 'edit') {  // enough for the demo: the slow down's own fields
+      var ce = S.cams[+a[1]];
+      if (a[2] === 'slow') ce.seconds = ce.time * (1 - ce.slowLength + ce.slowLength / Math.sqrt(ce.slowSpeed));
+      if (a[2] === 'slowMo' && a[3] === '0') ce.seconds = ce.time;
+    }
     render(false);
   }
   setTimeout(function () {
@@ -635,9 +685,9 @@
     if (has('first')) sel = 0;
     if (has('more')) expanded = true;
     if (has('shot')) tab = 'shot';
-    if (has('fx')) tab = 'fx';
     if (has('menu')) menuOpen = true;
     scrubAt = sel >= 0 ? layout().marks[sel].t : 2.9;
+    if (has('paused')) { S.playing = true; S.paused = true; S.atCam = 1; S.progress = 3.6 / S.total; }  // half-way from 2 to 3
     render(true);
   }, 800);
 })();
