@@ -25,6 +25,7 @@ namespace AimDot {
         bool        s_hwya      = false;
         int         s_hooks     = 0;
         std::string s_status    = "not installed";
+        std::string s_offStatus = "not installed";  // what the menu shows while the box is unticked
         bool        s_logged    = false;
 
         // ---- pattern scan inside a function (Hit Where You Aim's FindPatternInFunction) --------------------------
@@ -364,7 +365,8 @@ namespace AimDot {
             ProjectileInitHook::func = tr.write_call<5>(init, ProjectileInitHook::thunk);
             ++s_hooks;
         }
-        s_status = s_hooks > 0 ? std::format("on - {} of 4 hooks in", s_hooks) : "off - none of the hooks fitted this game version";
+        s_status    = s_hooks > 0 ? std::format("on - {} of 4 hooks in", s_hooks) : "off - none of the hooks fitted this game version";
+        s_offStatus = s_hooks > 0 ? std::format("off - tick the box to use it ({} of 4 hooks ready)", s_hooks) : s_status;
         SKSE::log::info("AimDot: {} (bHitTheDot={})", s_status, s_settings.enabled ? 1 : 0);
     }
 
@@ -379,5 +381,5 @@ namespace AimDot {
         return Ranged(player->GetEquippedObject(false)) || Ranged(player->GetEquippedObject(true));
     }
 
-    const char* Status() { return s_status.c_str(); }
+    const char* Status() { return !s_settings.enabled && !s_hwya && s_hooks > 0 ? s_offStatus.c_str() : s_status.c_str(); }
 }

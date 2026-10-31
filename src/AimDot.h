@@ -12,7 +12,7 @@
 namespace AimDot {
 
     struct Settings {
-        bool enabled = true;  // [AimDot] bHitTheDot
+        bool enabled = false;  // [AimDot] bHitTheDot - off by default: not every player wants it (or runs Hit Where You Aim)
     };
 
     Settings& Get();
