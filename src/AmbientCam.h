@@ -68,6 +68,7 @@ namespace AmbientCam {
     bool OwnsMotion();                                       // a routine / blend moves the camera
     void OnInput(RE::InputEvent* const* a_events);           // input sink, every batch
     void OnFreeCamEnd();                                     // before the vanilla End
+    void OnFreeCamBegin(bool a_tfcamDriving, bool a_selfToggle);  // after the vanilla Begin
     void OnGameLoad(const char* a_why);
     void OnPlayerSceneStart();
 

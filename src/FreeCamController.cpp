@@ -925,6 +925,7 @@ namespace FreeCam {
                                     "features stand down except roll, input blocks stay [{}]", timeline, thread);
                 }
                 SlccBridge::OnFreeCamBegin(driven, selfToggle);
+                AmbientCam::OnFreeCamBegin(driven, selfToggle);  // 0.18.2: a free camera given back after a menu
             });
             SKSE::log::info("FreeCam enter: called from {}{}", chain,
                 ranInline ? "" : " (engine work queued to the main thread)");
