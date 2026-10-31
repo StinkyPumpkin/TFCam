@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -387,48 +386,47 @@ namespace AimDot {
     bool DotInCharge() { return FovFx::Get().aimDot && (Active() || (FovFx::HitWhereYouAim() && FovFx::Get().enabled)); }
 
     namespace {
-        std::atomic<bool> s_crosshairOff{ false };  // we switched the game's crosshair off (UI thread writes it)
+        std::atomic<bool> s_crosshairOff{ false };  // we hid the game's crosshair (UI thread writes it)
+        std::atomic<bool> s_pending{ false };       // a UI task is queued, don't queue another
 
-        // UI thread: the HUD's own switch, the one the game uses (SkyHUD / Edge UI keep it; its SetCrosshairTarget
-        // honours it on every target change).
+        // UI thread. The HUD's crosshair clip (_root.HUDMovieBaseInstance.Crosshair; vanilla, SkyHUD, Edge UI) is kept
+        // hidden. Not its SetCrosshairEnabled switch: the game turns that back on every frame (tested 10-31, 4 tries a
+        // second, each found it on again). _visible stays put until the HUD's SetCrosshairTarget / ValidateCrosshair
+        // set it again (a new crosshair target, a HUD mode change), so it is checked every frame.
         void SetGameCrosshair(bool a_on) {
             auto* tasks = SKSE::GetTaskInterface();
-            if (!tasks) return;
+            if (!tasks || s_pending.exchange(true)) return;
             tasks->AddUITask([a_on]() {
+                s_pending = false;
                 auto* ui = RE::UI::GetSingleton();
                 if (!ui) return;
                 auto view = ui->GetMovieView(RE::HUDMenu::MENU_NAME);
                 if (!view) return;
                 RE::GFxValue hud;
                 if (!view->GetVariable(&hud, "_root.HUDMovieBaseInstance") || !hud.IsObject()) return;
-                if (!a_on) {
-                    RE::GFxValue enabled;
-                    if (hud.GetMember("bCrosshairEnabled", &enabled) && enabled.IsBool() && !enabled.GetBool()) {
-                        return;  // already off (ours, or the game's own)
-                    }
-                } else if (!s_crosshairOff.load()) {
-                    return;  // never ours to give back
+                if (a_on) {
+                    if (!s_crosshairOff.exchange(false)) return;  // never ours to give back
+                    hud.Invoke("ValidateCrosshair", nullptr, nullptr, 0);  // the HUD works out its own visibility again
+                    SKSE::log::info("AimDot: the game's crosshair is back");
+                    return;
                 }
-                RE::GFxValue arg(a_on);
-                hud.Invoke("SetCrosshairEnabled", nullptr, &arg, 1);
-                const bool wasOff = s_crosshairOff.exchange(!a_on);
-                if (wasOff == a_on) SKSE::log::info("AimDot: the game's crosshair {}", a_on ? "is back" : "is off - the dot is the crosshair");
+                RE::GFxValue clip;
+                if (!hud.GetMember("Crosshair", &clip) || !clip.IsDisplayObject()) return;
+                RE::GFxValue visible;
+                if (clip.GetMember("_visible", &visible) && visible.IsBool() && visible.GetBool()) {
+                    clip.SetMember("_visible", RE::GFxValue(false));
+                }
+                if (!s_crosshairOff.exchange(true)) SKSE::log::info("AimDot: the game's crosshair is off - the dot is the crosshair");
             });
         }
     }
 
     void CrosshairTick() {
-        using clock = std::chrono::steady_clock;
-        static clock::time_point s_next{};
         const bool hide = s_settings.hideGameCrosshair && DotInCharge();
         if (!hide) {
-            if (s_crosshairOff.load()) SetGameCrosshair(true);  // the task clears the flag; a repeat ask is a no-op
+            if (s_crosshairOff.load()) SetGameCrosshair(true);
             return;
         }
-        // Again now and then: a load or another mod may switch it back on.
-        const auto now = clock::now();
-        if (now < s_next) return;
-        s_next = now + std::chrono::milliseconds(250);
         SetGameCrosshair(false);
     }
 
