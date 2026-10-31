@@ -150,6 +150,7 @@
     $('btVideo').setAttribute('aria-label', S.video ? 'Stop the video' : 'Record video');
     $('btAdd').disabled = !S.freeCam || S.recordingPath;
     setOn($('btMenu'), menuOpen);
+    setOn($('tgFreeze'), S.frozen);  // on the bar since 10-31: set things up, freeze, play
   }
 
   function renderMenu() {
@@ -159,7 +160,6 @@
     setOn($('tgLoop'), S.loop);
     setOn($('tgPath'), S.showPath);
     setOn($('tgClean'), S.clean);
-    setOn($('tgFreeze'), S.frozen);
     var open = $('open');
     var names = (S.saved || []).join('\n') + '|' + S.name;
     if (open.dataset.names !== names) {
