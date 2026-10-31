@@ -11,13 +11,34 @@
 //   and "DOF: Bokeh shape max size" larger with the strength, and enbseries.ini [EFFECT] EnableDepthOfField on.
 // Every changed value is put back when the blur ends, before the ENB editor saves (ENBCallback_PreSave) and is
 // forgotten when ENB reloads its config (PostLoad). Without ENB (or another DoF shader) the box says so and does nothing.
+//
+// 10-31: a second style, the default now - TFCam's own image pass (FrameFx) blurs the picture more and more toward the
+// edges and leaves the middle sharp (a focus vignette), the sharp middle following the subject on screen. No ENB
+// needed, as strong as you like. The ENB depth of field stays as the other style.
 namespace CamBlur {
+
+    enum Style : int { kStyleEdges = 0, kStyleEnb = 1 };
 
     struct Settings {
         bool  enabled   = false;  // the box
         float strength  = 0.6f;   // 0..1: 0 = ENB's own blur, 1 = strongest
         bool  inFreeFly = false;  // also in plain free-fly (focus = what the middle of the screen sees)
+        int   style     = kStyleEdges;  // 10-31: edges (TFCam's own pass) or ENB's depth of field
+        float sharp     = 0.4f;         // edges: how far out from the middle stays sharp (0..1, 1 = the screen's edge)
     };
+
+    // 10-31: what the image pass should blur this frame in the Edges style (FrameFx asks every frame). Main thread.
+    struct Edge {
+        bool         on          = false;
+        float        strength    = 0.0f;
+        bool         haveSubject = false;
+        RE::NiPoint3 subject{};  // the sharp middle sits on it (on screen); none = the middle of the screen
+    };
+    Edge EdgeWant();
+
+    // 10-31: the archer camera (FovFx) while the string is drawn - its own box, the Background blur strength and sharp
+    // middle; a_subject = where the arrow will land. Main thread, every frame it is on; a_on false ends it.
+    void Archer(bool a_on, const RE::NiPoint3& a_subject);
 
     Settings& Get();
     void      Clamp();

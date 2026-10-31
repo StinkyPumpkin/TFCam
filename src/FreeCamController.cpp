@@ -1,5 +1,6 @@
 #include "FreeCamController.h"
 #include "FreezeTime.h"
+#include "FovFx.h"
 #include "FreeCamMenu.h"
 #include "CameraLight.h"
 #include "HUDHider.h"
@@ -908,6 +909,7 @@ namespace FreeCam {
             // 0.7.10: FOV capture, HUD hide and the SLCC bridge on the main thread (inline when already there).
             const bool ranInline = RunHookWork([driven, slccOwned, timeline, selfToggle, thread] {
                 if (driven) {
+                    FovFx::Reset();  // 0.18.0: no action-FOV offset in the FOV the free camera keeps
                     auto* cam = RE::PlayerCamera::GetSingleton();
                     s_baseFOV = cam ? WorldFOV(cam) : 0.0f;
                     HUDHider::OnFreeCamEnter();

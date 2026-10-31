@@ -78,6 +78,40 @@ Activate press to start from; the game's own view is used there.
 Settings: `TFCam.ini` section `[Conversation]`: `bEnabled`, `bThirdPersonOnly`, `fBlendIn`, `fBlendOut`, `fShotSwitch`, `fMinShotSeconds`,
 `fDistance`, `fShoulder`, `fHeight`, `fLookShift`, `fFovNpc`, `fFovWide`, `bAlternate`, `iReverseKind`, `bSwapSide`, `fDrift`, `bNoEdgePan`.
 
+## Action FOV, archer camera and aim dot (0.18.0)
+
+Page: **SKSE Menu Framework > FreeCam > Action FOV**. Action FOV is off by default (tick *On*).
+
+- **Action FOV**: drawing a bow pulls the view in, letting the arrow go snaps it out, power attacks punch in, big spells
+  (from a chosen skill level) and shouts warp it out, and moving fast stretches it wide. It is an offset on the render
+  camera's view, on top of whatever FOV you or another mod use; the game's own FOV value is never written.
+- **Archer camera** (part of Action FOV, *Archer camera* tick box): while the string is drawn the third-person camera
+  glides on an arc to a spot close round your head, so your face, the drawn bow and where the arrow flies are all in the
+  shot. It moves in as the string is pulled (not when the arrow is nocked) and back out after the shot. The offset turns
+  with your aim, so looking up or down keeps you in frame, and it holds steady against the bow-hold animation's sway.
+  Walls pull it in front of anything solid. *Round to your face* (0 behind, 90 side-on), *Distance from your head*
+  (10..400) and *Up / down* (-80..80) place it.
+- **Aim dot**: a tiny white dot with a dark rim in the middle of the screen whenever a bow, crossbow, staff or spell is
+  out, in first and third person (never in the free camera). *Dot size* sets it.
+- **Arrows and spells go where the dot is** (`[AimDot] bHitTheDot`, on by default): arrows, bolts, fire-and-forget
+  spells, flames and beams are aimed at what the middle of the screen looks at, from whatever camera renders the
+  picture (the archer camera included); arrows still drop, the game's own ballistic solver is used. Adapted from Hit
+  Where You Aim by tossaponk (GPL-3.0-or-later, see `NOTICE.txt`), without its options. While Hit Where You Aim itself
+  is loaded TFCam leaves the aiming to it. `TFCam.log` says how many of its 4 hooks went in ("AimDot: ...").
+- While the string is drawn, optionally: the Background blur's edge blur (*Blur round the edge*) and darker corners
+  (*Vignette*, 0..1).
+- **Background blur** (Scene Camera page) has a new default style, *Blurry round the edge, sharp in the middle*: TFCam's
+  own image pass blurs the picture more and more toward the screen's edge, the sharp middle on the subject, before the
+  HUD and without ENB. The ENB depth of field stays as the other style.
+
+The dot, the edge blur and the vignette are drawn by TFCam's own pass at the game's menu draw (after ENB, before the
+HUD and menus). Not on VR.
+
+Settings: `TFCam.ini` section `[ActionFOV]`: `bEnabled`, `fStrength`, `bBow`, `bPowerAttacks`, `bSpells`, `iSpellLevel`,
+`bShouts`, `bSpeed`, `bCameraSpeed`, `bArcherCamera`, `fArcherTurn`, `fArcherDistance`, `fArcherUp`, `bArcherDot`,
+`fArcherDotSize`, `bArcherBlur`, `fArcherVignette`; `[AimDot]` `bHitTheDot`; `[Blur]` `iStyle` (0 edges, 1 ENB),
+`fSharpMiddle`.
+
 ## Scene Camera (0.10.0, extended in 0.13.0)
 
 TFCam's free camera can work as a scene camera for SexLab P+ scenes (with SexLab P+'s automatic free camera on, a scene
@@ -136,6 +170,18 @@ What it does is logged to `TFCam.log` in SKSE's log folder (`Documents/My Games/
 the scene / stage ids, shots saved / recalled / deleted, refusals, automatic free camera waits and drops).
 
 ## Changelog
+
+**0.18.0**
+- *Action FOV* (`[ActionFOV]`, off by default): the view reacts to bow draws and releases, power attacks, big spells,
+  shouts and speed.
+- *Archer camera*: close round your head while the bow string is drawn, gliding in on an arc as the string is pulled;
+  keeps you in frame when aiming up or down, steady against the hold sway, walls respected.
+- *Aim dot* and *arrows and spells go where the dot is* (adapted from Hit Where You Aim, stays out of its way when it is
+  loaded); optional edge blur and vignette while the string is drawn.
+- *Background blur*: a new default style, blurry round the edge and sharp in the middle, drawn by TFCam itself (no ENB
+  needed); the ENB depth of field is the other style.
+- Walls: the game's own camera collision sphere no longer counts as a wall (it sits where the camera was last frame,
+  so the archer camera kept bumping into it).
 
 **0.16.0** (fork by CageTV)
 - *Conversation camera* (`[Conversation]`, off by default): a film-style camera for dialogue in third person. Over-the-shoulder shot while the

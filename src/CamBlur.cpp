@@ -99,6 +99,8 @@ namespace CamBlur {
         double s_extUntil    = 0.0;  // API v5: another mod's camera owns the blur until then
         bool   s_axisLogged  = false;
         char   s_lastWhat[96] = {};
+        Edge   s_edge;               // 10-31: for the image pass (Edges style); main thread
+        Edge   s_archer;             // 10-31: the archer camera's (FovFx); main thread
         std::atomic<bool> s_noShader{ false };  // set by the render thread, cleared on a fresh tick of the box
 
         void SetError(std::string_view a_text) {
@@ -196,6 +198,7 @@ namespace CamBlur {
                 strength = s_strength;
             }
             if (w.active && w.until > 0.0 && Now() > w.until) w.active = false;  // that mod's camera stopped calling
+            if (s_settings.style != kStyleEnb) w.active = false;                  // 10-31: the image pass does it
             if (!w.active) {
                 Restore("blur off");
                 return;
@@ -318,6 +321,21 @@ namespace CamBlur {
     void Clamp() {
         if (!std::isfinite(s_settings.strength)) s_settings.strength = 0.6f;
         s_settings.strength = std::clamp(s_settings.strength, 0.0f, 1.0f);
+        s_settings.style    = std::clamp(s_settings.style, 0, 1);
+        if (!std::isfinite(s_settings.sharp)) s_settings.sharp = 0.4f;
+        s_settings.sharp = std::clamp(s_settings.sharp, 0.05f, 0.9f);
+    }
+
+    Edge EdgeWant() {
+        if (s_extUntil > 0.0 && Now() > s_extUntil) s_edge.on = false;  // that mod's camera stopped calling
+        return s_edge.on ? s_edge : s_archer;
+    }
+
+    void Archer(bool a_on, const RE::NiPoint3& a_subject) {
+        s_archer.on          = a_on;
+        s_archer.strength    = s_settings.strength;
+        s_archer.haveSubject = a_on;
+        s_archer.subject     = a_subject;
     }
 
     void Install() {
@@ -360,7 +378,8 @@ namespace CamBlur {
         const double now = Now();
         const float  dt  = s_lastT > 0.0 ? static_cast<float>(std::clamp(now - s_lastT, 0.0, 0.1)) : 0.0f;
         s_lastT          = now;
-        if (!s_linked) return;
+        const bool enbStyle = s_settings.style == kStyleEnb;
+        if (enbStyle && !s_linked) return;
         if (s_extUntil > now) return;  // another mod's camera (API v5) drives the blur
 
         RE::NiPoint3 subject{};
@@ -373,7 +392,12 @@ namespace CamBlur {
         // The render thread found no ADOF variables: stay off until the box is ticked again (or ENB reloads).
         if (s_settings.enabled && !s_prevEnabled) s_noShader = false;
         s_prevEnabled = s_settings.enabled;
-        if (s_noShader) on = false;
+        if (s_noShader && enbStyle) on = false;
+
+        s_edge.on          = on;  // 10-31: the image pass (Edges style) reads this
+        s_edge.strength    = s_settings.strength;
+        s_edge.haveSubject = on && have;
+        s_edge.subject     = subject;
 
         Want w;
         w.active = on;
@@ -428,11 +452,13 @@ namespace CamBlur {
     }
 
     void External(bool a_on, const RE::NiPoint3& a_subject, float a_strength) {
-        if (!s_linked) return;
+        const bool enbStyle = s_settings.style == kStyleEnb;
+        if (enbStyle && !s_linked) return;
         const double now = Now();
         if (!a_on || !std::isfinite(a_subject.x) || !std::isfinite(a_subject.y) || !std::isfinite(a_subject.z)) {
             if (s_extUntil > 0.0) {
                 s_extUntil = 0.0;
+                s_edge     = Edge{};
                 std::scoped_lock lock(s_wantLock);
                 s_want = Want{};
                 SKSE::log::info("CamBlur: background blur off (another mod's camera let go)");
@@ -440,7 +466,11 @@ namespace CamBlur {
             return;
         }
         auto* nc = REL::Module::IsVR() ? nullptr : RE::Main::WorldRootCamera();
-        if (!nc || s_noShader) return;
+        if (!nc || (s_noShader && enbStyle)) return;
+        s_edge.on          = true;  // 10-31: the image pass (Edges style)
+        s_edge.strength    = a_strength < 0.0f || !std::isfinite(a_strength) ? s_settings.strength : std::clamp(a_strength, 0.0f, 1.0f);
+        s_edge.haveSubject = true;
+        s_edge.subject     = a_subject;
         const float dt = s_lastT > 0.0 ? static_cast<float>(std::clamp(now - s_lastT, 0.0, 0.1)) : 0.0f;
         s_lastT        = now;
         // The world camera, whoever drives it: NiCamera looks along its local +X (column 0 of its world rotation).
@@ -479,10 +509,14 @@ namespace CamBlur {
         std::snprintf(s_status.what, sizeof(s_status.what), "%s", "another mod's camera");
     }
 
-    bool Available() { return s_linked && !s_noShader; }
+    bool Available() {
+        if (s_settings.style != kStyleEnb) return !REL::Module::IsVR();  // 10-31: TFCam's own pass
+        return s_linked && !s_noShader;
+    }
 
     void Off(const char* a_why) {
         s_extUntil = 0.0;
+        s_edge     = Edge{};
         bool was = false;
         {
             std::scoped_lock lock(s_wantLock);

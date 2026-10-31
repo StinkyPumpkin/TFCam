@@ -9,6 +9,10 @@
 #include "ConvoCam.h"
 #include "CamBlur.h"
 #include "CamPath.h"
+#include "AimDot.h"
+#include "FixedCam.h"
+#include "FrameFx.h"
+#include "FovFx.h"
 
 #include <spdlog/sinks/basic_file_sink.h>
 #include <ShlObj.h>
@@ -122,6 +126,10 @@ namespace {
             if (!AddressLibraryPresent()) {
                 break;
             }
+            // One reservation for every trampoline hook: CommonLib sets the trampoline up only on the FIRST
+            // AllocTrampoline call, so a second call adds nothing. 14 bytes per write_call<5>: the camera-root hook +
+            // FrameFx + AimDot's 6 (launch angles, flame yaw/pitch, beam yaw/pitch, projectile init).
+            SKSE::AllocTrampoline(8 * 14);
             FreeCam::Install();
             CellEntryCam::Install();  // 0.9.0: zoom + orbit after a loading screen into a new cell
             SlccBridge::Install();
@@ -130,11 +138,16 @@ namespace {
             AmbientCam::Install();     // 0.11.0: idle camera + furniture camera
             ConvoCam::Install();       // 0.16.0: conversation camera
             CamBlur::Install();        // 0.17.0: no-op when already linked at kPostLoad
+            FixedCam::Install();       // 0.18.0: the camera-root hook (Action FOV's frame tick + the archer camera)
+            FovFx::Install();          // 0.18.0: action FOV + archer camera
+            FrameFx::Install();        // 0.18.0: edge blur, archer vignette, aim dot - before the UI
+            AimDot::Install();         // 0.18.0: arrows and spells go where the dot is (unless Hit Where You Aim is loaded)
             FreeCamMenu::Register();
             FreeCamMenu::ApplyGameSettings();
             break;
         case SKSE::MessagingInterface::kPreLoadGame:
             CellEntryCam::OnPreLoadGame();  // the loading screen that follows is a save load, not a door
+            FovFx::Reset();                 // 0.18.0
             // 0.10.0: the scene, orbit / eye view (head cull, near clip) and the active pose end with the old game.
             SceneTracker::Reset("save loading");
             SceneCam::OnGameLoad("save loading");

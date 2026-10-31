@@ -366,6 +366,37 @@ namespace CamCollision {
         }
     }
 
+    RE::NiPoint3 ClearSpot(const RE::NiPoint3& a_pivot, const RE::NiPoint3& a_cam) {
+        if (!s_cfg.enabled) return a_cam;
+        auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* cell   = player ? player->GetParentCell() : nullptr;
+        auto* world  = cell ? cell->GetbhkWorld() : nullptr;
+        if (!world) return a_cam;
+        const RE::NiPoint3 v = a_cam - a_pivot;
+        const float        d = Len(v);
+        if (!(d > kMinDist) || !std::isfinite(d)) return a_cam;
+        const RE::NiPoint3 dir = v * (1.0f / d);
+        RE::NiPoint3       side{ dir.y, -dir.x, 0.0f };
+        if (const float sl = Len(side); sl > 0.01f) {
+            side = side * (1.0f / sl);
+        } else {
+            side = { 1.0f, 0.0f, 0.0f };
+        }
+        float       nearClip = 15.0f;
+        const float reach    = NearPlaneReach(nearClip);
+        const float r        = std::clamp(reach, s_cfg.margin * kProbeFrac, kMaxSide);
+        const float margin   = (std::max)(s_cfg.margin, nearClip + 4.0f);
+        const Solved sol     = Solve(world, a_pivot, a_cam, side, r, margin);
+        if (sol.moved && Now() >= s_nextLog) {
+            s_nextLog       = Now() + 0.5;
+            const auto text = std::format("archer camera: moved {:.0f} units off the wall of {:08X} (layer {})", Len(sol.pos - a_cam),
+                sol.nearest.ref, sol.nearest.layer);
+            SKSE::log::info("CamCollision: {}", text);
+            NotePush(text);
+        }
+        return sol.pos;
+    }
+
     std::string MenuStatus() {
         std::lock_guard lock(s_statusLock);
         if (s_pushes == 0) return "no wall in the way yet this session";

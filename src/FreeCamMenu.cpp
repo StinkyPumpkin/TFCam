@@ -1,9 +1,11 @@
 #include "FreeCamMenu.h"
+#include "FovFx.h"
 #include "FreeCamController.h"
 #include "FreezeTime.h"
 #include "CameraLight.h"
 #include "HUDHider.h"
 #include "CellEntryCam.h"
+#include "AimDot.h"
 #include "CamBlur.h"
 #include "CamPath.h"
 #include "SceneCam.h"
@@ -267,6 +269,27 @@ namespace FreeCamMenu {
         WriteINIInt("Blur", "bEnabled", b.enabled ? 1 : 0);
         WriteINIFloat("Blur", "fStrength", b.strength);
         WriteINIInt("Blur", "bInFreeFly", b.inFreeFly ? 1 : 0);
+        WriteINIInt("Blur", "iStyle", b.style);  // 0.18.0: 0 edges (TFCam's own), 1 ENB depth of field
+        WriteINIFloat("Blur", "fSharpMiddle", b.sharp);
+        const auto& f = FovFx::Get();  // 0.18.0
+        WriteINIInt("ActionFOV", "bEnabled", f.enabled ? 1 : 0);
+        WriteINIFloat("ActionFOV", "fStrength", f.strength);
+        WriteINIInt("ActionFOV", "bBow", f.bow ? 1 : 0);
+        WriteINIInt("ActionFOV", "bPowerAttacks", f.power ? 1 : 0);
+        WriteINIInt("ActionFOV", "bSpells", f.spells ? 1 : 0);
+        WriteINIInt("ActionFOV", "iSpellLevel", f.spellLevel);
+        WriteINIInt("ActionFOV", "bShouts", f.shouts ? 1 : 0);
+        WriteINIInt("ActionFOV", "bSpeed", f.speedPlayer ? 1 : 0);
+        WriteINIInt("ActionFOV", "bCameraSpeed", f.speedCamera ? 1 : 0);
+        WriteINIInt("ActionFOV", "bArcherCamera", f.aimCam ? 1 : 0);
+        WriteINIFloat("ActionFOV", "fArcherTurn", f.aimTurn);
+        WriteINIFloat("ActionFOV", "fArcherDistance", f.aimBack);
+        WriteINIFloat("ActionFOV", "fArcherUp", f.aimUp);
+        WriteINIInt("ActionFOV", "bArcherDot", f.aimDot ? 1 : 0);
+        WriteINIFloat("ActionFOV", "fArcherDotSize", f.aimDotSize);
+        WriteINIInt("ActionFOV", "bArcherBlur", f.aimBlur ? 1 : 0);
+        WriteINIFloat("ActionFOV", "fArcherVignette", f.aimVignette);
+        WriteINIInt("AimDot", "bHitTheDot", AimDot::Get().enabled ? 1 : 0);
         const auto& c = CamPath::Get();
         WriteINIInt("CameraPath", "bCurved", c.curved ? 1 : 0);
         WriteINIInt("CameraPath", "bCut", c.snap ? 1 : 0);
@@ -782,26 +805,44 @@ namespace FreeCamMenu {
             auto&      bl       = CamBlur::Get();
             const auto bs       = CamBlur::GetStatus();
             bool       bChanged = false;
+            const bool enbStyle = bl.style == CamBlur::kStyleEnb;
             ImGuiMCP::SeparatorText("Background blur");
-            ImGuiMCP::BeginDisabled(!bs.linked);
+            // 0.18.0: two styles; the edge blur (TFCam's own image pass) is the default - the ENB depth of field blurred
+            // everything past the subject and could not go strong enough.
+            static const char* const kBlurStyles[] = { "Blurry round the edge, sharp in the middle (TFCam's own)",
+                "ENB's depth of field (sharp at the subject's distance)" };
+            ImGuiMCP::SetNextItemWidth(360.0f);
+            bChanged |= ImGuiMCP::Combo("How##blStyle", &bl.style, kBlurStyles, 2, -1);
+            ImGuiMCP::BeginDisabled(enbStyle && !bs.linked);
             bChanged |= ImGuiMCP::Checkbox("Blur the background##blOn", &bl.enabled);
             ImGuiMCP::SetNextItemWidth(200.0f);
             bChanged |= ImGuiMCP::SliderFloat("Strength##blStrength", &bl.strength, 0.0f, 1.0f, "%.2f");
+            if (!enbStyle) {
+                ImGuiMCP::SetNextItemWidth(200.0f);
+                bChanged |= ImGuiMCP::SliderFloat("Sharp middle (how far out)##blSharp", &bl.sharp, 0.05f, 0.9f, "%.2f");
+            }
             bChanged |= ImGuiMCP::Checkbox("Also in plain free-fly (sharp: the middle of the screen)##blFree", &bl.inFreeFly);
             ImGuiMCP::EndDisabled();
-            if (bs.error[0]) {
+            if (enbStyle && bs.error[0]) {
                 ImGuiMCP::TextColored({ 0.9f, 0.45f, 0.35f, 1.0f }, "%s", bs.error);
             } else if (bs.active) {
-                if (bs.distance > 0.0f) {
+                if (enbStyle && bs.distance > 0.0f) {
                     ImGuiMCP::Text("Now: sharp at %s, %.0f units away", bs.what, bs.distance);
                 } else {
                     ImGuiMCP::Text("Now: %s", bs.what);
                 }
             }
-            ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
-                "Keeps the subject sharp and blurs what is behind it while orbit, preset view, eye view, a camera path, the "
-                "idle camera or the conversation camera moves the camera. It uses ENB's depth of field, and ENB gets its own "
-                "values back the moment that camera stops (nothing is saved into your ENB preset). Needs ENB.");
+            if (enbStyle) {
+                ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+                    "Keeps the subject sharp and blurs what is behind it while orbit, preset view, eye view, a camera path, the "
+                    "idle camera or the conversation camera moves the camera. It uses ENB's depth of field, and ENB gets its own "
+                    "values back the moment that camera stops (nothing is saved into your ENB preset). Needs ENB.");
+            } else {
+                ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
+                    "While orbit, preset view, eye view, a camera path, the idle camera or the conversation camera moves the "
+                    "camera: the picture blurs more and more toward the screen's edge and stays sharp in the middle, on the "
+                    "subject. TFCam's own image pass, before the HUD - no ENB needed. Strength 1 is a wash at the edge.");
+            }
             if (bChanged) {
                 CamBlur::Clamp();
                 SaveINI();
@@ -1007,6 +1048,72 @@ namespace FreeCamMenu {
 
         if (changed) {
             CamPath::Clamp();
+            SaveINI();
+        }
+    }
+
+    // 0.18.0: FreeCam > Action FOV page.
+    static void __stdcall RenderActionFov() {
+        auto&                  f       = FovFx::Get();
+        bool                   changed = false;
+        const ImGuiMCP::ImVec4 grey{ 0.5f, 0.5f, 0.5f, 1.0f };
+
+        ImGuiMCP::SeparatorText("Action FOV");
+        ImGuiMCP::TextWrapped("The view reacts to what you do: drawing a bow pulls it in, letting the arrow go snaps it out, "
+                              "a power attack punches in, big spells and shouts warp it out, and moving fast stretches it wide.");
+        changed |= ImGuiMCP::Checkbox("On##afOn", &f.enabled);
+        ImGuiMCP::SetNextItemWidth(220.0f);
+        changed |= ImGuiMCP::SliderFloat("How strong##afStrength", &f.strength, 0.0f, 2.0f, "%.1f", 0);
+        changed |= ImGuiMCP::Checkbox("Bow: drawing pulls in, letting go snaps out##afBow", &f.bow);
+        changed |= ImGuiMCP::Checkbox("Archer camera: close round your head while the string is drawn##afAim", &f.aimCam);
+        if (f.aimCam && ImGuiMCP::TreeNode("Archer camera position##afAimTree")) {
+            ImGuiMCP::SetNextItemWidth(220.0f);
+            changed |= ImGuiMCP::SliderFloat("Round to your face (0 behind, 90 side-on)##afAimTurn", &f.aimTurn, -110.0f, 110.0f, "%.0f", 0);
+            ImGuiMCP::SetNextItemWidth(220.0f);
+            changed |= ImGuiMCP::SliderFloat("Distance from your head##afAimBack", &f.aimBack, 10.0f, 400.0f, "%.0f", 0);
+            ImGuiMCP::SetNextItemWidth(220.0f);
+            changed |= ImGuiMCP::SliderFloat("Up / down##afAimUp", &f.aimUp, -80.0f, 80.0f, "%.0f", 0);
+            ImGuiMCP::TextColored(grey, "The middle of the screen is where the arrow will land: a line from the arrow tip "
+                                        "along your aim. Minus turns go round your left side.");
+            changed |= ImGuiMCP::Checkbox("A tiny dot where the arrow will land##afAimDot", &f.aimDot);
+            if (f.aimDot) {
+                ImGuiMCP::SetNextItemWidth(220.0f);
+                changed |= ImGuiMCP::SliderFloat("Dot size (pixels at 1080p)##afAimDotSize", &f.aimDotSize, 0.5f, 8.0f, "%.1f", 0);
+            }
+            {
+                // TFCam's own "hit where you aim" - one switch, no menu
+                auto& ad       = AimDot::Get();
+                bool  adChange = ImGuiMCP::Checkbox("Arrows and spells go where the dot is (TFCam's own aim)##afHitDot", &ad.enabled);
+                ImGuiMCP::TextColored(grey, "Aim: %s", AimDot::Status());
+                changed |= adChange;
+            }
+            changed |= ImGuiMCP::Checkbox("Blur round the edge of the screen while the string is drawn##afAimBlur", &f.aimBlur);
+            ImGuiMCP::SetNextItemWidth(220.0f);
+            changed |= ImGuiMCP::SliderFloat("Vignette (darker corners) while the string is drawn##afAimVig", &f.aimVignette, 0.0f, 1.0f, "%.2f", 0);
+            if (f.aimBlur) {
+                ImGuiMCP::TextColored(grey, "Strength and the sharp middle come from Background blur on the Scene page "
+                                            "(the \"blurry round the edge\" style).");
+            }
+            ImGuiMCP::TreePop();
+        }
+        changed |= ImGuiMCP::Checkbox("Power attacks punch in##afPower", &f.power);
+        changed |= ImGuiMCP::Checkbox("Big spells warp out##afSpells", &f.spells);
+        if (f.spells) {
+            static const char* const kLevels[] = { "Novice", "Apprentice", "Adept", "Expert", "Master" };
+            int idx = std::clamp(f.spellLevel / 25, 0, 4);
+            ImGuiMCP::SameLine();
+            ImGuiMCP::SetNextItemWidth(160.0f);
+            if (ImGuiMCP::Combo("and up##afLevel", &idx, kLevels, 5, -1)) {
+                f.spellLevel = idx * 25;
+                changed      = true;
+            }
+        }
+        changed |= ImGuiMCP::Checkbox("Shouts warp out##afShouts", &f.shouts);
+        changed |= ImGuiMCP::Checkbox("Moving fast stretches it (sprint, Whirlwind Sprint, a fast horse)##afSpeed", &f.speedPlayer);
+        changed |= ImGuiMCP::Checkbox("The free camera's speed stretches it (flying, camera paths)##afCamSpeed", &f.speedCamera);
+        ImGuiMCP::TextColored(grey, "Works on top of any FOV you or other mods set. Off by default.");
+        if (changed) {
+            FovFx::Clamp();
             SaveINI();
         }
     }
@@ -1456,6 +1563,8 @@ namespace FreeCamMenu {
             b.enabled   = readInt("Blur", "bEnabled", bd.enabled ? 1 : 0) != 0;
             b.strength  = readFloat("Blur", "fStrength", bd.strength);
             b.inFreeFly = readInt("Blur", "bInFreeFly", bd.inFreeFly ? 1 : 0) != 0;
+            b.style     = readInt("Blur", "iStyle", bd.style);
+            b.sharp     = readFloat("Blur", "fSharpMiddle", bd.sharp);
             CamBlur::Clamp();
             auto&                  c = CamPath::Get();
             const CamPath::Settings cd{};
@@ -1470,7 +1579,30 @@ namespace FreeCamMenu {
             c.addKey      = readInt("CameraPath", "iAddPointKey", cd.addKey);
             c.playKey     = readInt("CameraPath", "iPlayKey", cd.playKey);
             CamPath::Clamp();
-            SKSE::log::info("CamBlur: background blur {} (strength {:.2f}{})", b.enabled ? "on" : "off", b.strength,
+            auto&                 af = FovFx::Get();  // 0.18.0
+            const FovFx::Settings ad{};
+            af.enabled     = readInt("ActionFOV", "bEnabled", ad.enabled ? 1 : 0) != 0;
+            af.strength    = readFloat("ActionFOV", "fStrength", ad.strength);
+            af.bow         = readInt("ActionFOV", "bBow", ad.bow ? 1 : 0) != 0;
+            af.power       = readInt("ActionFOV", "bPowerAttacks", ad.power ? 1 : 0) != 0;
+            af.spells      = readInt("ActionFOV", "bSpells", ad.spells ? 1 : 0) != 0;
+            af.spellLevel  = readInt("ActionFOV", "iSpellLevel", ad.spellLevel);
+            af.shouts      = readInt("ActionFOV", "bShouts", ad.shouts ? 1 : 0) != 0;
+            af.speedPlayer = readInt("ActionFOV", "bSpeed", ad.speedPlayer ? 1 : 0) != 0;
+            af.speedCamera = readInt("ActionFOV", "bCameraSpeed", ad.speedCamera ? 1 : 0) != 0;
+            af.aimCam      = readInt("ActionFOV", "bArcherCamera", ad.aimCam ? 1 : 0) != 0;
+            af.aimTurn     = readFloat("ActionFOV", "fArcherTurn", ad.aimTurn);
+            af.aimBack     = readFloat("ActionFOV", "fArcherDistance", ad.aimBack);
+            af.aimUp       = readFloat("ActionFOV", "fArcherUp", ad.aimUp);
+            af.aimDot      = readInt("ActionFOV", "bArcherDot", ad.aimDot ? 1 : 0) != 0;
+            af.aimDotSize  = readFloat("ActionFOV", "fArcherDotSize", ad.aimDotSize);
+            af.aimBlur     = readInt("ActionFOV", "bArcherBlur", ad.aimBlur ? 1 : 0) != 0;
+            af.aimVignette = readFloat("ActionFOV", "fArcherVignette", ad.aimVignette);
+            AimDot::Get().enabled = readInt("AimDot", "bHitTheDot", AimDot::Settings{}.enabled ? 1 : 0) != 0;
+            FovFx::Clamp();
+            SKSE::log::info("FovFx: action FOV {}", af.enabled ? "on" : "off");
+            SKSE::log::info("CamBlur: background blur {} ({}, strength {:.2f}, sharp middle {:.2f}{})", b.enabled ? "on" : "off",
+                b.style == CamBlur::kStyleEnb ? "ENB depth of field" : "edges", b.strength, b.sharp,
                 b.inFreeFly ? ", also in free-fly" : "");
         }
 
@@ -1623,6 +1755,7 @@ namespace FreeCamMenu {
         SKSEMenuFramework::AddSectionItem("Scene Camera", RenderSceneCam);  // 0.10.0
         SKSEMenuFramework::AddSectionItem("Idle & Furniture", RenderAmbient);  // 0.11.0
         SKSEMenuFramework::AddSectionItem("Camera Path", RenderCamPath);       // 0.17.0
+        SKSEMenuFramework::AddSectionItem("Action FOV", RenderActionFov);      // 0.18.0
         SKSEMenuFramework::AddInputEvent(OnSMFInput);
 
         SKSE::log::info("FreeCamMenu: settings section registered");
