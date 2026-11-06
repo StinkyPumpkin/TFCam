@@ -132,8 +132,9 @@ namespace {
             }
             // One reservation for every trampoline hook: CommonLib sets the trampoline up only on the FIRST
             // AllocTrampoline call, so a second call adds nothing. 14 bytes per write_call<5>: FixedCam + FrameFx +
-            // AimDot's 6 (launch angles, flame yaw/pitch, beam yaw/pitch, projectile init).
-            SKSE::AllocTrampoline(8 * 14);
+            // AimDot's 10 (launch angles, flame yaw/pitch, beam yaw/pitch, projectile init, spell finder x2,
+            // spell pick, spell crosshair lookup) = 12, plus room for 4 more.
+            SKSE::AllocTrampoline(16 * 14);
             FreeCam::Install();
             CellEntryCam::Install();  // 0.9.0: zoom + orbit after a loading screen into a new cell
             SlccBridge::Install();

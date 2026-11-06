@@ -98,10 +98,10 @@ Page: **SKSE Menu Framework > FreeCam > Action FOV**. Action FOV is off by defau
   the game's own crosshair is switched off (`[AimDot] bHideGameCrosshair`, on), so the only crosshair is the dot and it
   only shows with something ranged out.
 - **Arrows and spells go where the dot is** (`[AimDot] bHitTheDot`, **off by default**): arrows, bolts,
-  fire-and-forget spells, flames and beams are aimed at what the middle of the screen looks at, from whatever camera
+  fire-and-forget spells, flames, beams, runes, summons and Target Actor spells are aimed at what the middle of the screen looks at, from whatever camera
   renders the picture (the archer camera included); arrows still drop, the game's own ballistic solver is used. Adapted
   from Hit Where You Aim by tossaponk (GPL-3.0-or-later, see `NOTICE.txt`), without its options. `TFCam.log` says how
-  many of its 4 hooks went in ("AimDot: ...").
+  many of its 5 hooks went in ("AimDot: ...").
 - While the string is drawn, optionally: the Background blur's edge blur (*Blur round the edge*) and darker corners
   (*Vignette*, 0..1).
 - **Background blur** (Scene Camera page) has a new default style, *Blurry round the edge, sharp in the middle*: TFCam's
@@ -186,6 +186,11 @@ the scene / stage ids, shots saved / recalled / deleted, refusals, automatic fre
 ## Changelog
 
 **0.18.1**
+- *Arrows and spells go where the dot is*: the middle-of-the-screen ray no longer stops on invisible collision (it
+  uses the line-of-sight layer, as Hit Where You Aim 1.3.1 does), so a shot is not sent at a point nobody can see.
+- *Arrows and spells go where the dot is* now also aims Target Location spells (runes, summons) and Target Actor spells
+  through the dot; a Target Actor spell with nobody under the dot misses where the dot misses (Hit Where You Aim 1.2's
+  spell aim, without its desired-target hook, which 1.3.1 turned off because it put weapon poison on the player).
 - While the aim dot is the crosshair, the game's own crosshair is off: with a sword or bare hands there is none, with a
   bow, crossbow, staff or spell out there is the dot (`[AimDot] bHideGameCrosshair=0` keeps the game's crosshair).
 - Idle and furniture camera: a menu key (Tab and the others) brings the normal camera back at once. Before, Tab's menu
