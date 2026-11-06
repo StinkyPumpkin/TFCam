@@ -487,26 +487,33 @@ namespace AimDot {
                 tr.write_call<5>(loc, SpellTargetHook::Finder);
                 SpellTargetHook::s_pick = reinterpret_cast<SpellTargetHook::pick_t>(tr.write_call<5>(pick, SpellTargetHook::Pick));
                 ++s_hooks;
-                // The crosshair lookup: only when the call is the game's handle lookup on the crosshair pick data
-                // (lea rcx, [rip+disp] right before it points into CrosshairPickData).
+                // The crosshair lookup: only when the call is the game's handle lookup (LookupReferenceByHandle) and the
+                // handle it is given was just read from the crosshair pick data: shortly before it the game does
+                // mov rax, [rip+disp] (the CrosshairPickData pointer) ; mov ecx, [rax+4] (its target handle), copies the
+                // handle to a local and passes that (seen in AE 1.6.1170 memory, 11-06).
                 const std::uintptr_t lookupFn = REL::Relocation<std::uintptr_t>(RELOCATION_ID(12204, 12332)).address();
                 const auto*          xhair    = RE::CrosshairPickData::GetSingleton();
-                bool                 lookOk   = false;
+                const auto           base     = REL::Module::get().base();
+                bool                 callOk = false, readOk = false;
                 if (look && xhair) {
-                    const std::uintptr_t lea = look - 7;  // 48 8D 0D disp32
-                    const auto*          b   = reinterpret_cast<const std::uint8_t*>(lea);
-                    if (b[0] == 0x48 && b[1] == 0x8D && (b[2] & 0xC7) == 0x05) {
-                        const std::uintptr_t ref = lea + 7 + *reinterpret_cast<const std::int32_t*>(lea + 3);
-                        const auto           x   = reinterpret_cast<std::uintptr_t>(xhair);
-                        lookOk = ref >= x && ref < x + 0x80 && CallTarget(look) == lookupFn;
+                    callOk = CallTarget(look) == lookupFn;
+                    for (std::uintptr_t p = look - 0x40; p + 10 <= look; ++p) {
+                        const auto* b = reinterpret_cast<const std::uint8_t*>(p);
+                        if (b[0] == 0x48 && b[1] == 0x8B && b[2] == 0x05 && b[7] == 0x8B && b[8] == 0x48 && b[9] == 0x04) {
+                            const std::uintptr_t slot = p + 7 + *reinterpret_cast<const std::int32_t*>(p + 3);
+                            readOk = *reinterpret_cast<const std::uintptr_t*>(slot) == reinterpret_cast<std::uintptr_t>(xhair);
+                            if (readOk) break;
+                        }
                     }
                 }
+                const bool lookOk = callOk && readOk;
                 if (lookOk) {
                     SpellTargetHook::s_lookup = reinterpret_cast<SpellTargetHook::lookup_t>(tr.write_call<5>(look, SpellTargetHook::Lookup));
                     SKSE::log::info("AimDot: spells - Target Actor / Target Location go through the dot");
                 } else {
-                    SKSE::log::warn("AimDot: spells - the crosshair lookup did not check out; spells go through the dot, but an actor "
-                                    "under the game's own crosshair still wins");
+                    SKSE::log::warn("AimDot: spells - the crosshair lookup did not check out (site {:X}, call {}, crosshair read {}); "
+                                    "spells go through the dot, but an actor under the game's own crosshair still wins",
+                        look ? look - base : 0, callOk ? "ok" : "other", readOk ? "ok" : "not found");
                 }
             }
         }
