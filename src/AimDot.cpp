@@ -338,7 +338,7 @@ namespace AimDot {
             static inline pick_t   s_pick   = nullptr;
             static inline thread_local int  t_depth = 0;      // > 0: inside the player's finder call
             static inline thread_local bool t_actor = false;  // that call is the Target Actor one
-            static inline bool s_loggedAim = false, s_loggedOutside = false;
+            static inline bool s_loggedLoc = false, s_loggedActor = false, s_loggedMiss = false, s_loggedOutside = false;
 
             static RE::MagicTarget* Finder(RE::ActorMagicCaster* a_caster, bool a_actor, float a_range, RE::NiPoint3* a_pos,
                 RE::TESObjectCELL** a_cell, RE::bhkPickData* a_pick) {
@@ -386,9 +386,20 @@ namespace AimDot {
                 a_pick.rayInput.from = RE::hkVector4(from * scale);
                 a_pick.ray           = RE::hkVector4(dir * range);
                 a_pick.rayInput.to   = a_pick.rayInput.from + a_pick.ray;
-                if (!s_loggedAim) {
-                    s_loggedAim = true;
-                    SKSE::log::info("AimDot: first {} spell turned to the dot", t_actor ? "Target Actor" : "Target Location");
+                // Once per kind (a Target Location cast must not hide the first Target Actor one), with the reach
+                // and what is under the dot, so a spell that "does nothing" can be told from one out of range.
+                const float reach = range / scale, dist = (c.point - from).Length();
+                if (!t_actor && !s_loggedLoc) {
+                    s_loggedLoc = true;
+                    SKSE::log::info("AimDot: first Target Location spell turned to the dot - reach {:.0f}, dot {:.0f} units away", reach, dist);
+                } else if (t_actor && actor && !s_loggedActor) {
+                    s_loggedActor = true;
+                    const char* name = actor->GetDisplayFullName();
+                    SKSE::log::info("AimDot: first Target Actor spell turned to the dot - {} under the dot, {:.0f} units away, reach {:.0f}",
+                        name ? name : "?", dist, reach);
+                } else if (t_actor && !actor && !s_loggedMiss) {
+                    s_loggedMiss = true;
+                    SKSE::log::info("AimDot: first Target Actor spell with nobody under the dot - cast along the dot's ray (reach {:.0f})", reach);
                 }
             }
 
