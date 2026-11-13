@@ -554,6 +554,9 @@ namespace FreeCam {
         // always register a game "Cursor Menu", so check it explicitly. While it's
         // open we suspend mouse handling so the user can click the menu.
         if (FreeCamMenu::IsOverlayOpen()) return true;
+        // 11-14 (user: "when the UI is open right click is moving the camera down"): the Camera Path editor (a PrismaUI page) is a
+        // menu too - the mouse buttons are its clicks, not the free camera's up / down
+        if (CamPathPrisma::IsOpen()) return true;
         auto* ui = RE::UI::GetSingleton();
         if (!ui) return false;
         if (ui->GameIsPaused()) return true;

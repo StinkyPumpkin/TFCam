@@ -10,6 +10,7 @@
 #include <Windows.h>
 
 #include <atomic>
+#include <thread>
 #include <chrono>
 #include <cmath>
 #include <format>
@@ -56,6 +57,27 @@ namespace CamPathPrisma {
 
         void Queue(std::function<void()> a_fn) {
             if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(std::move(a_fn));
+        }
+
+        // 11-14 (user: "the UI must be closed then opened to see ANY change"; TFCam.log 11-14: "the page was sent N camera(s)" only
+        // ever next to "editor open"): the camera hook that calls Tick() does not run while the editor is up, so the page only got
+        // its state when it opened. A helper thread now asks for one Tick (one queued main-thread task) every 0.1 s while the editor
+        // is open - never re-queued from inside a task
+        std::atomic<bool> s_pumpOn{ false };
+        void StartPump() {
+            if (s_pumpOn.exchange(true)) return;
+            try {
+                std::thread([] {
+                    for (;;) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        if (!s_open.load()) break;
+                        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { CamPathPrisma::Tick(); });
+                    }
+                    s_pumpOn = false;
+                }).detach();
+            } catch (...) {
+                s_pumpOn = false;
+            }
         }
 
         // ---- the state, as JSON -------------------------------------------------------------------------------------
@@ -471,6 +493,7 @@ namespace CamPathPrisma {
         s_typing     = false;
         s_consoleCam = -1;
         Show();
+        StartPump();  // 11-14: the page's state every 0.1 s while open
         SKSE::log::info("CamPathPrisma: editor open");
     }
 
