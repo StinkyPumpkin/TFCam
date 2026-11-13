@@ -124,7 +124,7 @@ use the dot.
 Settings: `TFCam.ini` section `[ActionFOV]`: `bEnabled`, `fStrength`, `bBow`, `bPowerAttacks`, `bSpells`, `iSpellLevel`,
 `bShouts`, `bSpeed`, `bCameraSpeed`, `bArcherCamera`, `fArcherTurn`, `fArcherDistance`, `fArcherUp`, `bArcherDot`,
 `fArcherDotSize`, `bArcherBlur`, `fArcherVignette`; `[AimDot]` `bHitTheDot` (0), `bHideGameCrosshair` (1); `[Blur]` `iStyle` (0 edges, 1 ENB),
-`fSharpMiddle`.
+`fSharpMiddle`, `bKeepSubjectSharp` (1), `fSubjectDepth` (25), `fBlurRampDepth` (150).
 
 ## Scene Camera (0.10.0, extended in 0.13.0)
 
@@ -184,6 +184,12 @@ What it does is logged to `TFCam.log` in SKSE's log folder (`Documents/My Games/
 the scene / stage ids, shots saved / recalled / deleted, refusals, automatic free camera waits and drops).
 
 ## Changelog
+
+**0.19.0**
+- *Background blur*, edge style: *Keep the subject sharp* (on by default) blurs only what is behind the subject, read
+  from the game's depth buffer - the subject, her hair and clothes and anything in front of her stay sharp, the eye-shaped
+  edge blur fades in behind her (`[Blur]` `bKeepSubjectSharp`, `fSubjectDepth`, `fBlurRampDepth`). Not for the archer
+  camera. Without a readable depth buffer it blurs the whole edge as before (one line in `TFCam.log`).
 
 **0.18.1**
 - *Arrows and spells go where the dot is*: the middle-of-the-screen ray no longer stops on invisible collision (it

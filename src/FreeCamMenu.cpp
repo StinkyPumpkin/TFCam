@@ -357,6 +357,9 @@ namespace FreeCamMenu {
         WriteINIInt("Blur", "bInFreeFly", b.inFreeFly ? 1 : 0);
         WriteINIInt("Blur", "iStyle", b.style);  // 10-31: 0 edges (TFCam's own), 1 ENB depth of field
         WriteINIFloat("Blur", "fSharpMiddle", b.sharp);
+        WriteINIInt("Blur", "bKeepSubjectSharp", b.keepSubject ? 1 : 0);  // 11-13: edges blur only what is behind the subject
+        WriteINIFloat("Blur", "fSubjectDepth", b.subjectDepth);
+        WriteINIFloat("Blur", "fBlurRampDepth", b.rampDepth);
         const auto& c = CamPath::Get();
         WriteINIInt("CameraPath", "iOpenWindowKey", c.openKey);
         WriteINIInt("CameraPath", "iAddCameraKey", c.addKey);
@@ -934,6 +937,18 @@ namespace FreeCamMenu {
             if (!enbStyle) {
                 ImGuiMCP::SetNextItemWidth(200.0f);
                 bChanged |= ImGuiMCP::SliderFloat("Sharp middle (how far out)##blSharp", &bl.sharp, 0.05f, 0.9f, "%.2f");
+                // 11-13 (user: "can we make it not blur the player or UI?"): blur only what is behind the subject
+                bChanged |= ImGuiMCP::Checkbox("Keep the subject sharp (blur only what is behind)##blKeep", &bl.keepSubject);
+                ImGuiMCP::BeginDisabled(!bl.keepSubject);
+                ImGuiMCP::SetNextItemWidth(200.0f);
+                bChanged |= ImGuiMCP::SliderFloat("Still sharp behind the subject (units)##blSubjDepth", &bl.subjectDepth, 0.0f,
+                    500.0f, "%.0f");
+                ImGuiMCP::SetNextItemWidth(200.0f);
+                bChanged |= ImGuiMCP::SliderFloat("Blur comes in over (units)##blRamp", &bl.rampDepth, 10.0f, 2000.0f, "%.0f");
+                ImGuiMCP::EndDisabled();
+                if (bl.keepSubject) {
+                    ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f }, "Depth: %s", FrameFx::DepthStatus().c_str());
+                }
             }
             bChanged |= ImGuiMCP::Checkbox("Also in plain free-fly (sharp: the middle of the screen)##blFree", &bl.inFreeFly);
             ImGuiMCP::EndDisabled();
@@ -955,7 +970,9 @@ namespace FreeCamMenu {
                 ImGuiMCP::TextColored({ 0.5f, 0.5f, 0.5f, 1.0f },
                     "While orbit, preset view, eye view, a camera path, the idle camera or the conversation camera moves the "
                     "camera: the picture blurs more and more toward the screen's edge and stays sharp in the middle, on the "
-                    "subject. TFCam's own image pass, before the HUD - no ENB needed. Strength 1 is a wash at the edge.");
+                    "subject. TFCam's own image pass, before the HUD - no ENB needed. Strength 1 is a wash at the edge. With "
+                    "Keep the subject sharp, only what is behind the subject blurs (read from the game's depth buffer): the "
+                    "subject and anything in front of it stay sharp.");
             }
             if (bChanged) {
                 CamBlur::Clamp();
@@ -1702,6 +1719,9 @@ namespace FreeCamMenu {
             b.inFreeFly = readInt("Blur", "bInFreeFly", bd.inFreeFly ? 1 : 0) != 0;
             b.style     = readInt("Blur", "iStyle", bd.style);
             b.sharp     = readFloat("Blur", "fSharpMiddle", bd.sharp);
+            b.keepSubject  = readInt("Blur", "bKeepSubjectSharp", bd.keepSubject ? 1 : 0) != 0;  // 11-13
+            b.subjectDepth = readFloat("Blur", "fSubjectDepth", bd.subjectDepth);
+            b.rampDepth    = readFloat("Blur", "fBlurRampDepth", bd.rampDepth);
             CamBlur::Clamp();
             auto&                  c = CamPath::Get();
             const CamPath::Settings cd{};

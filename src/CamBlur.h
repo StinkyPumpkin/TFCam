@@ -25,6 +25,11 @@ namespace CamBlur {
         bool  inFreeFly = false;  // also in plain free-fly (focus = what the middle of the screen sees)
         int   style     = kStyleEdges;  // 10-31: edges (TFCam's own pass) or ENB's depth of field
         float sharp     = 0.4f;         // edges: how far out from the middle stays sharp (0..1, 1 = the screen's edge)
+        // 11-13 (user: "can we make it not blur the player"): edges with a subject - blur only what is behind the subject,
+        // read from the game's depth buffer; the subject and everything in front of it stay sharp.
+        bool  keepSubject  = true;    // [Blur] bKeepSubjectSharp
+        float subjectDepth = 25.0f;   // [Blur] fSubjectDepth: game units behind the subject that still stay sharp
+        float rampDepth    = 150.0f;  // [Blur] fBlurRampDepth: past that, the blur comes in fully over this many units
     };
 
     // 10-31: what the image pass should blur this frame in the Edges style (FrameFx asks every frame). Main thread.
@@ -33,6 +38,7 @@ namespace CamBlur {
         float        strength    = 0.0f;
         bool         haveSubject = false;
         RE::NiPoint3 subject{};  // the sharp middle sits on it (on screen); none = the middle of the screen
+        bool         byDepth     = false;  // 11-13: keep the subject and what is in front of it sharp (never the archer camera)
     };
     Edge EdgeWant();
 

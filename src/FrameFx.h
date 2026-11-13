@@ -35,6 +35,8 @@ namespace FrameFx {
     void        Clamp();
     void        Install();  // kDataLoaded
     std::string Status();   // any thread (menu)
+    // 11-13: whether the edge blur can read the game's depth buffer to keep the subject sharp (any thread, menu)
+    std::string DepthStatus();
 
     // For VideoCapture, only inside the hook: draw a_src onto a_rtv (a_w x a_h, stretched) with one of these shaders.
     enum Shader : int { kShaderCopy = 0, kShaderLuma = 1, kShaderChroma = 2 };
