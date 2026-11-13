@@ -47,7 +47,7 @@
   var lastKey = '';
   var clearArmed = false;
   var preview = false;
-  var seenEvent = null, flash = '', flashUntil = 0;
+  var seenEvent = null, flash = '', flashUntil = 0, flashWarn = false;
 
   function $(id) { return document.getElementById(id); }
   function show(el, on) { if (el) el.style.display = on ? '' : 'none'; }
@@ -134,9 +134,10 @@
     renderBar();
     renderMenu();
     if (force || key !== lastKey) {
-      lastKey = key;
       renderTrack();  // before the card: the card sits over its camera's mark
-      if (!busy) renderCard();
+      // 11-13 (user: cleared / added cameras only showed after closing and opening the editor): a change that came while a
+      // slider was held is drawn as soon as it is let go - the key is only kept once the card is drawn too
+      if (!busy) { renderCard(); lastKey = key; }
     }
     renderTransport();
     renderToast();
@@ -192,13 +193,17 @@
       seenEvent = ev;  // old news when the editor opens: not shown
     } else if (ev !== seenEvent) {
       seenEvent = ev;
-      if (ev) { flash = ev.charAt(0).toUpperCase() + ev.slice(1); flashUntil = Date.now() + 2500; setTimeout(function () { if (S) renderToast(); }, 2600); }
+      // 11-13: "go to <place> first" (a camera made somewhere else) stays longer, in the warning colour
+      flashWarn = / first\b/.test(ev);
+      var ms = flashWarn ? 6000 : 2500;
+      if (ev) { flash = ev.charAt(0).toUpperCase() + ev.slice(1); flashUntil = Date.now() + ms; setTimeout(function () { if (S) renderToast(); }, ms + 100); }
     }
     var notice = S.recordingPath ? 'Recording a manual path - close the editor and fly; open it again to stop'
       : (!S.freeCam ? 'Turn the free camera on to add cameras and play the path' : '');
-    var msg = notice || (Date.now() < flashUntil ? flash : '');
+    var flashing = Date.now() < flashUntil;
+    var msg = notice || (flashing ? flash : '');
     show($('toast'), !!msg);
-    $('toast').classList.toggle('warn', !!notice);
+    $('toast').classList.toggle('warn', !!notice || (flashing && flashWarn));
     $('toastText').textContent = msg;
   }
 
@@ -591,8 +596,33 @@
       if (c) cmd('edit|' + sel + '|curve|' + c.curve.map(function (v) { return v.toFixed(3); }).join('|'));
       dragHandle = -1; busy = false; render(true); return;
     }
-    if (busy) busy = false;
+    if (busy) { busy = false; if (S) render(true); }   // 11-13: whatever changed meanwhile shows now
   });
+
+  // 11-13 (user: "when hovering over the UI buttons can there be a hover tip?"): PrismaUI draws no browser tooltips, so the
+  // page's own - the button's title (or its label), above it, 0.45 s after the pointer rests on it
+  var tipEl = null, tipFor = null, tipT = 0;
+  function tipText(el) { return el.getAttribute('title') || el.getAttribute('data-tip') || el.getAttribute('aria-label') || ''; }
+  function tipHide() { clearTimeout(tipT); tipFor = null; if (tipEl) tipEl.style.display = 'none'; }
+  function tipShow(el) {
+    var t = tipText(el); if (!t) return;
+    if (!tipEl) { tipEl = document.createElement('div'); tipEl.id = 'tip'; document.body.appendChild(tipEl); }
+    tipEl.textContent = t; tipEl.style.display = 'block';
+    var r = el.getBoundingClientRect(), w = tipEl.offsetWidth, h = tipEl.offsetHeight, gap = 8;
+    var x = Math.min(Math.max(r.left + r.width / 2 - w / 2, 6), window.innerWidth - w - 6);
+    var y = r.top - h - gap; if (y < 6) y = r.bottom + gap;   // above (the bar is at the bottom), else below
+    tipEl.style.left = x + 'px'; tipEl.style.top = y + 'px';
+  }
+  document.addEventListener('mouseover', function (e) {
+    var el = e.target.closest && e.target.closest('button, .mark, select');
+    if (el === tipFor) return;
+    tipHide();
+    if (!el || !tipText(el)) return;
+    // the browser's own tooltip would show too outside the game: the title moves to data-tip
+    if (el.getAttribute('title')) { el.setAttribute('data-tip', el.getAttribute('title')); el.removeAttribute('title'); }
+    tipFor = el; tipT = setTimeout(function () { if (tipFor === el) tipShow(el); }, 450);
+  });
+  document.addEventListener('mousedown', tipHide, true);
 
   // text boxes: the game's keys stay out while typing
   document.addEventListener('focusin', function (e) { if (e.target.tagName === 'INPUT' && e.target.type === 'text') cmd('typing|1'); });
@@ -606,9 +636,12 @@
   window.tfcamState = function (json) {
     var st;
     try { st = typeof json === 'string' ? JSON.parse(json) : json; } catch (err) { console.error('TFCam editor: bad state ' + err); return; }
+    var before = S ? S.cams.length : -1;
     S = st;
     if (!scrubbing && !S.playing) scrubAt = Math.min(scrubAt, S.total || 0);
-    render(false);
+    // 11-13: the camera count reaches TFCam.log ("CamPathPrisma page: ...") when it changes - the next test shows where an update stops
+    if (S.cams.length !== before) console.info('TFCam editor: ' + S.cams.length + ' camera(s) on the page');
+    render(S.cams.length !== before);
   };
 
   // sizes are in rem: 16 px on a 1920 x 1080 screen, in proportion on others

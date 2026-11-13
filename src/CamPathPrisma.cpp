@@ -34,6 +34,11 @@ namespace CamPathPrisma {
         double      s_nextPush  = 0.0;
         bool        s_dirty     = true;
         std::string s_lastJson;
+        // 11-13 (user: "I tried to clear all cameras - it did not seem to work until I closed and reopened the UI; same when I
+        // add a camera"): the change itself runs a frame later (CamPath's task), so the page is sent its state for a while
+        // after every command, and the camera count each push carries is logged when it changes
+        double      s_forceUntil = 0.0;
+        std::size_t s_pushedCams = static_cast<std::size_t>(-1);
         long long   s_closedAt  = 0;
         // Console button: the editor steps aside and the console opens; when it closes, what was clicked in it becomes
         // camera s_consoleCam's pivot (the editor takes every key, so the console could not be opened beside it)
@@ -198,6 +203,10 @@ namespace CamPathPrisma {
             if (!a_force && j == s_lastJson) return;
             s_lastJson = j;
             s_api->InteropCall(s_view, "tfcamState", j.c_str());
+            if (const auto n = CamPath::GetSnapshot().cams.size(); n != s_pushedCams) {
+                s_pushedCams = n;
+                SKSE::log::info("CamPathPrisma: the page was sent {} camera(s)", n);
+            }
         }
 
         // ---- the page's commands ("cmd|arg|arg...") - main thread ------------------------------------------------
@@ -382,7 +391,8 @@ namespace CamPathPrisma {
                 SKSE::log::warn("CamPathPrisma: unknown command '{}'", a_cmd);
                 return;
             }
-            s_dirty = true;
+            s_dirty      = true;
+            s_forceUntil = Now() + 0.6;  // 11-13: the change lands a frame later - keep sending
         }
 
         void OnCmd(const char* a_arg) {
@@ -533,7 +543,7 @@ namespace CamPathPrisma {
         const double now = Now();
         if (!s_dirty && now < s_nextPush) return;
         s_nextPush = now + 0.1;
-        Push(s_dirty);
+        Push(s_dirty || now < s_forceUntil);
         s_dirty = false;
     }
 }

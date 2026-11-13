@@ -98,6 +98,10 @@ namespace CamPath {
         float curveY1 = 0.0f;
         float curveX2 = 0.58f;
         float curveY2 = 1.0f;
+        // 11-13 (user: "the saved position was in another cell and it tried to go there - the screen went black"): where it
+        // was made - "I:<plugin>|<local id>" (an interior cell) or "W:<plugin>|<local id>" (a worldspace); empty = an older
+        // camera (unknown)
+        std::string space;
     };
 
     struct Settings {

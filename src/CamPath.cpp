@@ -193,6 +193,52 @@ namespace CamPath {
             s_lastEvent = std::move(a_text);
         }
 
+        // ---- 11-13: where a camera was made (see Cam::space) -----------------------------------------------------------
+        constexpr float kFarUnknown = 12000.0f;  // an older camera (no area saved) this far from you counts as somewhere else
+
+        std::string SpaceOfForm(const RE::TESForm* a_form, char a_tag) {
+            if (!a_form) return {};
+            const auto* file = a_form->GetFile(0);
+            return std::format("{}:{}|{:X}", a_tag, file ? std::string(file->GetFilename()) : std::string(), a_form->GetLocalFormID());
+        }
+
+        std::string SpaceHere() {  // main thread
+            auto* pc   = RE::PlayerCharacter::GetSingleton();
+            auto* cell = pc ? pc->GetParentCell() : nullptr;
+            if (!cell) return {};
+            if (cell->IsInteriorCell()) return SpaceOfForm(cell, 'I');
+            return SpaceOfForm(pc->GetWorldspace(), 'W');
+        }
+
+        // its name for a message: the cell's / worldspace's own name, else the plugin and id
+        std::string SpaceName(const std::string& a_space) {
+            if (a_space.size() < 3) return "another place";
+            const auto bar = a_space.find('|');
+            if (bar == std::string::npos) return "another place";
+            const std::string plugin = a_space.substr(2, bar - 2);
+            const auto        local  = static_cast<RE::FormID>(std::strtoul(a_space.c_str() + bar + 1, nullptr, 16));
+            auto*             dh     = RE::TESDataHandler::GetSingleton();
+            const auto*       form   = dh && !plugin.empty() ? dh->LookupForm(local, plugin) : nullptr;
+            const char*       name   = form ? form->GetName() : nullptr;
+            if (name && *name) return name;
+            return std::format("{} {:X} ({})", a_space[0] == 'I' ? "the interior" : "the worldspace", local, plugin.empty() ? "?" : plugin);
+        }
+
+        // true = the camera is somewhere else than you; a_where = where (for the message)
+        bool CamAway(const Cam& a_c, const std::string& a_here, std::string& a_where) {
+            if (!a_c.space.empty()) {
+                if (a_c.space == a_here) return false;
+                a_where = SpaceName(a_c.space);
+                return true;
+            }
+            auto* pc = RE::PlayerCharacter::GetSingleton();
+            if (!pc) return false;
+            const auto d = a_c.pos - pc->GetPosition();
+            if (std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z) <= kFarUnknown) return false;
+            a_where = "where it was made (an older camera - no area saved; it is far from you)";
+            return true;
+        }
+
         void Event(std::string a_text) {
             std::scoped_lock lock(s_lock);
             EventLocked(std::move(a_text));
@@ -247,19 +293,19 @@ namespace CamPath {
                 out << "# TFCam camera path v3 - tab separated. pivot: - - follow loop (no pivot for new cameras since 10-29)\n"
                        "# cam: x y z yaw pitch roll fov | pivot x y z heading known | look wait blur strength | move time "
                        "smooth turns way zoom | pivot kind formID | bend side up | bone shake crash | slow at speed "
-                       "length world | elastic sling slowCamera | curve on x1 y1 x2 y2 | dolly\n";
+                       "length world | elastic sling slowCamera | curve on x1 y1 x2 y2 | dolly | where (11-13: I/W:plugin|id, - = unknown)\n";
                 out << std::format("pivot\t-1\t00000000\t{}\t{}\n", s_follow ? 1 : 0, s_loop ? 1 : 0);
                 for (const auto& c : s_cams) {
                     out << std::format("cam\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{:.5f}\t{:.5f}\t{:.2f}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{}"
                                        "\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{}\t{}\t{}\t{}\t{:08X}\t{:.3f}\t{:.3f}"
                                        "\t{}\t{:.3f}\t{}\t{}\t{:.3f}\t{:.3f}\t{:.3f}\t{}\t{:.3f}\t{:.3f}\t{}"
-                                       "\t{}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.3f}\n",
+                                       "\t{}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.3f}\t{}\n",
                         c.pos.x, c.pos.y, c.pos.z, c.yaw, c.pitch, c.roll, c.fov, c.pivotPos.x, c.pivotPos.y, c.pivotPos.z,
                         c.pivotHeading, c.havePivot ? 1 : 0, c.look, c.wait, c.blur ? 1 : 0, c.blurStrength, c.move, c.time,
                         c.smooth ? 1 : 0, c.turns, c.way, c.zoomTrick ? 1 : 0, c.pivotKind, c.pivotRef, c.bendSide, c.bendUp,
                         c.bone, c.shake, c.crashZoom ? 1 : 0, c.slowMo ? 1 : 0, c.slowAt, c.slowSpeed, c.slowLength,
                         c.slowWorld ? 1 : 0, c.elastic, c.sling, c.slowCamera ? 1 : 0, c.curveOn ? 1 : 0, c.curveX1,
-                        c.curveY1, c.curveX2, c.curveY2, c.dolly);
+                        c.curveY1, c.curveX2, c.curveY2, c.dolly, c.space.empty() ? std::string("-") : c.space);
                 }
             }
             std::filesystem::rename(tmp, file, ec);
@@ -334,6 +380,16 @@ namespace CamPath {
                 c.curveY2 = std::clamp(c.curveY2, 0.0f, 1.0f);
                 // the dolly while waiting (42 fields before it, 10-31)
                 c.dolly = n >= 43 && std::isfinite(c.dolly) ? std::clamp(c.dolly, -1.0f, 1.0f) : 0.0f;
+                // where it was made (11-13): the 44th field, text; older files have none
+                if (n >= 43) {
+                    std::size_t at = 0;
+                    for (int tabs = 0; tabs < 44 && at != std::string::npos; ++tabs) at = line.find('\t', at == 0 ? 0 : at + 1);
+                    if (at != std::string::npos) {
+                        std::string sp = line.substr(at + 1);
+                        if (const auto t = sp.find('\t'); t != std::string::npos) sp.resize(t);
+                        if (sp != "-" && sp.size() > 2 && (sp[0] == 'I' || sp[0] == 'W') && sp[1] == ':') c.space = sp;
+                    }
+                }
                 cams.push_back(c);
             }
             s_cams      = std::move(cams);
@@ -1205,6 +1261,15 @@ namespace CamPath {
                     Notify("Camera path: add at least 2 cameras first");
                     return false;
                 }
+                // 11-13: never fly to another cell / worldspace (the picture goes black)
+                const std::string here = SpaceHere();
+                for (std::size_t k = 0; k < s_cams.size(); ++k) {
+                    std::string where;
+                    if (!CamAway(s_cams[k], here, where)) continue;
+                    EventLocked(std::format("play refused: camera {} is in {} - go there first", k + 1, where));
+                    Notify(std::format("Camera path: go to {} first", where));
+                    return false;
+                }
                 s_play         = Play{};
                 s_play.blurOn  = blurWas;
                 s_play.cams    = s_cams;
@@ -1367,6 +1432,7 @@ namespace CamPath {
             c.move   = kMoveCurve;
             c.time   = 3.0f;
             c.smooth = false;
+            c.space  = SpaceHere();  // 11-13: where it was made
             return c;
         }
 
@@ -1465,6 +1531,7 @@ namespace CamPath {
                 c.pivotPos     = fresh.pivotPos;
                 c.pivotHeading = fresh.pivotHeading;
                 c.havePivot    = fresh.havePivot;
+                c.space        = fresh.space;  // 11-13: it is here now
                 EventLocked(std::format("camera {} moved to the camera's spot", a_i + 1));
             }
             SaveCurrentSoon();
@@ -1483,6 +1550,14 @@ namespace CamPath {
                 follow = s_follow;
                 kind   = c.pivotKind;
                 ref    = c.pivotRef;
+            }
+            {   // 11-13 (user: "the saved position was in another cell ... screen went black"): no flight to another place
+                std::string where;
+                if (CamAway(c, SpaceHere(), where)) {
+                    Event(std::format("camera {} is in {} - go there first (the camera stays here)", a_i + 1, where));
+                    Notify(std::format("Camera path: go to {} first", where));
+                    return;
+                }
             }
             if (s_play.on) EndPlay("go to a camera");
             RE::NiPoint3 pos = c.pos;
