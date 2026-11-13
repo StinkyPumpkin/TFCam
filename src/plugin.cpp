@@ -170,6 +170,7 @@ namespace {
             ConvoCam::OnGameLoad("save loaded");
             CamPath::OnGameLoad();       // 0.17.0
             CamBlur::Off("save loaded");  // 0.17.0
+            FreeCam::ForgetMenuPause();  // 11-14: a menu pause kept from before the load
             HUDHider::OnGameLoaded(FreeCam::IsActive());  // 0.18.0
             SlccBridge::OnGameLoaded("save loaded");
             break;
@@ -180,6 +181,7 @@ namespace {
             ConvoCam::OnGameLoad("new game");
             CamPath::OnGameLoad();       // 0.17.0
             CamBlur::Off("new game");  // 0.17.0
+            FreeCam::ForgetMenuPause();  // 11-14
             SlccBridge::OnGameLoaded("new game");
             break;
         default:

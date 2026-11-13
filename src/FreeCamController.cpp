@@ -389,6 +389,89 @@ namespace FreeCam {
         s_entryPosePending = false;
     }
 
+    // ---- 11-14 (user: "I was able to open the Tween and inventory while flying the free camera - the slot cams, move char etc did
+    // not work"; chose "leave, then return"): a menu mod (Bye Sky UI, API v6) pauses TFCam's free-fly before its menu opens - the
+    // pose (place, look, roll, FOV) is kept and free-fly ends, so the menu's own camera works - and resumes it once the player is
+    // back in the game: free-fly again at exactly that pose. Not after a load, a cell / worldspace change or a 3000-unit move of the
+    // player (fast travel), and not when free-fly is on again already. Main thread.
+    namespace {
+        struct MenuPause {
+            bool         on = false;
+            RE::NiPoint3 pos{};
+            float        pitch = 0.0f;
+            float        yaw   = 0.0f;
+            float        roll  = 0.0f;
+            float        fov   = 0.0f;
+            RE::FormID   space = 0;  // the player's interior cell, or worldspace
+            RE::NiPoint3 player{};
+        } s_menuPause;
+        bool  s_entryLookPending = false;  // roll + FOV to put back with the entry pose
+        float s_entryRoll        = 0.0f;
+        float s_entryFov         = 0.0f;
+
+        RE::FormID PlayerSpace() {
+            auto* pc   = RE::PlayerCharacter::GetSingleton();
+            auto* cell = pc ? pc->GetParentCell() : nullptr;
+            if (!cell) return 0;
+            if (cell->IsInteriorCell()) return cell->GetFormID();
+            auto* ws = pc->GetWorldspace();
+            return ws ? ws->GetFormID() : 0;
+        }
+    }
+
+    bool SuspendForMenu(const char* a_who) {
+        auto* cam = RE::PlayerCamera::GetSingleton();
+        auto* pc  = RE::PlayerCharacter::GetSingleton();
+        if (!cam || !pc || !TFCamDriving()) return false;
+        // only the player's own flight: the idle and Scene cameras step aside for menus themselves
+        if (AmbientCam::OwnsMotion() || SceneCam::OwnsMotion() || ConvoCam::OwnsMotion()) return false;
+        MenuPause p;
+        if (!CaptureFreeCamPose(p.pos, p.pitch, p.yaw)) return false;
+        p.on     = true;
+        p.roll   = s_rollAngle;
+        p.fov    = WorldFOV(cam);
+        p.space  = PlayerSpace();
+        p.player = pc->GetPosition();
+        s_menuPause = p;
+        SKSE::log::info("FreeCam: paused for {} - free-fly ends, it comes back at ({:.0f}, {:.0f}, {:.0f}) roll {:.1f} FOV {:.1f}",
+            a_who ? a_who : "a menu", p.pos.x, p.pos.y, p.pos.z, p.roll * 57.29578f, p.fov);
+        SlccBridge::LeaveFreeFly(a_who ? a_who : "a menu");
+        return true;
+    }
+
+    bool SuspendedForMenu() { return s_menuPause.on; }
+
+    bool ResumeAfterMenu(const char* a_who) {
+        if (!s_menuPause.on) return false;
+        const MenuPause p = s_menuPause;
+        s_menuPause.on    = false;
+        auto* cam = RE::PlayerCamera::GetSingleton();
+        auto* pc  = RE::PlayerCharacter::GetSingleton();
+        if (!cam || !pc) return false;
+        const char* why = nullptr;
+        const auto  d   = pc->GetPosition() - p.player;
+        if (cam->IsInFreeCameraMode()) why = "the free camera is on already";
+        else if (PlayerSpace() != p.space) why = "she is in another cell / worldspace now";
+        else if (d.x * d.x + d.y * d.y + d.z * d.z > 3000.0f * 3000.0f) why = "she moved far (fast travel?)";
+        if (why) {
+            SKSE::log::info("FreeCam: not resumed after {} - {}", a_who ? a_who : "a menu", why);
+            return false;
+        }
+        SetEntryPose(p.pos, p.pitch, p.yaw);
+        s_entryRoll        = p.roll;
+        s_entryFov         = p.fov;
+        s_entryLookPending = true;
+        SKSE::log::info("FreeCam: resumed after {} at ({:.0f}, {:.0f}, {:.0f})", a_who ? a_who : "a menu", p.pos.x, p.pos.y, p.pos.z);
+        SlccBridge::RequestEnterFreeFly(a_who ? a_who : "a menu");
+        return true;
+    }
+
+    void ForgetMenuPause() {   // a load: the kept pose is from another place / time
+        if (s_menuPause.on) SKSE::log::info("FreeCam: a kept menu pause was dropped (a game load)");
+        s_menuPause.on     = false;
+        s_entryLookPending = false;
+    }
+
     float GetRollDegrees() {
         return s_rollAngle * (180.0f / 3.14159265f);
     }
@@ -647,8 +730,13 @@ namespace FreeCam {
                 fcs->translation   = s_entryPos;
                 fcs->rotation.x    = s_entryPitch;
                 fcs->rotation.y    = s_entryYaw;
-                SKSE::log::info("FreeCam: started from SLCC's last camera pose ({:.1f}, {:.1f}, {:.1f})",
+                SKSE::log::info("FreeCam: started from {} ({:.1f}, {:.1f}, {:.1f})", s_entryLookPending ? "the pose kept for a menu" : "SLCC's last camera pose",
                     s_entryPos.x, s_entryPos.y, s_entryPos.z);
+                if (s_entryLookPending) {   // 11-14: a menu pause also puts back the roll and the FOV
+                    s_entryLookPending = false;
+                    s_rollAngle        = s_entryRoll;
+                    if (auto* cam = RE::PlayerCamera::GetSingleton(); cam && s_entryFov > 0.0f) WorldFOV(cam) = s_entryFov;
+                }
             }
 
             // Menu-exit restore: a game menu just closed → re-assert our saved free-cam

@@ -15,7 +15,7 @@
 // the caller's (game) thread - no task: the blur must follow the camera the same frame.
 namespace
 {
-    class TFCamAPIImpl final : public TFCAM_API::ITFCam5
+    class TFCamAPIImpl final : public TFCAM_API::ITFCam6
     {
     public:
         void SetSnapHandler(TFCAM_API::SnapHandler a_handler) noexcept override
@@ -133,6 +133,24 @@ namespace
             FreeCam::SetApiRoll(a_radians);
         }
 
+        // 11-14 v6: a menu pauses / resumes TFCam's free-fly (game thread: the caller's menu opens right after the pause)
+        bool PauseFreeFlyForMenu(const char* a_who) noexcept override
+        {
+            const std::string who = a_who ? a_who : "a menu";
+            return Guard([&] { return FreeCam::SuspendForMenu(who.c_str()); });
+        }
+
+        bool ResumeFreeFlyAfterMenu(const char* a_who) noexcept override
+        {
+            const std::string who = a_who ? a_who : "a menu";
+            return Guard([&] { return FreeCam::ResumeAfterMenu(who.c_str()); });
+        }
+
+        bool FreeFlyPausedForMenu() noexcept override
+        {
+            return Guard([] { return FreeCam::SuspendedForMenu(); });
+        }
+
     private:
         // Nothing may leave a noexcept call into another DLL (a failed task allocation would otherwise terminate).
         template <class F>
@@ -163,6 +181,8 @@ extern "C" __declspec(dllexport) void* RequestTFCamAPI(std::uint32_t a_version)
         return static_cast<TFCAM_API::ITFCam4*>(&g_api);
     case TFCAM_API::kVersion5:
         return static_cast<TFCAM_API::ITFCam5*>(&g_api);
+    case TFCAM_API::kVersion6:
+        return static_cast<TFCAM_API::ITFCam6*>(&g_api);
     default:
         return nullptr;
     }

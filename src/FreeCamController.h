@@ -73,6 +73,13 @@ namespace FreeCam {
     void  SetEntryPose(const RE::NiPoint3& a_pos, float a_pitch, float a_yaw);
     void  ClearEntryPose();
 
+    // 11-14 (TFCamAPI v6): a menu pauses TFCam's free-fly (pose kept, free-fly off) and resumes it after (same pose, roll, FOV).
+    // Main thread. Resume refuses after a cell / worldspace change, a far move or with the free camera on already.
+    bool  SuspendForMenu(const char* a_who);
+    bool  ResumeAfterMenu(const char* a_who);
+    bool  SuspendedForMenu();
+    void  ForgetMenuPause();  // kPostLoadGame / kNewGame
+
     // 0.7.9 diagnostics. SKSEPluginLoad runs on the game's main thread (kDataLoaded does NOT: it runs on the
     // data-loading thread), so that is where the main thread id is recorded.
     void        NoteMainThread();
