@@ -3,6 +3,7 @@
 #include "CamFocus.h"
 #include "CamPath.h"
 #include "CamPathPrisma.h"
+#include "ConvoCam.h"
 #include "FreeCamController.h"
 #include "FovFx.h"
 #include "FreezeTime.h"
@@ -85,6 +86,7 @@ namespace FixedCam {
         void FrameWork() {
             FreezeTime::Tick();
             CamPathPrisma::Tick();  // the PrismaUI editor's state push (while open)
+            ConvoCam::FrameCheck();  // a dialogue the NPC started
             if (s_on) {
                 if (!s_fovSaved) {  // the free camera's exit has put the game's own FOV back by now
                     s_savedFov = WorldFOV();

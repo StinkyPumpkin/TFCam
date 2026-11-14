@@ -55,6 +55,10 @@ namespace ConvoCam {
     bool PendingRelease(RE::ButtonEvent* a_event);
     void BeginPending();
 
+    // FixedCam's camera update, every frame (main thread): a dialogue the NPC started (no Activate press) starts the camera
+    // too, if it is seen before the Dialogue Menu opens.
+    void FrameCheck();
+
     struct MenuStatus {
         char state[96]      = {};
         char shot[48]       = {};

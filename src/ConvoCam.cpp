@@ -466,7 +466,7 @@ namespace ConvoCam {
         // camera that began under the open menu ended with the menu's reduced controls and left the player unable to move
         // (2026-10-24). So the session arms on the player's activation of the NPC (TESActivateEvent), a moment before the dialogue
         // opens, and gives the camera back if no dialogue comes.
-        void Arm(RE::Actor* spk) {
+        void Arm(RE::Actor* spk, const char* a_how = nullptr) {
             if (!spk) return;
             s_s             = Session{};
             s_s.st          = St::kStarting;
@@ -476,7 +476,11 @@ namespace ConvoCam {
             if (auto* cam = Cam(); cam && cam->currentState) s_s.firstPerson = cam->currentState->id == RE::CameraStates::kFirstPerson;
             const char* nm  = spk->GetDisplayFullName();
             s_s.speakerName = nm ? nm : "";
-            Event(std::format("you activated {} - camera starting", s_s.speakerName.empty() ? "an NPC" : s_s.speakerName));
+            if (a_how) {
+                Event(std::format("{} {} - camera starting", s_s.speakerName.empty() ? "an NPC" : s_s.speakerName, a_how));
+            } else {
+                Event(std::format("you activated {} - camera starting", s_s.speakerName.empty() ? "an NPC" : s_s.speakerName));
+            }
             LogControls("before the free camera begins");
             SlccBridge::RequestEnterFreeFly("Conversation camera");
         }
@@ -511,8 +515,15 @@ namespace ConvoCam {
                 return &s;
             }
             RE::BSEventNotifyControl ProcessEvent(const RE::TESActivateEvent* evt, RE::BSTEventSource<RE::TESActivateEvent>*) override {
-                if (!evt || !s_cfg.enabled || !evt->actionRef || !evt->actionRef->IsPlayerRef() || !evt->objectActivated)
+                if (!evt || !s_cfg.enabled || !evt->actionRef || !evt->objectActivated) return RE::BSEventNotifyControl::kContinue;
+                // An NPC activating the player (a force-greet may do this): log only, the per-frame check starts the camera.
+                if (!evt->actionRef->IsPlayerRef()) {
+                    if (evt->objectActivated->IsPlayerRef()) {
+                        const char* nm = evt->actionRef->GetDisplayFullName();
+                        SKSE::log::info("ConvoCam: {} activated the player", nm ? nm : "an actor");
+                    }
                     return RE::BSEventNotifyControl::kContinue;
+                }
                 auto* actor = evt->objectActivated->As<RE::Actor>();
                 if (!actor) return RE::BSEventNotifyControl::kContinue;
                 const auto handle = actor->CreateRefHandle();
@@ -896,6 +907,83 @@ namespace ConvoCam {
             return;
         }
         Arm(a);
+    }
+
+    // ---- dialogue the NPC starts (force-greet, an NPC walking up to talk) ------------------------------------------
+    // No Activate press, so NotePress / BeginPending never run. The game's dialogue manager says a dialogue has begun
+    // (menuOpen) a moment before the Dialogue Menu itself opens - the same gap the Activate path starts in. The camera may
+    // only begin inside that gap (see Arm): once the menu is open it is too late and the NPC is left to the game's camera.
+    namespace {
+        bool             s_prevTopicMenu = false;
+        bool             s_npcWatch      = false;   // menuOpen came on, waiting for the speaker
+        double           s_npcWatchAt    = 0.0;
+        std::atomic_bool s_npcQueued{ false };
+
+        void BeginNpcStart(RE::ObjectRefHandle a_handle, double a_seenAt) {
+            auto  ref = a_handle.get();
+            auto* a   = ref ? ref->As<RE::Actor>() : nullptr;
+            if (!a) return;
+            const char* nm  = a->GetDisplayFullName();
+            const std::string who = nm ? nm : "an NPC";
+            const double ms = (Now() - a_seenAt) * 1000.0;
+            auto*        mtm = RE::MenuTopicManager::GetSingleton();
+            if (!mtm || !mtm->menuOpen) {
+                SKSE::log::info("ConvoCam: {} started a dialogue - over again {:.0f} ms later, not filming", who, ms);
+                return;
+            }
+            if (const char* block = ArmBlock(a)) {
+                SKSE::log::info("ConvoCam: {} started a dialogue with you - not filming ({:.0f} ms after it began): {}", who, ms, block);
+                return;
+            }
+            SKSE::log::info("ConvoCam: {} started a dialogue with you - camera starting {:.0f} ms after it began, Dialogue Menu not open yet", who, ms);
+            Arm(a, "started talking to you");
+        }
+    }
+
+    void FrameCheck() {
+        auto*        mtm  = RE::MenuTopicManager::GetSingleton();
+        const bool   open = mtm && mtm->menuOpen;
+        const double now  = Now();
+        if (open && !s_prevTopicMenu) {
+            s_npcWatch   = true;
+            s_npcWatchAt = now;
+        }
+        s_prevTopicMenu = open;
+        if (!open) s_npcWatch = false;
+        if (!s_npcWatch) return;
+        // The Activate path, a session already running, or the camera turned off: nothing to do for this dialogue.
+        if (!s_cfg.enabled || s_s.st != St::kOff || s_pending) {
+            s_npcWatch = false;
+            return;
+        }
+        auto  ref = mtm->speaker.get();
+        auto* a   = ref ? ref->As<RE::Actor>() : nullptr;
+        if (!a) {
+            if (now - s_npcWatchAt > 0.5) {
+                SKSE::log::info("ConvoCam: a dialogue began with no speaker set - not filming");
+                s_npcWatch = false;
+            }
+            return;
+        }
+        s_npcWatch = false;
+        if (a->IsPlayerRef()) return;
+        auto* ui = RE::UI::GetSingleton();
+        if (ui && ui->IsMenuOpen("Dialogue Menu")) {
+            const char* nm = a->GetDisplayFullName();
+            SKSE::log::info("ConvoCam: {} started a dialogue - the Dialogue Menu was already open when seen, not filming", nm ? nm : "an NPC");
+            return;
+        }
+        // Not from inside the camera update itself: the free camera begins at the next task point.
+        if (s_npcQueued.exchange(true)) return;
+        const auto handle = a->CreateRefHandle();
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask([handle, now] {
+                s_npcQueued = false;
+                BeginNpcStart(handle, now);
+            });
+        } else {
+            s_npcQueued = false;
+        }
     }
 
     void OnGameLoad(const char* a_why) {
