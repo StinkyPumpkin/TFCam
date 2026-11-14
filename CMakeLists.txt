@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "")
-project(TFCam VERSION 0.18.0 LANGUAGES CXX)
+project(TFCam VERSION 0.19.0 LANGUAGES CXX)
 
 if(DEFINED ENV{SKYRIM_MODS_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_MODS_FOLDER}")
     set(OUTPUT_FOLDER "$ENV{SKYRIM_MODS_FOLDER}/FreeCam--Claude")
@@ -87,11 +87,19 @@ add_commonlibsse_plugin(${PROJECT_NAME} MINIMUM_SKSE_VERSION 0.0.0 SOURCES
     src/CamFocus.cpp
     src/CamBlur.cpp
     src/CamPath.cpp
+    src/CamPathView.cpp
+    src/CamPathPrisma.cpp
+    src/CamPathWindow.cpp
     src/FixedCam.cpp
     src/FovFx.cpp
     src/AimDot.cpp
     src/FrameFx.cpp
+    src/VideoCapture.cpp
 )
+# 0.18.0 video capture: Media Foundation + process-loopback sound. Delay-loaded, so a Windows without the media framework
+# (Windows N) still loads TFCam - VideoCapture checks for mfplat.dll before it calls anything.
+target_link_libraries(${PROJECT_NAME} PRIVATE mfplat mfreadwrite mfuuid mmdevapi ole32 shell32 delayimp)
+target_link_options(${PROJECT_NAME} PRIVATE /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll /DELAYLOAD:mmdevapi.dll)
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 target_precompile_headers(${PROJECT_NAME} PRIVATE PCH.h)
 

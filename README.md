@@ -94,12 +94,14 @@ Page: **SKSE Menu Framework > FreeCam > Action FOV**. Action FOV is off by defau
 - **Aim dot**: a tiny white dot with a dark rim where your arrows and spells go. With TFCam's own aim on (below), or
   with Hit Where You Aim installed and Action FOV on, it sits in the middle of the screen whenever a bow, crossbow,
   staff or spell is out, in first and third person. Otherwise it only shows in the archer camera, where the arrow's
-  own line meets the world. Never in the free camera. *Dot size* sets it.
+  own line meets the world. Never in the free camera. *Dot size* sets it. While the dot sits in the middle like that,
+  the game's own crosshair is switched off (`[AimDot] bHideGameCrosshair`, on), so the only crosshair is the dot and it
+  only shows with something ranged out.
 - **Arrows and spells go where the dot is** (`[AimDot] bHitTheDot`, **off by default**): arrows, bolts,
-  fire-and-forget spells, flames and beams are aimed at what the middle of the screen looks at, from whatever camera
+  fire-and-forget spells, flames, beams, runes, summons and Target Actor spells are aimed at what the middle of the screen looks at, from whatever camera
   renders the picture (the archer camera included); arrows still drop, the game's own ballistic solver is used. Adapted
   from Hit Where You Aim by tossaponk (GPL-3.0-or-later, see `NOTICE.txt`), without its options. `TFCam.log` says how
-  many of its 4 hooks went in ("AimDot: ...").
+  many of its 5 hooks went in ("AimDot: ...").
 - While the string is drawn, optionally: the Background blur's edge blur (*Blur round the edge*) and darker corners
   (*Vignette*, 0..1).
 - **Background blur** (Scene Camera page) has a new default style, *Blurry round the edge, sharp in the middle*: TFCam's
@@ -121,8 +123,8 @@ use the dot.
 
 Settings: `TFCam.ini` section `[ActionFOV]`: `bEnabled`, `fStrength`, `bBow`, `bPowerAttacks`, `bSpells`, `iSpellLevel`,
 `bShouts`, `bSpeed`, `bCameraSpeed`, `bArcherCamera`, `fArcherTurn`, `fArcherDistance`, `fArcherUp`, `bArcherDot`,
-`fArcherDotSize`, `bArcherBlur`, `fArcherVignette`; `[AimDot]` `bHitTheDot` (0); `[Blur]` `iStyle` (0 edges, 1 ENB),
-`fSharpMiddle`.
+`fArcherDotSize`, `bArcherBlur`, `fArcherVignette`; `[AimDot]` `bHitTheDot` (0), `bHideGameCrosshair` (1); `[Blur]` `iStyle` (0 edges, 1 ENB),
+`fSharpMiddle`, `bKeepSubjectSharp` (1), `fSubjectDepth` (25), `fBlurRampDepth` (150).
 
 ## Scene Camera (0.10.0, extended in 0.13.0)
 
@@ -181,7 +183,84 @@ Files (TFCam writes both; neither is ever shipped, so with MO2 they appear in `o
 What it does is logged to `TFCam.log` in SKSE's log folder (`Documents/My Games/Skyrim Special Edition/SKSE/` on Special Edition / Anniversary Edition) (mode changes, stage changes with
 the scene / stage ids, shots saved / recalled / deleted, refusals, automatic free camera waits and drops).
 
+## Camera Path, fixed camera, image effects and video (0.19.0)
+
+Film anything: put cameras round the world with TFCam's free camera and play them back as one moving shot.
+Page: **SKSE Menu Framework > FreeCam > Camera Path** (keys) and **Image & Video**.
+
+- **The editor.** With PrismaUI installed the editor key opens a small bar at the bottom of the screen (else the SKSE
+  Menu Framework window, `bPrismaEditor=0` keeps that one). Fly the free camera to a spot, press **Add camera** (or +),
+  repeat, then Play. The bar: play backwards, play / pause, stop, freeze the world, the timeline (click or drag to any
+  moment; the numbered circles are your cameras), +, record, and the path menu (open, save as, loop, follow moving,
+  smoothness, clear). The **(i)** at the end of the bar lists every control and has a short guide. **Esc**, **Tab** or
+  the editor key close it; closing it yourself ends a playing or paused path and gives you the free camera back.
+- **A camera** keeps a **pivot** (what the screen centre points at: a body part of you, whoever you click in the
+  console, or nothing), how it moves on to the next one (Straight, Curve, Orbit left / right with extra turns, Cut),
+  bends, a speed curve, *Slow down here* for part of a move, and what happens while it waits: *Dolly* (the camera
+  pushes in or pulls back while the zoom keeps the subject the same size), shake, background blur, slow motion. Dolly
+  and blur work without a pivot too: whatever is at your distance is the subject.
+- **Saving.** Paths are saved under a name in `Data/SKSE/Plugins/TFCam/Paths/*.tsv` (MO2: `overwrite`). Every game
+  session starts with an empty editor; the path you had last time is in the Open list as **Last session**. A path
+  stays in the editor while you play, across loads, until you clear it or quit. A camera made in another cell is never
+  flown to (the screen used to go black).
+- **SexLab scene paths** (SexLab P+). In a scene the path menu has a *SexLab scene* part: *Save this path for this
+  stage* keeps the cameras against the scene, not the world (relative to you, with your partners as scene positions),
+  in `Data/SKSE/Plugins/TFCam/ScenePaths/`. That stage then plays its path wherever the scene runs, looping until you
+  change the stage - the last camera's move takes it back to camera 1. *Play stage paths by themselves*
+  (`bSceneAutoPlay`, on) starts it when the stage starts; *Open* puts its cameras in the editor; *Delete* asks for a
+  second click. Normal paths stay where you put them in the world.
+- **Fixed camera.** *Fix the camera here* (path menu) ends the free camera and keeps its view while you play on with
+  the normal controls; *The fixed camera turns to watch me* keeps the spot and turns to follow you.
+- **Image effects** (`[ImageFX]`, page *Image & Video*): motion blur when the camera turns, zoom blur, lens distortion,
+  colour fringes, vignette, light streaks, cinema bars. They are drawn before the game's UI, so they are in videos and
+  screenshots but never on the menus.
+- **Video.** The record key (or ● in the editor) records the game's picture, without TFCam's or the game's UI, to an
+  MP4 (H.264 High profile, variable bit rate, a keyframe every 2 s, the game's sound as AAC). Size (1080p by default, or
+  the game's own size, e.g. 4K), 24 / 30 / 60 fps and three quality levels are settings; *Start and stop with Camera Path
+  playback* records exactly the shot. Videos go to `Data/Movies` (MO2: `overwrite/Movies`) or the *Folder* you set; the
+  message when it stops names the folder. While it records it is a fragmented MP4 (playable after a crash); when it
+  stops TFCam rewrites it, without re-encoding, as a plain MP4 every player can seek in. What a recording costs (ms a
+  frame, dropped frames) is in `TFCam.log`.
+
+Settings: `TFCam.ini` sections `[CameraPath]` (`iOpenWindowKey`, `iAddCameraKey`, `iPlayKey`, `iRecordKey`,
+`fSmoothness`, `fAimHeight`, `bShowPath`, `bPrismaEditor`, `bSceneAutoPlay`), `[ImageFX]` (`iMotionBlur`, `fShutter`,
+`fLongestSmear`, `bZoomBlur`, `iLens`, `fDistortion`, `fFringe`, `fVignette`, `fStreaks`, `fStreakFrom`, `bCinemaBars`)
+and `[Video]` (`iKey`, `iHeight`, `iFps`, `iQuality`, `bSound`, `bWithCameraPath`, `sFolder`). All keys are unset by
+default.
+
 ## Changelog
+
+**0.19.0**
+- **Camera Path** (see above): cameras round the world played back as one shot, a PrismaUI editor bar, pivots per
+  camera, Straight / Curve / Orbit / Cut moves, bends, speed curves, *Slow down here*, waits with Dolly, shake, blur and
+  slow motion, play backwards, rewind, put a camera in while playing, the path drawn in the world, saved paths.
+- Paths start empty each game session (the last one is kept as *Last session*); SexLab scene paths saved per stage
+  against the scene, looping until the stage changes.
+- Editor: Tab closes it; closing it while a path plays or is paused ends the path and frees the view; its clicks and
+  the right mouse button no longer move the free camera; an (i) with every control and a guide; Dolly and background
+  blur work on a camera without a pivot.
+- **Fixed camera**, **image effects** (motion / zoom blur, lens) and a **video recorder**: saved to `Data/Movies` or a
+  folder you choose, as a seekable MP4 on H.264 High profile (Windows' default Baseline / constant bit rate smeared fast
+  moves into blocks).
+- *Freeze the world* stops everything (people, hair, grass); unfreezing writes the current time multiplier back.
+- API v6: another mod (Bye Sky UI's Tween menu) can pause TFCam's free-fly for a menu and resume at the same pose,
+  roll and FOV.
+- *Background blur*, edge style: *Keep the subject sharp* (on by default) blurs only what is behind the subject, read
+  from the game's depth buffer - the subject, her hair and clothes and anything in front of her stay sharp, the eye-shaped
+  edge blur fades in behind her (`[Blur]` `bKeepSubjectSharp`, `fSubjectDepth`, `fBlurRampDepth`). Not for the archer
+  camera. Without a readable depth buffer it blurs the whole edge as before (one line in `TFCam.log`).
+
+**0.18.1**
+- *Arrows and spells go where the dot is*: the middle-of-the-screen ray no longer stops on invisible collision (it
+  uses the line-of-sight layer, as Hit Where You Aim 1.3.1 does), so a shot is not sent at a point nobody can see.
+- *Arrows and spells go where the dot is* now also aims Target Location spells (runes, summons) and Target Actor spells
+  through the dot; a Target Actor spell with nobody under the dot misses where the dot misses (Hit Where You Aim 1.2's
+  spell aim, without its desired-target hook, which 1.3.1 turned off because it put weapon poison on the player).
+- While the aim dot is the crosshair, the game's own crosshair is off: with a sword or bare hands there is none, with a
+  bow, crossbow, staff or spell out there is the dot (`[AimDot] bHideGameCrosshair=0` keeps the game's crosshair).
+- Idle and furniture camera: a menu key (Tab and the others) brings the normal camera back at once. Before, Tab's menu
+  took the free camera and the game gave it back when the menu closed, so you stayed in the free camera through the
+  inventory (Show Player In Inventory could not show you).
 
 **0.18.0**
 - *Action FOV* (`[ActionFOV]`, off by default): the view reacts to bow draws and releases, power attacks, big spells,

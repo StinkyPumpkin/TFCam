@@ -1,8 +1,10 @@
 #include "AimDot.h"
+#include "FovFx.h"
 
 #include <Windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -20,6 +22,7 @@ namespace AimDot {
         constexpr float kPenetration = 14.0f;    // 0.2 m past the hit, so the projectile reaches into it
         constexpr float kFixedPitch  = 0.7f;     // degrees up for a projectile with gravity when the solver cannot help
         constexpr std::uint32_t kPlayerHandle = 0x100000;
+        constexpr int   kHookCount   = 5;        // launch angles, flames, beams, projectile init, spells
 
         Settings    s_settings;
         bool        s_hwya      = false;
@@ -115,15 +118,24 @@ namespace AimDot {
         }
 
         struct Ray {
-            bool         ok = false;
-            RE::NiPoint3 from{};
-            RE::NiPoint3 dir{};
-            RE::NiPoint3 point{};  // the first thing the middle of the screen's ray meets, else kMaxDist out
+            bool                     ok = false;
+            RE::NiPoint3             from{};
+            RE::NiPoint3             dir{};
+            RE::NiPoint3             point{};          // the first thing the middle of the screen's ray meets, else kMaxDist out
+            RE::TESObjectREFR*       ref = nullptr;    // what it met, when that is a reference
+            RE::hkpWorldRayCastInput input{};          // the ray as cast (Havok units)
         };
 
-        // The middle of the rendered picture, cast with the projectile's own collision layer and group (so the shooter
-        // and what the projectile would pass are skipped the way the projectile itself would skip them).
-        Ray CentreRay(std::uint32_t a_group, RE::COL_LAYER a_layer) {
+        RE::TESObjectREFR* RefOf(RE::NiAVObject* a_obj) {
+            for (int i = 0; a_obj && i < 64; ++i, a_obj = a_obj->parent) {
+                if (auto* ref = a_obj->GetUserData()) return ref;
+            }
+            return nullptr;
+        }
+
+        // The middle of the rendered picture, cast with the given collision filter (its group keeps the shooter out
+        // the way the shot itself would leave it out).
+        Ray CentreRay(RE::CFilter a_filter) {
             Ray   r;
             auto* cam = RE::Main::WorldRootCamera();
             auto* tes = RE::TES::GetSingleton();
@@ -137,17 +149,22 @@ namespace AimDot {
             r.dir  = d;
             const float     scale = RE::bhkWorld::GetWorldScale();
             RE::bhkPickData pick{};
-            RE::CFilter     filter{ 0 };
-            filter.SetCollisionLayer(a_layer);
-            filter.SetSystemGroup(a_group);
             pick.rayInput.from       = RE::hkVector4(r.from * scale);
             pick.rayInput.to         = RE::hkVector4((r.from + d * kMaxDist) * scale);
-            pick.rayInput.filterInfo = filter;
-            tes->Pick(pick);
+            pick.rayInput.filterInfo = a_filter;
+            r.ref   = RefOf(tes->Pick(pick));
+            r.input = pick.rayInput;
             const float frac = pick.rayOutput.HasHit() ? std::clamp(pick.rayOutput.hitFraction, 0.0f, 1.0f) : 1.0f;
             r.point = r.from + d * (kMaxDist * frac);
             r.ok    = true;
             return r;
+        }
+
+        Ray CentreRay(std::uint32_t a_group, RE::COL_LAYER a_layer) {
+            RE::CFilter filter{ 0 };
+            filter.SetCollisionLayer(a_layer);
+            filter.SetSystemGroup(a_group);
+            return CentreRay(filter);
         }
 
         // Skyrim's angles: pitch (x) negative = up, yaw (z) = atan2(east, north).
@@ -186,8 +203,10 @@ namespace AimDot {
         void Correct(RE::Projectile* a_proj, RE::NiAVObject* a_node, float* a_yaw, float* a_pitch, RE::NiPoint3* a_origin) {
             if (!On() || !a_proj || !a_yaw || !a_pitch || (!a_node && !a_origin) || !CameraAllows()) return;
             const RE::NiPoint3 origin = a_origin ? *a_origin : a_node->world.translate;
-            const auto         layer  = a_proj->GetProjectileRuntimeData().spell ? RE::COL_LAYER::kSpell : RE::COL_LAYER::kProjectile;
-            const Ray          ray    = CentreRay(a_proj->GetCollisionGroup(), layer);
+            // Line-of-sight layer, not the projectile's own: the projectile layers also meet invisible collision (walls,
+            // blockers), which sent the shot at a point nobody can see (Hit Where You Aim 1.3.1). The flight itself
+            // keeps the projectile's layer.
+            const Ray          ray    = CentreRay(a_proj->GetCollisionGroup(), RE::COL_LAYER::kLOS);
             if (!ray.ok) return;
             if ((ray.point - origin).Dot(ray.dir) <= 0.0f) return;  // the hit is behind the muzzle: leave the game's angles
             const RE::NiPoint3 aim     = ray.point + ray.dir * kPenetration;
@@ -304,6 +323,101 @@ namespace AimDot {
             static inline REL::Relocation<decltype(thunk)> func;
         };
 
+        // Target Actor / Target Location spells (Hit Where You Aim 1.2's spell aim). The game's spell target finder is
+        // called twice from SE 33632 / AE 34410 (Target Location first, then Target Actor); in it, SE 33677 / AE 34457
+        // looks up the crosshair target and casts a pick from the hand. Inside the PLAYER's finder call the crosshair
+        // target is dropped (so the game always casts) and the pick is turned to go through the dot.
+        // Hit Where You Aim's 4th spell hook (clearing the caster's desiredTarget) is left out on purpose: it made weapon
+        // poison land on the player (HWYA 1.3.1 turned it off as dangerous).
+        struct SpellTargetHook {
+            using finder_t = RE::MagicTarget* (*)(RE::ActorMagicCaster*, bool, float, RE::NiPoint3*, RE::TESObjectCELL**, RE::bhkPickData*);
+            using lookup_t = bool (*)(RE::ObjectRefHandle*, RE::NiPointer<RE::TESObjectREFR>*);
+            using pick_t   = void (*)(RE::TESObjectCELL*, RE::bhkPickData*);
+            static inline finder_t s_finder = nullptr;
+            static inline lookup_t s_lookup = nullptr;
+            static inline pick_t   s_pick   = nullptr;
+            static inline thread_local int  t_depth = 0;      // > 0: inside the player's finder call
+            static inline thread_local bool t_actor = false;  // that call is the Target Actor one
+            static inline bool s_loggedLoc = false, s_loggedActor = false, s_loggedMiss = false, s_loggedOutside = false;
+
+            static RE::MagicTarget* Finder(RE::ActorMagicCaster* a_caster, bool a_actor, float a_range, RE::NiPoint3* a_pos,
+                RE::TESObjectCELL** a_cell, RE::bhkPickData* a_pick) {
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                if (!a_caster || !player || a_caster->GetCasterAsActor() != player) return s_finder(a_caster, a_actor, a_range, a_pos, a_cell, a_pick);
+                const bool prev = t_actor;
+                t_actor         = a_actor;
+                ++t_depth;
+                auto* r = s_finder(a_caster, a_actor, a_range, a_pos, a_cell, a_pick);
+                --t_depth;
+                t_actor = prev;
+                return r;
+            }
+
+            static bool Mine() { return t_depth > 0 && On() && CameraAllows(); }
+
+            static bool Lookup(RE::ObjectRefHandle* a_handle, RE::NiPointer<RE::TESObjectREFR>* a_out) {
+                const bool found = s_lookup(a_handle, a_out);
+                if (!a_out || !Mine()) return found;
+                a_out->reset();  // no crosshair target: the game casts its pick, and the pick goes through the dot
+                return false;
+            }
+
+            static void Aim(RE::bhkPickData& a_pick) {
+                const float range = a_pick.ray.Length3();  // Havok units
+                if (!(range > 1e-4f)) return;
+                const Ray c = CentreRay(a_pick.rayInput.filterInfo);
+                if (!c.ok) return;
+                const float  scale = RE::bhkWorld::GetWorldScale();
+                const auto   P     = [](const RE::hkVector4& v) { return RE::NiPoint3{ v.quad.m128_f32[0], v.quad.m128_f32[1], v.quad.m128_f32[2] }; };
+                RE::Actor*   actor = c.ref ? c.ref->As<RE::Actor>() : nullptr;
+                RE::NiPoint3 from{}, dir{};
+                if (t_actor && !actor) {
+                    // Target Actor with nobody under the dot: cast along the dot's own ray, so it misses where the dot misses
+                    from = P(c.input.from) * (1.0f / scale);
+                    dir  = c.dir;
+                } else {
+                    from = P(a_pick.rayInput.from) * (1.0f / scale);  // the hand
+                    if ((c.point - from).Dot(c.dir) <= 0.0f) return;  // the dot's hit is behind the hand: leave the game's pick
+                    dir = c.point - from;
+                    const float l = dir.Length();
+                    if (!(l > 1e-4f)) return;
+                    dir = dir * (1.0f / l);
+                }
+                a_pick.rayInput.from = RE::hkVector4(from * scale);
+                a_pick.ray           = RE::hkVector4(dir * range);
+                a_pick.rayInput.to   = a_pick.rayInput.from + a_pick.ray;
+                // Once per kind (a Target Location cast must not hide the first Target Actor one), with the reach
+                // and what is under the dot, so a spell that "does nothing" can be told from one out of range.
+                const float reach = range / scale, dist = (c.point - from).Length();
+                if (!t_actor && !s_loggedLoc) {
+                    s_loggedLoc = true;
+                    SKSE::log::info("AimDot: first Target Location spell turned to the dot - reach {:.0f}, dot {:.0f} units away", reach, dist);
+                } else if (t_actor && actor && !s_loggedActor) {
+                    s_loggedActor = true;
+                    const char* name = actor->GetDisplayFullName();
+                    SKSE::log::info("AimDot: first Target Actor spell turned to the dot - {} under the dot, {:.0f} units away, reach {:.0f}",
+                        name ? name : "?", dist, reach);
+                } else if (t_actor && !actor && !s_loggedMiss) {
+                    s_loggedMiss = true;
+                    SKSE::log::info("AimDot: first Target Actor spell with nobody under the dot - cast along the dot's ray (reach {:.0f})", reach);
+                }
+            }
+
+            static void Pick(RE::TESObjectCELL* a_cell, RE::bhkPickData* a_pick) {
+                if (a_pick && Mine()) {
+                    Aim(*a_pick);
+                } else if (t_depth == 0 && !s_loggedOutside) {
+                    s_loggedOutside = true;
+                    SKSE::log::info("AimDot: a spell pick ran outside the player's target finder - left alone");
+                }
+                s_pick(a_cell, a_pick);
+            }
+        };
+
+        std::uintptr_t CallTarget(std::uintptr_t a_site) {
+            return a_site + 5 + *reinterpret_cast<const std::int32_t*>(a_site + 1);
+        }
+
         bool Ranged(RE::TESForm* a_form) {
             if (!a_form) return false;
             if (a_form->Is(RE::FormType::Spell)) return true;
@@ -365,8 +479,57 @@ namespace AimDot {
             ProjectileInitHook::func = tr.write_call<5>(init, ProjectileInitHook::thunk);
             ++s_hooks;
         }
-        s_status    = s_hooks > 0 ? std::format("on - {} of 4 hooks in", s_hooks) : "off - none of the hooks fitted this game version";
-        s_offStatus = s_hooks > 0 ? std::format("off - tick the box to use it ({} of 4 hooks ready)", s_hooks) : s_status;
+        // 5. Target Actor / Target Location spells: both finder calls, the pick, and (optional) the crosshair lookup
+        {
+            constexpr std::string_view kFinder = "48 89 ?? 24 ?? 48 8D 44 24 ?? 48 89 ?? 24 ?? 4C 8D 4C 24 ?? 48 8B ?? E8 ?? ?? ?? ??";
+            const auto loc  = CallSite(RELOCATION_ID(33632, 34410), kFinder, 0x17, "spell finder (Target Location)");
+            const auto act  = CallSite(RELOCATION_ID(33632, 34410), std::string(kFinder) + " 48 85 C0", 0x17, "spell finder (Target Actor)");
+            const auto pick = CallSite(RELOCATION_ID(33677, 34457),
+                "48 8B 05 ?? ?? ?? ?? 49 8B ?? 48 8B ?? 60 E8 ?? ?? ?? ?? F3 0F 10 05 ?? ?? ?? ??", 0x0E, "spell pick");
+            const auto look = CallSite(RELOCATION_ID(33677, 34457), "48 8D 54 24 ?? 48 8D ?? ?? ?? ?? ?? E8 ?? ?? ?? ??", 0x0C,
+                "spell crosshair target");
+            if (!loc || !act || !pick) {
+                SKSE::log::warn("AimDot: spells - a call site is missing; Target Actor / Target Location spells keep the game's aim");
+            } else if (loc >= act || CallTarget(loc) != CallTarget(act)) {
+                SKSE::log::warn("AimDot: spells - the two finder calls are not the expected pair ({:X} / {:X}); spells keep the game's aim",
+                    loc - REL::Module::get().base(), act - REL::Module::get().base());
+            } else {
+                SpellTargetHook::s_finder = reinterpret_cast<SpellTargetHook::finder_t>(tr.write_call<5>(act, SpellTargetHook::Finder));
+                tr.write_call<5>(loc, SpellTargetHook::Finder);
+                SpellTargetHook::s_pick = reinterpret_cast<SpellTargetHook::pick_t>(tr.write_call<5>(pick, SpellTargetHook::Pick));
+                ++s_hooks;
+                // The crosshair lookup: only when the call is the game's handle lookup (LookupReferenceByHandle) and the
+                // handle it is given was just read from the crosshair pick data: shortly before it the game does
+                // mov rax, [rip+disp] (the CrosshairPickData pointer) ; mov ecx, [rax+4] (its target handle), copies the
+                // handle to a local and passes that (seen in AE 1.6.1170 memory, 11-06).
+                const std::uintptr_t lookupFn = REL::Relocation<std::uintptr_t>(RELOCATION_ID(12204, 12332)).address();
+                const auto*          xhair    = RE::CrosshairPickData::GetSingleton();
+                const auto           base     = REL::Module::get().base();
+                bool                 callOk = false, readOk = false;
+                if (look && xhair) {
+                    callOk = CallTarget(look) == lookupFn;
+                    for (std::uintptr_t p = look - 0x40; p + 10 <= look; ++p) {
+                        const auto* b = reinterpret_cast<const std::uint8_t*>(p);
+                        if (b[0] == 0x48 && b[1] == 0x8B && b[2] == 0x05 && b[7] == 0x8B && b[8] == 0x48 && b[9] == 0x04) {
+                            const std::uintptr_t slot = p + 7 + *reinterpret_cast<const std::int32_t*>(p + 3);
+                            readOk = *reinterpret_cast<const std::uintptr_t*>(slot) == reinterpret_cast<std::uintptr_t>(xhair);
+                            if (readOk) break;
+                        }
+                    }
+                }
+                const bool lookOk = callOk && readOk;
+                if (lookOk) {
+                    SpellTargetHook::s_lookup = reinterpret_cast<SpellTargetHook::lookup_t>(tr.write_call<5>(look, SpellTargetHook::Lookup));
+                    SKSE::log::info("AimDot: spells - Target Actor / Target Location go through the dot");
+                } else {
+                    SKSE::log::warn("AimDot: spells - the crosshair lookup did not check out (site {:X}, call {}, crosshair read {}); "
+                                    "spells go through the dot, but an actor under the game's own crosshair still wins",
+                        look ? look - base : 0, callOk ? "ok" : "other", readOk ? "ok" : "not found");
+                }
+            }
+        }
+        s_status    = s_hooks > 0 ? std::format("on - {} of {} hooks in", s_hooks, kHookCount) : "off - none of the hooks fitted this game version";
+        s_offStatus = s_hooks > 0 ? std::format("off - tick the box to use it ({} of {} hooks ready)", s_hooks, kHookCount) : s_status;
         SKSE::log::info("AimDot: {} (bHitTheDot={})", s_status, s_settings.enabled ? 1 : 0);
     }
 
@@ -379,6 +542,53 @@ namespace AimDot {
         if (ui && (ui->GameIsPaused() || ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME) || ui->IsMenuOpen(RE::Console::MENU_NAME))) return false;
         if (!player->AsActorState()->IsWeaponDrawn()) return false;
         return Ranged(player->GetEquippedObject(false)) || Ranged(player->GetEquippedObject(true));
+    }
+
+    bool DotInCharge() { return FovFx::Get().aimDot && (Active() || (FovFx::HitWhereYouAim() && FovFx::Get().enabled)); }
+
+    namespace {
+        std::atomic<bool> s_crosshairOff{ false };  // we hid the game's crosshair (UI thread writes it)
+        std::atomic<bool> s_pending{ false };       // a UI task is queued, don't queue another
+
+        // UI thread. The HUD's crosshair clip (_root.HUDMovieBaseInstance.Crosshair; vanilla, SkyHUD, Edge UI) is kept
+        // hidden. Not its SetCrosshairEnabled switch: the game turns that back on every frame (tested 10-31, 4 tries a
+        // second, each found it on again). _visible stays put until the HUD's SetCrosshairTarget / ValidateCrosshair
+        // set it again (a new crosshair target, a HUD mode change), so it is checked every frame.
+        void SetGameCrosshair(bool a_on) {
+            auto* tasks = SKSE::GetTaskInterface();
+            if (!tasks || s_pending.exchange(true)) return;
+            tasks->AddUITask([a_on]() {
+                s_pending = false;
+                auto* ui = RE::UI::GetSingleton();
+                if (!ui) return;
+                auto view = ui->GetMovieView(RE::HUDMenu::MENU_NAME);
+                if (!view) return;
+                RE::GFxValue hud;
+                if (!view->GetVariable(&hud, "_root.HUDMovieBaseInstance") || !hud.IsObject()) return;
+                if (a_on) {
+                    if (!s_crosshairOff.exchange(false)) return;  // never ours to give back
+                    hud.Invoke("ValidateCrosshair", nullptr, nullptr, 0);  // the HUD works out its own visibility again
+                    SKSE::log::info("AimDot: the game's crosshair is back");
+                    return;
+                }
+                RE::GFxValue clip;
+                if (!hud.GetMember("Crosshair", &clip) || !clip.IsDisplayObject()) return;
+                RE::GFxValue visible;
+                if (clip.GetMember("_visible", &visible) && visible.IsBool() && visible.GetBool()) {
+                    clip.SetMember("_visible", RE::GFxValue(false));
+                }
+                if (!s_crosshairOff.exchange(true)) SKSE::log::info("AimDot: the game's crosshair is off - the dot is the crosshair");
+            });
+        }
+    }
+
+    void CrosshairTick() {
+        const bool hide = s_settings.hideGameCrosshair && DotInCharge();
+        if (!hide) {
+            if (s_crosshairOff.load()) SetGameCrosshair(true);
+            return;
+        }
+        SetGameCrosshair(false);
     }
 
     const char* Status() { return !s_settings.enabled && !s_hwya && s_hooks > 0 ? s_offStatus.c_str() : s_status.c_str(); }

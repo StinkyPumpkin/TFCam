@@ -110,7 +110,7 @@ namespace AmbientCam {
         Pose ReadPose(const RE::FreeCameraState* fcs) {
             Pose p;
             p.pos   = fcs->translation;
-            p.pitch = fcs->rotation.x;
+            p.pitch = WrapPi(fcs->rotation.x);  // 0.17.1: the vanilla free camera keeps its pitch in 0..2 pi
             p.yaw   = fcs->rotation.y;
             p.roll  = FreeCam::GetRollRadians();
             p.fov   = GetFOV();
@@ -560,6 +560,11 @@ namespace AmbientCam {
         double s_lastActivity = 0.0;      // Now() at the last real input / blocked moment
         bool   s_needInput    = false;    // the idle camera ended on its own: not again until the player does something
         std::atomic<bool> s_testRequested{ false };
+        // 0.18.2: a menu with its own camera (Tab's Tween menu) ends our session's free camera, and the game puts the
+        // free camera back when that menu closes - nobody's session, so the player stayed in it through the inventory
+        // (Show Player In Inventory skipped). Until this time the next free camera the game starts is turned off again.
+        double s_ownLeaveAt  = -10.0;     // Now() when FinishReturn gave the free camera back itself
+        double s_reclaimUntil = 0.0;
 
         // Furniture.
         RE::ObjectRefHandle s_furnHandle;      // from the enter event (fallback for Actor::GetOccupiedFurniture)
@@ -694,6 +699,7 @@ namespace AmbientCam {
             // and would switch the automatic free camera off for the whole scene. Only when LeaveFreeFly really toggles
             // (same checks), so a stale mark never swallows the user's next exit.
             if (FreeCam::TFCamDriving()) SceneCam::NoteOwnLeave();
+            s_ownLeaveAt = Now();
             SlccBridge::LeaveFreeFly("Ambient camera");
             ResetSession();
             s_lastActivity = Now();
@@ -1103,6 +1109,7 @@ namespace AmbientCam {
         if (!events) return;
         bool activity = false;
         bool move     = false;
+        bool menuKey  = false;  // 0.18.2: a key that opens a menu
         for (auto* evt = *events; evt; evt = evt->next) {
             switch (evt->GetEventType()) {
             case RE::INPUT_EVENT_TYPE::kMouseMove: {
@@ -1123,6 +1130,13 @@ namespace AmbientCam {
                 if (!btn || !btn->IsDown()) break;
                 activity = true;
                 if (!IsTFCamKey(btn) && IsMoveEvent(btn)) move = true;
+                if (auto* ue = RE::UserEvents::GetSingleton()) {
+                    const auto& e = btn->QUserEvent();
+                    for (const auto* m : { &ue->tweenMenu, &ue->quickInventory, &ue->quickMagic, &ue->quickStats, &ue->quickMap,
+                                           &ue->journal, &ue->pause, &ue->wait, &ue->favorites, &ue->console }) {
+                        if (e == *m) menuKey = true;
+                    }
+                }
                 break;
             }
             default:
@@ -1132,6 +1146,14 @@ namespace AmbientCam {
         if (!activity) return;
         s_lastActivity = Now();
         s_needInput    = false;
+        if (menuKey && s_sess.owned) {
+            // Not the blend back: the menu opens this frame. The Tween menu takes the free camera and the game puts it
+            // back when the menu closes (stuck in it; Show Player In Inventory skipped), and the inventory checks it
+            // as it opens. So the normal camera is back before the menu opens.
+            Event("a menu key - camera back now");
+            FinishReturn(false);
+            return;
+        }
         if (s_sess.owned && s_sess.kind == Kind::kVanity && !s_ret.active) {
             BeginReturn(s_cfg.returnTime, "input");
         } else if (move && s_sess.owned && s_sess.kind == Kind::kFurniture && s_cfg.furnMoveCancels && !s_ret.active) {
@@ -1141,15 +1163,37 @@ namespace AmbientCam {
 
     void OnFreeCamEnd() {
         if (s_sess.owned) {
-            Event("the free camera ended - session closed");
+            if (Now() - s_ownLeaveAt > 1.0) {
+                s_reclaimUntil = Now() + 60.0;
+                Event("the free camera was taken away (a menu?) - session closed; if the game gives it back, it goes off");
+            } else {
+                Event("the free camera ended - session closed");
+            }
             ResetSession();
             s_lastActivity = Now();
+        }
+    }
+
+    void OnFreeCamBegin(bool a_tfcamDriving, bool a_selfToggle) {
+        if (s_reclaimUntil <= 0.0) return;
+        const bool due = Now() < s_reclaimUntil;
+        s_reclaimUntil = 0.0;
+        // TFCam's own key, or tfc typed in the console: the player wants it
+        auto* ui = RE::UI::GetSingleton();
+        if (!due || !a_tfcamDriving || a_selfToggle || s_sess.owned || (ui && ui->IsMenuOpen(RE::Console::MENU_NAME))) return;
+        Event("the game gave the free camera back after a menu - turning it off (the idle camera had it)");
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask([] {
+                s_ownLeaveAt = Now();
+                SlccBridge::LeaveFreeFly("Ambient camera, after a menu");
+            });
         }
     }
 
     void OnGameLoad(const char* why) {
         if (s_sess.owned) Event(std::format("session dropped ({})", why));
         ResetSession();
+        s_reclaimUntil = 0.0;
         s_furnPending  = false;
         s_furnHandle   = {};
         s_needInput    = false;

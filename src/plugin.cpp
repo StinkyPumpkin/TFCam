@@ -5,13 +5,16 @@
 #include "SceneTracker.h"
 #include "CellEntryCam.h"
 #include "SceneCam.h"
+#include "AimDot.h"
 #include "AmbientCam.h"
 #include "ConvoCam.h"
 #include "CamBlur.h"
 #include "CamPath.h"
-#include "AimDot.h"
+#include "HUDHider.h"
 #include "FixedCam.h"
+#include "CamPathPrisma.h"
 #include "FrameFx.h"
+#include "VideoCapture.h"
 #include "FovFx.h"
 
 #include <spdlog/sinks/basic_file_sink.h>
@@ -113,6 +116,7 @@ namespace {
             // 0.7.7: every plugin is loaded now - FCFW's API and SLUI's 'TFCF' messages.
             FcfwBridge::Init();
             CamBlur::Install();  // 0.17.0: ENB SDK for the background blur (retried at kDataLoaded)
+            CamPathPrisma::Init();  // 0.18.0: the Camera Path editor as a PrismaUI view (when PrismaUI is installed)
             // Listen for SLUI's 'TFCF' only if TFCam will arm at kDataLoaded. Without the Address
             // Library TFCam stays inert; with no listener SLUI's Dispatch returns false and SLUI does
             // its own plain toggle, instead of the request being accepted and silently dropped.
@@ -127,9 +131,10 @@ namespace {
                 break;
             }
             // One reservation for every trampoline hook: CommonLib sets the trampoline up only on the FIRST
-            // AllocTrampoline call, so a second call adds nothing. 14 bytes per write_call<5>: the camera-root hook +
-            // FrameFx + AimDot's 6 (launch angles, flame yaw/pitch, beam yaw/pitch, projectile init).
-            SKSE::AllocTrampoline(8 * 14);
+            // AllocTrampoline call, so a second call adds nothing. 14 bytes per write_call<5>: FixedCam + FrameFx +
+            // AimDot's 10 (launch angles, flame yaw/pitch, beam yaw/pitch, projectile init, spell finder x2,
+            // spell pick, spell crosshair lookup) = 12, plus room for 4 more.
+            SKSE::AllocTrampoline(16 * 14);
             FreeCam::Install();
             CellEntryCam::Install();  // 0.9.0: zoom + orbit after a loading screen into a new cell
             SlccBridge::Install();
@@ -138,16 +143,18 @@ namespace {
             AmbientCam::Install();     // 0.11.0: idle camera + furniture camera
             ConvoCam::Install();       // 0.16.0: conversation camera
             CamBlur::Install();        // 0.17.0: no-op when already linked at kPostLoad
-            FixedCam::Install();       // 0.18.0: the camera-root hook (Action FOV's frame tick + the archer camera)
-            FovFx::Install();          // 0.18.0: action FOV + archer camera
-            FrameFx::Install();        // 0.18.0: edge blur, archer vignette, aim dot - before the UI
-            AimDot::Install();         // 0.18.0: arrows and spells go where the dot is (unless Hit Where You Aim is loaded)
+            FixedCam::Install();       // 0.18.0: fixed camera (third-person view override) + the full freeze's frame tick
+            FovFx::Install();          // 0.18.0: action FOV (its frame tick rides FixedCam's camera hook)
+            FrameFx::Install();        // 0.18.0: image effects + the video recorder's picture, before the UI
+            AimDot::Install();         // 10-31: arrows and spells go where the dot is (unless Hit Where You Aim is loaded)
             FreeCamMenu::Register();
             FreeCamMenu::ApplyGameSettings();
             break;
         case SKSE::MessagingInterface::kPreLoadGame:
             CellEntryCam::OnPreLoadGame();  // the loading screen that follows is a save load, not a door
+            FixedCam::OnGameLoad();         // 0.18.0
             FovFx::Reset();                 // 0.18.0
+            VideoCapture::OnGameLoad();     // 0.18.0: a load ends a recording
             // 0.10.0: the scene, orbit / eye view (head cull, near clip) and the active pose end with the old game.
             SceneTracker::Reset("save loading");
             SceneCam::OnGameLoad("save loading");
@@ -163,6 +170,8 @@ namespace {
             ConvoCam::OnGameLoad("save loaded");
             CamPath::OnGameLoad();       // 0.17.0
             CamBlur::Off("save loaded");  // 0.17.0
+            FreeCam::ForgetMenuPause();  // 11-14: a menu pause kept from before the load
+            HUDHider::OnGameLoaded(FreeCam::IsActive());  // 0.18.0
             SlccBridge::OnGameLoaded("save loaded");
             break;
         case SKSE::MessagingInterface::kNewGame:
@@ -172,6 +181,7 @@ namespace {
             ConvoCam::OnGameLoad("new game");
             CamPath::OnGameLoad();       // 0.17.0
             CamBlur::Off("new game");  // 0.17.0
+            FreeCam::ForgetMenuPause();  // 11-14
             SlccBridge::OnGameLoaded("new game");
             break;
         default:

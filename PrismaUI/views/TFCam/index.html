@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TFCam - Camera Path editor</title>
+<link rel="stylesheet" href="editor.css">
+</head>
+<body>
+<div id="app">
+
+<div id="toast" class="toast" style="display:none"><span id="toastText"></span></div>
+
+<!-- the selected camera: only while one is picked on the timeline -->
+<section id="card" class="card" style="display:none" aria-label="Selected camera">
+  <div class="chead">
+    <span class="cnum" id="cNum"></span>
+    <span class="ctext"><span class="ctitle" id="cTitle"></span><span class="csub" id="cSub"></span></span>
+    <button type="button" class="ib danger" data-cam="delete" title="Delete this camera" aria-label="Delete this camera"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 3h6l1 2h4v2H4V5h4zM6 9h12l-1 12H7z"></path></svg></button>
+    <button type="button" class="ib" data-close="card" title="Close" aria-label="Close"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6.4 4.9L12 10.6l5.6-5.7 1.5 1.5-5.7 5.6 5.7 5.6-1.5 1.5-5.6-5.7-5.6 5.7-1.5-1.5 5.7-5.6-5.7-5.6z"></path></svg></button>
+  </div>
+  <div class="cacts">
+    <button type="button" class="btn" data-cam="goTo" title="Fly the free camera to this camera">Go here</button>
+    <button type="button" class="btn" data-cam="here" title="This camera takes the free camera's spot and view">Move camera here</button>
+  </div>
+  <div id="cBody" class="cbody"></div>
+  <button type="button" class="more" id="btMore">More settings</button>
+</section>
+
+<!-- everything for the whole path -->
+<section id="menu" class="menu" style="display:none" aria-label="Path">
+  <select id="open" aria-label="Open a saved path"></select>
+  <div class="save">
+    <input id="saveName" type="text" maxlength="40" placeholder="Save as..." aria-label="Save the path as">
+    <button type="button" class="btn" data-cmd="saveAs">Save</button>
+  </div>
+  <!-- 11-14 round 13: SexLab scene paths (only while a stage of your scene is known) -->
+  <div class="mgroup" id="sceneGroup" style="display:none">
+    <span class="cap">SexLab scene</span>
+    <span class="dim small" id="sceneLabel"></span>
+    <button type="button" class="mi" id="btSceneSave" data-cmd="sceneSave" title="Kept against the scene, not the world: the same stage plays it wherever the scene runs. Your partners become scene positions.">Save this path for this stage</button>
+    <button type="button" class="mi" id="btSceneOpen" data-cmd="sceneOpen" title="Its cameras come into the editor, placed round the scene as it is now (your path before it is kept as Before scene path)">Open this stage's path to edit</button>
+    <button type="button" class="mi" id="btScenePlay" data-cmd="scenePlay">Play this stage's path</button>
+    <button type="button" class="mi danger" id="btSceneDel">Delete this stage's path</button>
+    <button type="button" class="tg" id="tgSceneAuto" data-toggle="sceneAuto" title="When a stage with a saved path starts, its path plays and loops until the stage changes"><i></i>Play stage paths by themselves</button>
+  </div>
+  <div class="mgroup">
+    <button type="button" class="tg" id="tgFollow" data-toggle="follow" title="The cameras move and turn with their pivots (someone walking)"><i></i>Follow moving</button>
+    <button type="button" class="tg" id="tgLoop" data-toggle="loop"><i></i>Loop</button>
+    <button type="button" class="tg" id="tgPath" data-toggle="showPath"><i></i>Show the path in the world</button>
+    <button type="button" class="tg" id="tgClean" data-toggle="clean"><i></i>Hide this while it plays</button>
+  </div>
+  <div class="mgroup">
+    <div class="slider"><label for="g-smooth"><span>Smoothness</span><span class="val" id="gv-smooth"></span></label>
+      <input id="g-smooth" type="range" min="0" max="100" step="1" value="30" data-global="smoothness"></div>
+    <div class="slider"><label for="g-aim"><span>Aim point higher / lower</span><span class="val" id="gv-aim"></span></label>
+      <input id="g-aim" type="range" min="-60" max="60" step="1" value="0" data-global="aimHeight"></div>
+  </div>
+  <div class="mgroup">
+    <button type="button" class="mi" id="btRecordPath" data-cmd="record">Record a manual path (fly it)</button>
+    <button type="button" class="mi" id="btFix" data-cmd="fix">Fix the camera here</button>
+    <label class="check"><input type="checkbox" id="watch"><span>The fixed camera turns to watch me</span></label>
+    <button type="button" class="mi danger" id="btClear">Clear all cameras</button>
+    <button type="button" class="mi" data-cmd="smf">Use the plain window instead</button>
+  </div>
+  <p class="foot" id="foot"></p>
+</section>
+
+<!-- the bar: play, the timeline, add, record, menu -->
+<div id="bar" class="bar">
+  <button type="button" class="ib" id="btBack" title="Play backwards" aria-label="Play backwards"><svg id="icBack" aria-hidden="true" viewBox="0 0 24 24"><path d="M17 4.5L4 12l13 7.5z"></path></svg><svg id="icBackPause" aria-hidden="true" viewBox="0 0 24 24" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"></path></svg></button>
+  <button type="button" class="play" id="btPlay" data-cmd="play" aria-label="Play"><svg id="icPlay" aria-hidden="true" viewBox="0 0 24 24"><path d="M7 4.5l13 7.5-13 7.5z"></path></svg><svg id="icPause" aria-hidden="true" viewBox="0 0 24 24" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"></path></svg></button>
+  <button type="button" class="ib" data-cmd="stop" title="Stop" aria-label="Stop"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 7h10v10H7z"></path></svg></button>
+  <button type="button" class="ib" id="tgFreeze" data-cmd="freeze" title="Freeze the world (people, hair, grass) - press again to let it go" aria-label="Freeze the world"><svg aria-hidden="true" viewBox="0 0 24 24" class="flake"><path d="M12 12V2.5M12 5.6L9.6 3.4M12 5.6l2.4-2.2M12 8.6L10.2 7M12 8.6L13.8 7"></path><path transform="rotate(60 12 12)" d="M12 12V2.5M12 5.6L9.6 3.4M12 5.6l2.4-2.2M12 8.6L10.2 7M12 8.6L13.8 7"></path><path transform="rotate(120 12 12)" d="M12 12V2.5M12 5.6L9.6 3.4M12 5.6l2.4-2.2M12 8.6L10.2 7M12 8.6L13.8 7"></path><path transform="rotate(180 12 12)" d="M12 12V2.5M12 5.6L9.6 3.4M12 5.6l2.4-2.2M12 8.6L10.2 7M12 8.6L13.8 7"></path><path transform="rotate(240 12 12)" d="M12 12V2.5M12 5.6L9.6 3.4M12 5.6l2.4-2.2M12 8.6L10.2 7M12 8.6L13.8 7"></path><path transform="rotate(300 12 12)" d="M12 12V2.5M12 5.6L9.6 3.4M12 5.6l2.4-2.2M12 8.6L10.2 7M12 8.6L13.8 7"></path></svg></button>
+  <span class="time" id="time">0:00.0 / 0:00.0</span>
+  <button type="button" class="btn slowhere" id="btSlow" disabled>Slow down here</button>
+  <div id="track" class="track">
+    <div id="lane" class="lane"></div>
+    <div id="playhead" class="playhead" aria-hidden="true"></div>
+    <div id="marks"></div>
+  </div>
+  <button type="button" class="ib add" id="btAdd" data-cmd="add" title="Add a camera where the free camera is" aria-label="Add a camera where the free camera is"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"></path></svg></button>
+  <button type="button" class="ib rec" id="btVideo" data-cmd="video" title="Record video" aria-label="Record video"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"></circle></svg></button>
+  <button type="button" class="ib" id="btMenu" title="Path, options" aria-label="Path and options"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="18.5" cy="12" r="2"></circle></svg></button>
+  <!-- 11-14 round 12: the controls and a short guide (point at it; a click keeps it up) -->
+  <button type="button" class="ib info" id="btInfo" aria-label="Controls and guide"><span class="ii">i</span></button>
+</div>
+
+<section id="help" class="help" style="display:none" aria-label="Controls and guide"></section>
+
+</div>
+<script src="editor.js"></script>
+</body>
+</html>

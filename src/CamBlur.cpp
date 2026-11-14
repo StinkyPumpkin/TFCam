@@ -282,8 +282,7 @@ namespace CamBlur {
         // a_on: a TFCam camera the blur applies to is running at all.
         bool Subject(RE::NiPoint3& a_out, const char*& a_what, bool& a_on) {
             a_on = false;
-            if (CamPath::FocusPoint(a_out, a_what, a_on)) return true;
-            if (a_on) return false;  // a path that looks where its points looked: centre autofocus
+            if (CamPath::Playing()) return false;  // 0.18.0: a playing path decides the blur per camera itself
             if (SceneCam::BlurSubject(a_out, a_what, a_on)) return true;
             if (a_on) return false;
             if (ConvoCam::OwnsMotion()) {
@@ -324,11 +323,19 @@ namespace CamBlur {
         s_settings.style    = std::clamp(s_settings.style, 0, 1);
         if (!std::isfinite(s_settings.sharp)) s_settings.sharp = 0.4f;
         s_settings.sharp = std::clamp(s_settings.sharp, 0.05f, 0.9f);
+        if (!std::isfinite(s_settings.subjectDepth)) s_settings.subjectDepth = 25.0f;
+        s_settings.subjectDepth = std::clamp(s_settings.subjectDepth, 0.0f, 500.0f);
+        if (!std::isfinite(s_settings.rampDepth)) s_settings.rampDepth = 150.0f;
+        s_settings.rampDepth = std::clamp(s_settings.rampDepth, 10.0f, 2000.0f);
     }
 
     Edge EdgeWant() {
         if (s_extUntil > 0.0 && Now() > s_extUntil) s_edge.on = false;  // that mod's camera stopped calling
-        return s_edge.on ? s_edge : s_archer;
+        Edge e = s_edge.on ? s_edge : s_archer;
+        // 11-13 (user: "not blur the player"): free camera, path and API v5 subjects keep themselves sharp by depth. The
+        // archer camera's subject is where the arrow lands - keeping everything in front of that sharp would undo its blur.
+        e.byDepth = s_edge.on && e.haveSubject && s_settings.keepSubject;
+        return e;
     }
 
     void Archer(bool a_on, const RE::NiPoint3& a_subject) {

@@ -208,5 +208,18 @@ namespace TFCAM_API
         virtual void SetCameraRoll(float a_radians) noexcept = 0;
     };
 
+    // ---- v6 (11-14) -----------------------------------------------------------------------------
+    // Game thread. For a menu mod whose menu needs the normal camera (an inventory camera): pause TFCam's free-fly before the
+    // menu opens and resume it when the player is back in the game - free-fly then comes back at exactly the same place, look,
+    // roll and FOV. Resume refuses (false, logged) after a load, a cell / worldspace change or a far move, and when the free
+    // camera is on again already.
+    inline constexpr std::uint32_t kVersion6 = 6;
+    struct ITFCam6 : ITFCam5
+    {
+        virtual bool PauseFreeFlyForMenu(const char* a_who) noexcept = 0;   // true = it was flying and is paused now
+        virtual bool ResumeFreeFlyAfterMenu(const char* a_who) noexcept = 0;
+        virtual bool FreeFlyPausedForMenu() noexcept = 0;
+    };
+
     using RequestFn = void* (*)(std::uint32_t a_version);
 }

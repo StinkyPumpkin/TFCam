@@ -19,4 +19,8 @@ namespace FreeCamMenu {
 
     // 0.10.0: writes TFCam.ini [SceneCam] only (Scene Camera changes made outside the page: SLUI, the orbit wheel).
     void SaveSceneCamSettings();
+
+    // 0.18.0: the Camera Path window saves its settings through these; key names for its hints.
+    void        SaveCamPathSettings();
+    const char* KeyName(int a_dxScanCode);
 }
