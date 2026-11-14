@@ -33,6 +33,16 @@
     <input id="saveName" type="text" maxlength="40" placeholder="Save as..." aria-label="Save the path as">
     <button type="button" class="btn" data-cmd="saveAs">Save</button>
   </div>
+  <!-- 11-14 round 13: SexLab scene paths (only while a stage of your scene is known) -->
+  <div class="mgroup" id="sceneGroup" style="display:none">
+    <span class="cap">SexLab scene</span>
+    <span class="dim small" id="sceneLabel"></span>
+    <button type="button" class="mi" id="btSceneSave" data-cmd="sceneSave" title="Kept against the scene, not the world: the same stage plays it wherever the scene runs. Your partners become scene positions.">Save this path for this stage</button>
+    <button type="button" class="mi" id="btSceneOpen" data-cmd="sceneOpen" title="Its cameras come into the editor, placed round the scene as it is now (your path before it is kept as Before scene path)">Open this stage's path to edit</button>
+    <button type="button" class="mi" id="btScenePlay" data-cmd="scenePlay">Play this stage's path</button>
+    <button type="button" class="mi danger" id="btSceneDel">Delete this stage's path</button>
+    <button type="button" class="tg" id="tgSceneAuto" data-toggle="sceneAuto" title="When a stage with a saved path starts, its path plays and loops until the stage changes"><i></i>Play stage paths by themselves</button>
+  </div>
   <div class="mgroup">
     <button type="button" class="tg" id="tgFollow" data-toggle="follow" title="The cameras move and turn with their pivots (someone walking)"><i></i>Follow moving</button>
     <button type="button" class="tg" id="tgLoop" data-toggle="loop"><i></i>Loop</button>

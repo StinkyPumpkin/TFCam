@@ -46,6 +46,7 @@
   var dragHandle = -1;
   var lastKey = '';
   var clearArmed = false;
+  var sceneDelArmed = false;   // 11-14 round 13
   var preview = false;
   var seenEvent = null, flash = '', flashUntil = 0, flashWarn = false;
 
@@ -175,6 +176,17 @@
     fix.textContent = S.fixed ? 'Let the camera go' : 'Fix the camera here';
     fix.dataset.cmd = S.fixed ? 'release' : 'fix';
     $('watch').checked = !!S.watching;
+    // 11-14 round 13: SexLab scene paths - only while a stage of your scene is known
+    show($('sceneGroup'), !!S.sceneIn);
+    if (S.sceneIn) {
+      $('sceneLabel').textContent = S.sceneLabel + (S.scenePlaying ? ' · its path plays (loops until the stage changes)' :
+        (S.sceneSaved ? ' · has a saved path' : ' · no saved path yet'));
+      show($('btSceneOpen'), !!S.sceneSaved);
+      show($('btScenePlay'), !!S.sceneSaved && !S.scenePlaying);
+      show($('btSceneDel'), !!S.sceneSaved);
+      $('btSceneSave').textContent = S.sceneSaved ? 'Save this path over this stage’s path' : 'Save this path for this stage';
+      setOn($('tgSceneAuto'), S.sceneAuto !== false);
+    }
     if (!busy) {
       $('g-smooth').value = Math.round((S.smoothness || 0) * 100);
       $('g-aim').value = Math.round(S.aimHeight || 0);
@@ -482,6 +494,10 @@
       local(f, v); cmd('edit|' + sel + '|' + f + '|' + v); render(true); return;
     }
     if (el.dataset.preset !== undefined) { setSpeed(el.dataset.preset); return; }
+    if (el.id === 'btSceneDel') {   // 11-14 round 13: a second click deletes (as Clear all cameras)
+      if (!sceneDelArmed) { sceneDelArmed = true; el.textContent = 'Click again to delete this stage’s path'; setTimeout(function () { sceneDelArmed = false; el.textContent = 'Delete this stage’s path'; }, 3000); return; }
+      sceneDelArmed = false; el.textContent = 'Delete this stage’s path'; cmd('sceneDelete'); return;
+    }
     if (el.id === 'btClear') {
       if (!clearArmed) { clearArmed = true; el.textContent = 'Click again to clear all ' + S.cams.length + ' cameras'; setTimeout(function () { clearArmed = false; el.textContent = 'Clear all cameras'; }, 3000); return; }
       clearArmed = false; el.textContent = 'Clear all cameras'; sel = -1; cmd('clear'); return;
@@ -660,7 +676,8 @@
     ['Moves', 'Each camera says how it goes on to the next: Straight, Curve, Orbit (circles the pivot - which way round and extra full turns) or Cut (jumps, like a film cut). Bend left / right and up / down shape a straight move.'],
     ['Speed', 'More settings > Move: drag the round handles on the speed curve - steep is fast, flat is slow; Reset goes back to automatic. To slow just part of a move: play, pause where it should slow, press Slow down here.'],
     ['While a camera waits', 'Wait here holds the camera. Dolly: the camera pushes in or pulls back while the zoom keeps the pivot the same size, so only the background stretches. Shake and Blur the background work there too. Without a pivot, whatever is at your distance is the subject.'],
-    ['Saving', 'The menu (…): Save as keeps the path under a name, the list above it opens a saved one. Clear all cameras asks for a second click.']
+    ['Saving', 'The menu (…): Save as keeps the path under a name, the list above it opens a saved one. Clear all cameras asks for a second click.'],
+    ['SexLab scene paths', 'In a SexLab scene the menu (…) has a SexLab scene part. Save this path for this stage keeps it against the scene, not the world, with your partners as scene positions: that stage plays it wherever the scene runs, looping until you change the stage (the last camera’s move takes it back to camera 1). Normal paths stay where you put them in the world.']
   ];
   var helpPinned = false;
   function helpHtml() {
@@ -787,7 +804,9 @@
       name: 'Whiterun - Adrianne', follow: true, loop: false, showPath: true, smoothness: 0.3, aimHeight: 0, playing: false, paused: false, rewinding: false,
       rate: 1, atCam: -1, progress: 0, total: 0, freeCam: !has('off'), frozen: false, clean: false, recordingPath: false, video: false,
       videoStatus: 'not recording', fxStatus: 'idle', fixed: false, watching: false, lastEvent: '', openKey: '1', playKey: '', addKey: '', videoKey: '',
-      saved: ['whiterun', 'Before clearing'], cams: cams
+      saved: ['whiterun', 'Before clearing'], cams: cams,
+      // 11-14 round 13: #scene = in a SexLab scene (#scene,saved: its stage has a saved scene path)
+      sceneIn: has('scene'), sceneLabel: 'Missionary (Billyy) - stage 2', sceneSaved: has('saved'), scenePlaying: false, sceneAuto: true
     };
     S.total = layout().total;
     if (has('cam')) sel = 1;

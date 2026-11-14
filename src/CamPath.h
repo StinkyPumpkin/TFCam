@@ -62,7 +62,8 @@ namespace CamPath {
         RE::NiPoint3 pivotPos{};
         float        pivotHeading = 0.0f;
         bool         havePivot    = false;
-        // this camera's pivot: -1 = none, 0 = you / your scene, 1 = a reference
+        // this camera's pivot: -1 = none, 0 = you / your scene, 1 = a reference, 2 = (11-14 round 13) a position in your SexLab
+        // scene (pivotRef = its index in the scene's positions: whoever plays it this time)
         int          pivotKind = -1;
         RE::FormID   pivotRef  = 0;
         // at this camera
@@ -113,6 +114,8 @@ namespace CamPath {
         float aimHeight  = 0.0f;  // -60..60 units above the pivot's middle
         bool  showPath   = true;  // the path drawn in the world while the free camera is on (CamPathView)
         bool  prismaEditor = true;  // the window key opens the PrismaUI editor when PrismaUI is installed (else the SMF window)
+        // 11-14 round 13: a SexLab stage's saved scene path plays by itself when that stage starts (looping until it changes)
+        bool  sceneAutoPlay = true;
     };
 
     Settings& Get();
@@ -151,6 +154,11 @@ namespace CamPath {
         float            total        = 0.0f;   // seconds of the whole path (one lap), as the cameras are now
         std::string      lastEvent;
         std::vector<std::string> savedPaths;
+        // 11-14 round 13: the player's SexLab scene (scene paths)
+        bool             sceneIn      = false;  // a stage of the player's scene is known
+        std::string      sceneLabel;            // its name and stage
+        bool             sceneSaved   = false;  // this stage has a saved scene path
+        bool             scenePlaying = false;  // the playing path is a scene path
     };
     Snapshot GetSnapshot();
     // Seconds the move on from a camera takes, slow motion (it adds time), slingshot and elastic arrival included.
@@ -188,4 +196,15 @@ namespace CamPath {
     void RequestRecord(int a_state);  // 1 start, 0 stop, -1 toggle
     void RequestSaveAs(std::string a_name);
     void RequestLoad(std::string a_name);
+
+    // 11-14 round 13 (user: "sexlab can save paths as bone relative so the same scene played elsewhere can play the saved path
+    // linked to that animation" - normal paths stay world spots): SexLab scene paths. One per stage of an animation and your
+    // position in it, in Data\SKSE\Plugins\TFCam\ScenePaths, the cameras kept against the scene's own spot (your character's
+    // placement in it, as the Scene Camera's stage shots) and the partners as scene positions, so it plays the same wherever
+    // that stage plays. It loops until the stage changes (the last camera's move settings take it back to camera 1).
+    void RefreshScene();           // main thread: the scene the editor shows (the editor's tick and Drive call it)
+    void RequestSceneSave();       // the editor's path becomes this stage's scene path
+    void RequestSceneOpen();       // this stage's scene path into the editor (around where the scene is now)
+    void RequestSceneDelete();
+    void RequestScenePlay();       // play this stage's scene path now (looping)
 }

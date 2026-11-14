@@ -7,6 +7,7 @@
 #include "FreeCamController.h"
 #include "FreezeTime.h"
 #include "SceneCam.h"
+#include "SceneTracker.h"
 #include "SlccBridge.h"
 #include "VideoCapture.h"
 
@@ -187,6 +188,11 @@ namespace CamPath {
         float s_pubProgress = 0.0f;
         bool  s_loaded = false;
         std::unordered_map<RE::FormID, std::string> s_refNames;  // pivot names for the window (filled on the main thread)
+        // 11-14 round 13: the player's SexLab scene for the window (s_lock; filled on the main thread)
+        bool        s_sceneIn    = false;
+        bool        s_sceneSaved = false;
+        bool        s_pubScene   = false;
+        std::string s_sceneLabel;
 
         void EventLocked(std::string a_text) {
             SKSE::log::info("CamPath: {}", a_text);
@@ -279,11 +285,28 @@ namespace CamPath {
             std::sort(s_savedPaths.begin(), s_savedPaths.end());
         }
 
-        bool WriteLocked(const std::string& a_name) {
+        // 11-14 round 13: one writer / reader for both kinds of path file (Paths\ and the SexLab ScenePaths\)
+        bool WriteFile(const std::filesystem::path& a_file, const std::vector<Cam>& a_cams, bool a_follow, bool a_loop);
+        bool ReadFile(const std::filesystem::path& a_file, std::vector<Cam>& a_cams, bool& a_follow, bool& a_loop);
+
+        bool WriteLocked(const std::string& a_name) { return WriteFile(PathsDir() / (a_name + ".tsv"), s_cams, s_follow, s_loop); }
+
+        bool ReadLocked(const std::string& a_name) {
+            std::vector<Cam> cams;
+            bool             follow = false, loop = false;
+            if (!ReadFile(PathsDir() / (a_name + ".tsv"), cams, follow, loop)) return false;
+            s_cams   = std::move(cams);
+            s_follow = follow;
+            s_loop   = loop;
+            return true;
+        }
+
+        bool WriteFile(const std::filesystem::path& a_file, const std::vector<Cam>& a_cams, bool a_follow, bool a_loop) {
             std::error_code ec;
-            std::filesystem::create_directories(PathsDir(), ec);
-            const auto file = PathsDir() / (a_name + ".tsv");
-            const auto tmp  = PathsDir() / (a_name + ".tsv.tmp");
+            std::filesystem::create_directories(a_file.parent_path(), ec);
+            const auto file = a_file;
+            auto       tmp  = a_file;
+            tmp += ".tmp";
             {
                 std::ofstream out(tmp, std::ios::out | std::ios::binary | std::ios::trunc);
                 if (!out) {
@@ -294,8 +317,8 @@ namespace CamPath {
                        "# cam: x y z yaw pitch roll fov | pivot x y z heading known | look wait blur strength | move time "
                        "smooth turns way zoom | pivot kind formID | bend side up | bone shake crash | slow at speed "
                        "length world | elastic sling slowCamera | curve on x1 y1 x2 y2 | dolly | where (11-13: I/W:plugin|id, - = unknown)\n";
-                out << std::format("pivot\t-1\t00000000\t{}\t{}\n", s_follow ? 1 : 0, s_loop ? 1 : 0);
-                for (const auto& c : s_cams) {
+                out << std::format("pivot\t-1\t00000000\t{}\t{}\n", a_follow ? 1 : 0, a_loop ? 1 : 0);
+                for (const auto& c : a_cams) {
                     out << std::format("cam\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{:.5f}\t{:.5f}\t{:.2f}\t{:.3f}\t{:.3f}\t{:.3f}\t{:.5f}\t{}"
                                        "\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{:.2f}\t{}\t{}\t{}\t{}\t{}\t{:08X}\t{:.3f}\t{:.3f}"
                                        "\t{}\t{:.3f}\t{}\t{}\t{:.3f}\t{:.3f}\t{:.3f}\t{}\t{:.3f}\t{:.3f}\t{}"
@@ -316,8 +339,8 @@ namespace CamPath {
             return !ec;
         }
 
-        bool ReadLocked(const std::string& a_name) {
-            std::ifstream in(PathsDir() / (a_name + ".tsv"), std::ios::in | std::ios::binary);
+        bool ReadFile(const std::filesystem::path& a_file, std::vector<Cam>& a_out, bool& a_follow, bool& a_loop) {
+            std::ifstream in(a_file, std::ios::in | std::ios::binary);
             if (!in) return false;
             std::vector<Cam> cams;
             int              kind = 0, follow = 0, loop = 0;
@@ -348,9 +371,10 @@ namespace CamPath {
                 c.smooth    = smooth != 0;
                 c.zoomTrick = zoom != 0;
                 c.move      = std::clamp(c.move, 0, 3);
-                // v2 (0.18.0 before the per-camera pivot): every camera has the path's pivot
-                c.pivotKind = n >= 24 ? (ckind == 1 ? 1 : (ckind < 0 ? -1 : 0)) : (kind == 1 ? 1 : 0);
-                c.pivotRef  = c.pivotKind == 1 ? (n >= 24 ? cref : ref) : 0;
+                // v2 (0.18.0 before the per-camera pivot): every camera has the path's pivot. 11-14 round 13: 2 = a SexLab scene
+                // position (scene paths; the reference is the position's index)
+                c.pivotKind = n >= 24 ? (ckind == 1 ? 1 : (ckind == 2 ? 2 : (ckind < 0 ? -1 : 0))) : (kind == 1 ? 1 : 0);
+                c.pivotRef  = c.pivotKind == 1 ? (n >= 24 ? cref : ref) : (c.pivotKind == 2 ? std::min<RE::FormID>(cref, 15) : 0);
                 if (n < 26 || !std::isfinite(c.bendSide) || !std::isfinite(c.bendUp)) c.bendSide = c.bendUp = 0.0f;
                 c.bendSide = std::clamp(c.bendSide, -1.0f, 1.0f);
                 c.bendUp   = std::clamp(c.bendUp, -1.0f, 1.0f);
@@ -392,9 +416,9 @@ namespace CamPath {
                 }
                 cams.push_back(c);
             }
-            s_cams      = std::move(cams);
-            s_follow    = follow != 0;
-            s_loop      = loop != 0;
+            a_out    = std::move(cams);
+            a_follow = follow != 0;
+            a_loop   = loop != 0;
             return true;
         }
 
@@ -516,6 +540,21 @@ namespace CamPath {
         // point the camera looks at / goes round (the chosen body part of an actor, else the middle).
         bool PivotRaw(int a_kind, RE::FormID a_ref, RE::NiPoint3& a_out, float& a_heading, std::string* a_name,
             int a_bone = kBoneMiddle, RE::NiPoint3* a_aim = nullptr) {
+            if (a_kind == 2) {  // 11-14 round 13: a position in the player's SexLab scene - whoever plays it now
+                const auto& sc = SceneTracker::GetPlayerScene();
+                if (sc.inScene && a_ref < sc.actors.size()) {
+                    auto actor = sc.actors[a_ref].get();
+                    if (actor && actor->Get3D() && CamFocus::RefPoint(actor.get(), a_out)) {
+                        a_heading = actor->GetAngleZ();
+                        if (a_name) *a_name = std::format("scene position {} ({})", a_ref + 1, CamFocus::Describe(actor.get()));
+                        if (a_aim) {
+                            *a_aim = a_out;
+                            if (a_bone != kBoneMiddle) BonePoint(actor.get(), a_bone, *a_aim);
+                        }
+                        return true;
+                    }
+                }
+            }
             if (a_kind == 1 && a_ref) {
                 auto* ref = RE::TESForm::LookupByID<RE::TESObjectREFR>(a_ref);
                 if (ref && !ref->IsDeleted() && ref->Get3D() && CamFocus::RefPoint(ref, a_out)) {
@@ -532,7 +571,7 @@ namespace CamPath {
             if (!SceneCam::SubjectPoint(a_out, &what)) return false;
             auto* player = RE::PlayerCharacter::GetSingleton();
             a_heading    = player ? player->GetAngleZ() : 0.0f;
-            if (a_name) *a_name = a_kind == 1 ? "you (the picked one is not here)" : "you";
+            if (a_name) *a_name = a_kind == 1 ? "you (the picked one is not here)" : (a_kind == 2 ? "you (that scene position is not here)" : "you");
             if (a_aim) {
                 *a_aim = a_out;
                 if (a_bone != kBoneMiddle && player) BonePoint(player, a_bone, *a_aim);
@@ -592,6 +631,7 @@ namespace CamPath {
             float                     total    = 0.0f;
             float                     elapsed  = 0.0f;
             int                       editGen  = 0;  // s_editGen when Play started
+            bool                      scene    = false;  // 11-14 round 13: a SexLab stage's scene path (loops, ends with the stage)
         };
         Play   s_play;
         bool   s_pendingPlay   = false;
@@ -1155,6 +1195,7 @@ namespace CamPath {
             s_pubAt        = s_play.on ? s_play.k : -1;
             s_pubProgress  = s_play.on && s_play.total > 0.0f ? Clamp01(s_play.elapsed / s_play.total) : 0.0f;
             s_pubRecording = s_rec.on;
+            s_pubScene     = s_play.on && s_play.scene;   // 11-14 round 13
         }
 
         void BlurOff() {
@@ -1186,8 +1227,8 @@ namespace CamPath {
             const int n = Count();
             for (int i = 0; i < n; ++i) {
                 const auto&      c    = s_play.cams[i];
-                const int        kind = c.pivotKind < 0 ? -1 : (c.pivotKind == 1 && c.pivotRef ? 1 : 0);
-                const RE::FormID ref  = kind == 1 ? c.pivotRef : 0;
+                const int        kind = c.pivotKind < 0 ? -1 : (c.pivotKind == 2 ? 2 : (c.pivotKind == 1 && c.pivotRef ? 1 : 0));
+                const RE::FormID ref  = kind == 1 || kind == 2 ? c.pivotRef : 0;   // 11-14 round 13: 2 = a scene position
                 const int        bone = std::clamp(c.bone, 0, kBoneCount - 1);
                 int              idx  = -1;
                 for (int j = 0; j < static_cast<int>(s_play.pivots.size()); ++j) {
@@ -1287,32 +1328,36 @@ namespace CamPath {
         }
 
         // Play from camera a_from (a_glide: 1 s from where the camera is; a_rate < 0: backwards from the end of its wait).
+        // a_scene (11-14 round 13): a SexLab stage's scene path, already placed round the scene - it plays in its place, loops,
+        // never follows, and the editor's own path is left as it is
         bool StartPlay(RE::FreeCameraState* a_fcs, std::string_view a_source, int a_from = 0, bool a_glide = true,
-            float a_rate = 1.0f) {
+            float a_rate = 1.0f, const std::vector<Cam>* a_scene = nullptr) {
             LoadOnce();
             const bool blurWas = s_play.blurOn;
             {
                 std::scoped_lock lock(s_lock);
-                if (s_cams.size() < 2) {
-                    EventLocked(std::format("play refused ({}): {} camera(s)", a_source, s_cams.size()));
+                const auto& src = a_scene ? *a_scene : s_cams;
+                if (src.size() < 2) {
+                    EventLocked(std::format("play refused ({}): {} camera(s)", a_source, src.size()));
                     Notify("Camera path: add at least 2 cameras first");
                     return false;
                 }
                 // 11-13: never fly to another cell / worldspace (the picture goes black)
                 const std::string here = SpaceHere();
-                for (std::size_t k = 0; k < s_cams.size(); ++k) {
+                for (std::size_t k = 0; k < src.size(); ++k) {
                     std::string where;
-                    if (!CamAway(s_cams[k], here, where)) continue;
+                    if (!CamAway(src[k], here, where)) continue;
                     EventLocked(std::format("play refused: camera {} is in {} - go there first", k + 1, where));
                     Notify(std::format("Camera path: go to {} first", where));
                     return false;
                 }
                 s_play         = Play{};
                 s_play.blurOn  = blurWas;
-                s_play.cams    = s_cams;
+                s_play.cams    = src;
                 s_play.editGen = s_editGen.load();
-                s_play.follow = s_follow;
-                s_play.loop   = s_loop;
+                s_play.follow = a_scene ? false : s_follow;
+                s_play.loop   = a_scene ? true : s_loop;
+                s_play.scene  = a_scene != nullptr;
             }
             if (s_rec.on) s_rec.on = false;
             SceneCam::StandDown("camera path plays");
@@ -1366,6 +1411,143 @@ namespace CamPath {
             s_pendingUntil  = Now() + kPendingTimeout;
             Event(std::format("play ({}): entering TFCam free-fly first", a_source));
             SlccBridge::RequestEnterFreeFly("Camera path");
+        }
+
+        // ---- 11-14 round 13: SexLab scene paths (see CamPath.h) -----------------------------------------------------------
+        // The scene's own spot = the player's placement in it, as the Scene Camera's stage shots use: P+ places every actor
+        // rigidly from the scene's base for each stage, so cameras kept against it frame the same wherever the stage plays
+        // (anchored on the bones they would shake with the animation). Main thread.
+        struct SceneNow {
+            bool                    in = false;  // a stage of the player's scene is known
+            std::string             key;         // scene id | stage id | the player's position
+            std::string             label;
+            RE::NiPoint3            anchor{};
+            float                   heading = 0.0f;
+            std::vector<RE::FormID> actorIDs;    // the scene's positions in order
+        };
+        SceneNow ReadScene() {
+            SceneNow    s;
+            const auto& sc     = SceneTracker::GetPlayerScene();
+            auto*       player = RE::PlayerCharacter::GetSingleton();
+            if (!sc.inScene || !sc.stageKnown || !player || sc.sceneId.empty()) return s;
+            s.in       = true;
+            s.key      = std::format("{}|{}|{}", sc.sceneId, sc.stageId, sc.playerSlot);
+            s.label    = std::format("{} - stage {}", sc.sceneName.empty() ? sc.sceneId : sc.sceneName, sc.stageId);
+            s.anchor   = player->GetPosition();
+            s.heading  = player->GetAngleZ();
+            s.actorIDs = sc.actorIDs;
+            return s;
+        }
+
+        std::filesystem::path ScenePathsDir() {
+            wchar_t     buf[MAX_PATH] = {};
+            const DWORD len = ::GetFullPathNameW(L"Data\\SKSE\\Plugins\\TFCam\\ScenePaths", MAX_PATH, buf, nullptr);
+            return len > 0 && len < MAX_PATH ? std::filesystem::path(std::wstring(buf, len)) : std::filesystem::path(L"Data\\SKSE\\Plugins\\TFCam\\ScenePaths");
+        }
+        std::filesystem::path SceneFile(const std::string& a_key) {
+            std::string f;
+            for (const char c : a_key) f.push_back(std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '.' ? c : '_');
+            if (f.size() > 150) f.resize(150);
+            return ScenePathsDir() / (f + ".tsv");
+        }
+
+        // a stage has a saved scene path: checked again only when the stage changes (or after a save / delete)
+        std::string s_savedCheckKey;
+        bool        s_savedCheck = false;
+        bool SceneSaved(const std::string& a_key) {
+            if (a_key.empty()) return false;
+            if (a_key != s_savedCheckKey) {
+                s_savedCheckKey = a_key;
+                std::error_code ec;
+                s_savedCheck = std::filesystem::exists(SceneFile(a_key), ec);
+            }
+            return s_savedCheck;
+        }
+        void PublishScene(const SceneNow& a_s) {
+            const bool saved = SceneSaved(a_s.key);
+            std::scoped_lock lock(s_lock);
+            s_sceneIn    = a_s.in;
+            s_sceneLabel = a_s.label;
+            s_sceneSaved = saved;
+        }
+
+        // world -> against the scene's spot (positions, headings), the partners as scene positions, no area
+        std::vector<Cam> ToScene(const std::vector<Cam>& a_cams, const SceneNow& a_s, int& a_positions) {
+            std::vector<Cam> out    = a_cams;
+            auto*            player = RE::PlayerCharacter::GetSingleton();
+            for (auto& c : out) {
+                c.pos = RotZ(c.pos - a_s.anchor, -a_s.heading);
+                c.yaw = WrapPi(c.yaw - a_s.heading);
+                if (c.havePivot) {
+                    c.pivotPos     = RotZ(c.pivotPos - a_s.anchor, -a_s.heading);
+                    c.pivotHeading = WrapPi(c.pivotHeading - a_s.heading);
+                }
+                c.space.clear();
+                if (c.pivotKind == 1 && c.pivotRef) {
+                    if (player && c.pivotRef == player->GetFormID()) {
+                        c.pivotKind = 0;
+                        c.pivotRef  = 0;
+                    } else {
+                        for (std::size_t i = 0; i < a_s.actorIDs.size(); ++i) {
+                            if (a_s.actorIDs[i] != c.pivotRef) continue;
+                            c.pivotKind = 2;
+                            c.pivotRef  = static_cast<RE::FormID>(i);
+                            ++a_positions;
+                            break;
+                        }
+                    }
+                }
+            }
+            return out;
+        }
+        // ... and back round where the scene is now
+        std::vector<Cam> FromScene(const std::vector<Cam>& a_cams, const SceneNow& a_s) {
+            std::vector<Cam> out   = a_cams;
+            const auto       space = SpaceHere();
+            for (auto& c : out) {
+                c.pos = a_s.anchor + RotZ(c.pos, a_s.heading);
+                c.yaw = WrapPi(c.yaw + a_s.heading);
+                if (c.havePivot) {
+                    c.pivotPos     = a_s.anchor + RotZ(c.pivotPos, a_s.heading);
+                    c.pivotHeading = WrapPi(c.pivotHeading + a_s.heading);
+                }
+                c.space = space;
+            }
+            return out;
+        }
+
+        bool PlayScene(RE::FreeCameraState* a_fcs, const SceneNow& a_s, std::string_view a_why) {
+            std::vector<Cam> cams;
+            bool             follow = false, loop = false;
+            if (!a_s.in || !ReadFile(SceneFile(a_s.key), cams, follow, loop) || cams.size() < 2) {
+                Event(std::format("scene path ({}): none saved for {}", a_why, a_s.in ? a_s.label : std::string("- no scene stage known")));
+                return false;
+            }
+            const auto world = FromScene(cams, a_s);
+            if (s_play.on) EndPlay(a_why);
+            if (!StartPlay(a_fcs, a_why, 0, true, 1.0f, &world)) return false;
+            Event(std::format("scene path plays for {} - {} cameras, looping until the stage changes", a_s.label, world.size()));
+            Notify("Scene path: " + a_s.label);
+            return true;
+        }
+
+        std::string s_sceneSeenKey;  // the stage Drive saw last
+        std::string s_sceneWant;     // a stage whose saved scene path starts once TFCam's free camera drives
+
+        // Drive, every frame: a new stage (or the scene's end) ends a playing scene path, and the new stage's own saved
+        // path starts (Scene autoplay) - also later, once the free camera is on, while that stage still runs
+        void ServiceScene(RE::FreeCameraState* a_fcs, bool a_driving) {
+            const auto sc = ReadScene();
+            if (sc.key != s_sceneSeenKey) {
+                s_sceneSeenKey = sc.key;
+                if (s_play.on && s_play.scene) EndPlay(sc.in ? "the stage changed" : "the scene ended");
+                s_sceneWant = sc.in && s_settings.sceneAutoPlay && SceneSaved(sc.key) ? sc.key : std::string();
+                PublishScene(sc);
+            }
+            if (!s_sceneWant.empty() && s_sceneWant == sc.key && a_driving && !s_play.on && !s_pendingPlay && !s_rec.on) {
+                s_sceneWant.clear();
+                PlayScene(a_fcs, sc, "this stage's scene path");
+            }
         }
 
         // The path slider's work: to a_seconds into the path, paused. Edited since Play: it starts again with the
@@ -1788,6 +1970,7 @@ namespace CamPath {
                 Event("play: TFCam free-fly did not start in time");
             }
         }
+        ServiceScene(a_fcs, a_driving);   // 11-14 round 13: SexLab scene paths
         if (s_rec.on) {
             if (!a_driving) {
                 StopRecord("another camera took the free camera");
@@ -1983,12 +2166,20 @@ namespace CamPath {
         s.progress   = s_pubProgress;
         s.lastEvent  = s_lastEvent;
         s.savedPaths = s_savedPaths;
+        s.sceneIn      = s_sceneIn;      // 11-14 round 13
+        s.sceneLabel   = s_sceneLabel;
+        s.sceneSaved   = s_sceneSaved;
+        s.scenePlaying = s_pubScene;
         const int nc = static_cast<int>(s_cams.size());
         for (int k = 0; k < nc; ++k) {
             s.total += s_cams[k].wait;
             if (k + 1 < nc || (s_loop && nc > 1)) s.total += MoveSeconds(s_cams[k]);
         }
         for (const auto& c : s_cams) {
+            if (c.pivotKind == 2) {   // 11-14 round 13
+                s.camPivotNames.push_back(std::format("scene position {}", c.pivotRef + 1));
+                continue;
+            }
             if (c.pivotKind != 1 || !c.pivotRef) {
                 s.camPivotNames.emplace_back(c.pivotKind < 0 ? "none" : "you");
                 continue;
@@ -2289,6 +2480,91 @@ namespace CamPath {
                 EventLocked(std::format("opened \"{}\" - {} camera(s)", name, s_cams.size()));
             }
             SaveCurrentSoon();
+        });
+    }
+
+    // ---- 11-14 round 13: SexLab scene paths (see CamPath.h) ----------------------------------------------------------------
+    void RefreshScene() { PublishScene(ReadScene()); }
+
+    void RequestSceneSave() {
+        Queue([] {
+            const auto sc = ReadScene();
+            if (!sc.in) {
+                Notify("Scene path: start a SexLab scene first (its stage must be known)");
+                return;
+            }
+            std::vector<Cam> cams;
+            {
+                std::scoped_lock lock(s_lock);
+                cams = s_cams;
+            }
+            if (cams.size() < 2) {
+                Notify("Scene path: add at least 2 cameras first");
+                return;
+            }
+            int        positions = 0;
+            const auto local     = ToScene(cams, sc, positions);
+            if (!WriteFile(SceneFile(sc.key), local, false, true)) {
+                Event(std::format("scene path for {}: saving failed", sc.label));
+                Notify("Scene path: saving failed");
+                return;
+            }
+            s_savedCheckKey = sc.key;
+            s_savedCheck    = true;
+            PublishScene(sc);
+            Event(std::format("scene path saved for {} ({}) - {} cameras, {} pivot(s) kept as scene positions", sc.label, sc.key, local.size(), positions));
+            Notify("Scene path saved: " + sc.label);
+        });
+    }
+
+    void RequestSceneOpen() {
+        Queue([] {
+            const auto       sc = ReadScene();
+            std::vector<Cam> cams;
+            bool             follow = false, loop = false;
+            if (!sc.in || !ReadFile(SceneFile(sc.key), cams, follow, loop)) {
+                Notify(sc.in ? "Scene path: none saved for this stage" : "Scene path: start a SexLab scene first");
+                return;
+            }
+            if (s_play.on) EndPlay("a scene path was opened");
+            if (s_rec.on) StopRecord("a scene path was opened");
+            {
+                std::scoped_lock lock(s_lock);
+                if (!s_cams.empty()) WriteLocked("Before scene path");
+                s_cams   = FromScene(cams, sc);
+                s_follow = false;
+                s_loop   = true;
+                RefreshSavedLocked();
+                EventLocked(std::format("opened the scene path for {} - {} camera(s) round the scene (your path before it is saved as \"Before scene path\")",
+                    sc.label, s_cams.size()));
+            }
+            SaveCurrentSoon();
+        });
+    }
+
+    void RequestSceneDelete() {
+        Queue([] {
+            const auto sc = ReadScene();
+            if (!sc.in) return;
+            std::error_code ec;
+            const bool      gone = std::filesystem::remove(SceneFile(sc.key), ec);
+            s_savedCheckKey      = sc.key;
+            s_savedCheck         = false;
+            if (s_play.on && s_play.scene) EndPlay("its scene path was deleted");
+            PublishScene(sc);
+            Event(std::format("scene path for {}: {}", sc.label, gone ? "deleted" : "there was none"));
+            Notify(gone ? "Scene path deleted: " + sc.label : std::string("Scene path: none saved for this stage"));
+        });
+    }
+
+    void RequestScenePlay() {
+        Queue([] {
+            auto* fcs = CurrentFreeCam();
+            if (!fcs) {
+                Notify("Scene path: turn the free camera on first");
+                return;
+            }
+            PlayScene(fcs, ReadScene(), "the editor");
         });
     }
 }

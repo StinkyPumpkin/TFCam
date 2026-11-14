@@ -369,6 +369,7 @@ namespace FreeCamMenu {
         WriteINIFloat("CameraPath", "fAimHeight", c.aimHeight);
         WriteINIInt("CameraPath", "bShowPath", c.showPath ? 1 : 0);
         WriteINIInt("CameraPath", "bPrismaEditor", c.prismaEditor ? 1 : 0);
+        WriteINIInt("CameraPath", "bSceneAutoPlay", c.sceneAutoPlay ? 1 : 0);   // 11-14 round 13: SexLab scene paths
         const auto& f = FovFx::Get();  // 0.18.0
         WriteINIInt("ActionFOV", "bEnabled", f.enabled ? 1 : 0);
         WriteINIFloat("ActionFOV", "fStrength", f.strength);
@@ -1757,6 +1758,7 @@ namespace FreeCamMenu {
             c.aimHeight  = readFloat("CameraPath", "fAimHeight", cd.aimHeight);
             c.showPath   = readInt("CameraPath", "bShowPath", cd.showPath ? 1 : 0) != 0;
             c.prismaEditor = readInt("CameraPath", "bPrismaEditor", cd.prismaEditor ? 1 : 0) != 0;
+            c.sceneAutoPlay = readInt("CameraPath", "bSceneAutoPlay", cd.sceneAutoPlay ? 1 : 0) != 0;   // 11-14 round 13
             CamPath::Clamp();
             auto&                 af = FovFx::Get();  // 0.18.0
             const FovFx::Settings ad{};

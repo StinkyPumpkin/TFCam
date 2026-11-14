@@ -164,6 +164,12 @@ namespace CamPathPrisma {
             Bool(j, "fixed", FixedCam::IsOn());
             Bool(j, "watching", FixedCam::Watching());
             Text(j, "lastEvent", s.lastEvent);
+            // 11-14 round 13: SexLab scene paths
+            Bool(j, "sceneIn", s.sceneIn);
+            Text(j, "sceneLabel", s.sceneLabel);
+            Bool(j, "sceneSaved", s.sceneSaved);
+            Bool(j, "scenePlaying", s.scenePlaying);
+            Bool(j, "sceneAuto", set.sceneAutoPlay);
             Text(j, "openKey", KeyText(set.openKey));
             Text(j, "playKey", KeyText(set.playKey));
             Text(j, "addKey", KeyText(set.addKey));
@@ -399,6 +405,17 @@ namespace CamPathPrisma {
                 if (a.size() > 1) CamPath::RequestLoad(a[1]);
             } else if (cmd == "clear") {
                 CamPath::RequestClear();
+            } else if (cmd == "sceneSave") {   // 11-14 round 13: SexLab scene paths
+                CamPath::RequestSceneSave();
+            } else if (cmd == "sceneOpen") {
+                CamPath::RequestSceneOpen();
+            } else if (cmd == "sceneDelete") {
+                CamPath::RequestSceneDelete();
+            } else if (cmd == "scenePlay") {
+                CamPath::RequestScenePlay();
+            } else if (cmd == "sceneAuto") {
+                set.sceneAutoPlay = I(a, 1, 1) != 0;
+                FreeCamMenu::SaveCamPathSettings();
             } else if (cmd == "fix") {
                 FixedCam::RequestFixHere();
                 Close();  // play on
@@ -531,6 +548,7 @@ namespace CamPathPrisma {
 
     void Tick() {
         if (!Available() || !s_open) return;
+        CamPath::RefreshScene();   // 11-14 round 13: the SexLab scene line (main thread)
         if (s_consoleCam >= 0) {  // Console button: back when the console closes (or never opened)
             auto* ui = RE::UI::GetSingleton();
             if (ui && ui->IsMenuOpen(RE::Console::MENU_NAME)) {
