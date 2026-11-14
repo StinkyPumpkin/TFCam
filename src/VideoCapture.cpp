@@ -11,12 +11,14 @@
 #include <mmdeviceapi.h>
 #include <propidl.h>
 #include <shlobj.h>
+#include <strmif.h>
 #include <wrl/client.h>
 #include <wrl/ftm.h>
 #include <wrl/implements.h>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <ctime>
@@ -28,6 +30,14 @@
 #include <thread>
 #include <vector>
 
+// 11-14 round 14: IMFSinkWriterEx (mfreadwrite.h, Windows 8+, hidden by TFCam's Windows 7 target) - the same interface, declared
+// here for GetTransformForStream (the encoder's settings). Refused on Windows 7: the encoder keeps Windows' defaults
+MIDL_INTERFACE("588d72ab-5bc1-496a-8714-b70617141b25")
+TfcSinkWriterEx : public IMFSinkWriter {
+public:
+    virtual HRESULT STDMETHODCALLTYPE GetTransformForStream(DWORD dwStreamIndex, DWORD dwTransformIndex, GUID* pGuidCategory, IMFTransform** ppTransform) = 0;
+};
+
 namespace VideoCapture {
 
     namespace {
@@ -37,6 +47,14 @@ namespace VideoCapture {
         constexpr GUID kContainerType = { 0x150ff23f, 0x4abc, 0x478b, { 0xac, 0x4f, 0xe1, 0x91, 0x6f, 0xba, 0x1c, 0xca } };  // MF_TRANSCODE_CONTAINERTYPE
         constexpr GUID kFmpeg4        = { 0x9ba876f1, 0x419f, 0x4b77, { 0xa1, 0xe0, 0x35, 0x95, 0x9d, 0x9d, 0x40, 0x04 } };  // MFTranscodeContainerType_FMPEG4
         constexpr GUID kHardwareMfts  = { 0xa634a91c, 0x822b, 0x41b9, { 0xa4, 0x94, 0x4d, 0xe4, 0x64, 0x36, 0x12, 0xb0 } };  // MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS
+        // 11-14 round 14 (user: "on the first one there were some artifacts"): the encoder's own settings (codecapi.h), instead of
+        // Windows' defaults (Baseline profile, constant bit rate - the 16:14 4K video smeared her in blocks while she moved)
+        constexpr GUID kRateControl   = { 0x1c0608e9, 0x370c, 0x4710, { 0x8a, 0x58, 0xcb, 0x61, 0x81, 0xc4, 0x24, 0x23 } };  // CODECAPI_AVEncCommonRateControlMode
+        constexpr GUID kMeanBitRate   = { 0xf7222374, 0x2144, 0x4815, { 0xb5, 0x50, 0xa3, 0x7f, 0x8e, 0x12, 0xee, 0x52 } };  // CODECAPI_AVEncCommonMeanBitRate
+        constexpr GUID kGopSize       = { 0x95f31b26, 0x95a4, 0x41aa, { 0x93, 0x03, 0x24, 0x6a, 0x7f, 0xc6, 0xee, 0xf1 } };  // CODECAPI_AVEncMPVGOPSize
+        constexpr GUID kLowLatency    = { 0x9c27891a, 0xed7a, 0x40e1, { 0x88, 0xe8, 0xb2, 0x27, 0x27, 0xa0, 0x24, 0xee } };  // CODECAPI_AVLowLatencyMode
+        constexpr UINT32 kRateUnconstrainedVbr = 2;    // eAVEncCommonRateControlMode_UnconstrainedVBR
+        constexpr UINT32 kProfileHigh          = 100;  // eAVEncH264VProfile_High
         struct LoopbackParams {                  // AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS
             DWORD targetProcessId;
             int   mode;                          // 0 = include the target's process tree
@@ -285,6 +303,7 @@ namespace VideoCapture {
             if (SUCCEEDED(hr)) hr = out->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
             if (SUCCEEDED(hr)) hr = out->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
             if (SUCCEEDED(hr)) hr = out->SetUINT32(MF_MT_AVG_BITRATE, a_s.bitrate);
+            if (SUCCEEDED(hr)) out->SetUINT32(MF_MT_MPEG2_PROFILE, kProfileHigh);   // 11-14 round 14: High, not Baseline
             if (SUCCEEDED(hr)) hr = out->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
             if (SUCCEEDED(hr)) hr = ::MFSetAttributeSize(out.Get(), MF_MT_FRAME_SIZE, a_s.w, a_s.h);
             if (SUCCEEDED(hr)) hr = ::MFSetAttributeRatio(out.Get(), MF_MT_FRAME_RATE, a_s.fps, 1);
@@ -300,6 +319,97 @@ namespace VideoCapture {
             if (SUCCEEDED(hr)) hr = ::MFSetAttributeRatio(in.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
             if (SUCCEEDED(hr)) hr = a_w->SetInputMediaType(a_index, in.Get(), nullptr);
             return hr;
+        }
+
+        // 11-14 round 14: variable bit rate round the mean (fast motion gets the bits it needs), a keyframe every 2 s (a player can
+        // jump there), no low-latency mode. Each setting is a wish: an encoder that refuses one keeps its own (logged)
+        void TuneEncoder(IMFSinkWriter* a_w, DWORD a_index, const Session& a_s) {
+            ComPtr<TfcSinkWriterEx> ex;
+            ComPtr<IMFTransform>    mft;
+            ComPtr<ICodecAPI>       codec;
+            GUID                    category{};
+            if (FAILED(a_w->QueryInterface(IID_PPV_ARGS(&ex))) || FAILED(ex->GetTransformForStream(a_index, 0, &category, &mft)) || !mft ||
+                FAILED(mft.As(&codec))) {
+                SKSE::log::info("VideoCapture: the encoder's settings are not reachable - Windows' defaults");
+                return;
+            }
+            const auto set = [&](const GUID& a_key, UINT32 a_value, const char* a_what) {
+                VARIANT v;
+                ::VariantInit(&v);
+                v.vt    = VT_UI4;
+                v.ulVal = a_value;
+                const HRESULT r = codec->SetValue(&a_key, &v);
+                if (FAILED(r)) SKSE::log::info("VideoCapture: the encoder kept its own {} ({:08X})", a_what, static_cast<unsigned>(r));
+                return SUCCEEDED(r);
+            };
+            const bool vbr = set(kRateControl, kRateUnconstrainedVbr, "rate control");
+            set(kMeanBitRate, a_s.bitrate, "mean bit rate");
+            set(kGopSize, a_s.fps * 2, "keyframe spacing");
+            VARIANT off;
+            ::VariantInit(&off);
+            off.vt      = VT_BOOL;
+            off.boolVal = VARIANT_FALSE;
+            codec->SetValue(&kLowLatency, &off);
+            SKSE::log::info("VideoCapture: encoder - {}, High profile, a keyframe every {} frames", vbr ? "variable bit rate" : "its own rate control", a_s.fps * 2);
+        }
+
+        // 11-14 round 14 (user: "when i play the movie that was saved i can not use the slider to fast forward"): the recording is a
+        // fragmented MP4 (it stays playable if the game crashes mid-recording), which many players cannot seek in. Once it is
+        // finished it is copied - the H.264 and AAC as they are, no new encode - into a plain MP4 that every player seeks in, and
+        // that replaces it. Any failure keeps the fragmented file
+        bool RemuxPlain(const std::filesystem::path& a_file, std::string& a_err) {
+            auto tmp = a_file;
+            tmp.replace_extension(L".seekable.mp4");
+            ComPtr<IMFSourceReader> reader;
+            ComPtr<IMFSinkWriter>   writer;
+            HRESULT                 hr = ::MFCreateSourceReaderFromURL(a_file.c_str(), nullptr, &reader);
+            if (SUCCEEDED(hr)) hr = ::MFCreateSinkWriterFromURL(tmp.c_str(), nullptr, nullptr, &writer);
+            std::vector<std::pair<DWORD, DWORD>> map;   // reader stream -> writer stream
+            for (DWORD s = 0; SUCCEEDED(hr); ++s) {
+                ComPtr<IMFMediaType> type;
+                const HRESULT        t = reader->GetNativeMediaType(s, 0, &type);
+                if (t == MF_E_INVALIDSTREAMNUMBER) break;
+                if (FAILED(t)) {
+                    hr = t;
+                    break;
+                }
+                DWORD out = 0;
+                hr = reader->SetStreamSelection(s, TRUE);
+                if (SUCCEEDED(hr)) hr = reader->SetCurrentMediaType(s, nullptr, type.Get());
+                if (SUCCEEDED(hr)) hr = writer->AddStream(type.Get(), &out);
+                if (SUCCEEDED(hr)) hr = writer->SetInputMediaType(out, type.Get(), nullptr);
+                if (SUCCEEDED(hr)) map.emplace_back(s, out);
+            }
+            if (SUCCEEDED(hr) && map.empty()) hr = E_FAIL;
+            if (SUCCEEDED(hr)) hr = writer->BeginWriting();
+            std::size_t ended = 0;
+            while (SUCCEEDED(hr) && ended < map.size()) {
+                DWORD             stream = 0, flags = 0;
+                LONGLONG          time   = 0;
+                ComPtr<IMFSample> sample;
+                hr = reader->ReadSample(MF_SOURCE_READER_ANY_STREAM, 0, &stream, &flags, &time, &sample);
+                if (FAILED(hr)) break;
+                const auto it = std::find_if(map.begin(), map.end(), [&](const auto& m) { return m.first == stream; });
+                if (sample && it != map.end()) hr = writer->WriteSample(it->second, sample.Get());
+                if (flags & MF_SOURCE_READERF_ENDOFSTREAM) ++ended;
+                if (flags & MF_SOURCE_READERF_ERROR) hr = E_FAIL;
+            }
+            if (SUCCEEDED(hr)) hr = writer->Finalize();
+            writer.Reset();
+            reader.Reset();
+            std::error_code ec;
+            if (FAILED(hr)) {
+                std::filesystem::remove(tmp, ec);
+                a_err = std::format("{:08X}", static_cast<unsigned>(hr));
+                return false;
+            }
+            std::filesystem::remove(a_file, ec);
+            if (!ec) std::filesystem::rename(tmp, a_file, ec);
+            if (ec) {
+                a_err = ec.message();
+                return false;
+            }
+            return true;
         }
 
         HRESULT SoundStream(IMFSinkWriter* a_w, DWORD& a_index) {
@@ -363,6 +473,7 @@ namespace VideoCapture {
                     hr = ::MFCreateSinkWriterFromURL(a_s->path.c_str(), nullptr, attrs.Get(), &writer);
                 }
                 if (SUCCEEDED(hr)) hr = VideoStream(writer.Get(), *a_s, vi);
+                if (SUCCEEDED(hr)) TuneEncoder(writer.Get(), vi, *a_s);   // 11-14 round 14
                 if (SUCCEEDED(hr) && a_s->audio) {
                     sound = SUCCEEDED(SoundStream(writer.Get(), ai));
                     if (!sound) SKSE::log::warn("VideoCapture: the AAC sound stream could not be set up - no sound");
@@ -421,6 +532,16 @@ namespace VideoCapture {
                     const auto name = Name(a_s->path);
                     SKSE::log::info("VideoCapture: saved {} - {} frames, {} dropped ({:08X})", a_s->path.string(), written,
                         a_s->dropped.load(), static_cast<unsigned>(fin));
+                    // 11-14 round 14: a plain MP4 every player can seek in (see RemuxPlain)
+                    SetStatus("Making the video seekable...");
+                    std::string why;
+                    const auto  t0 = std::chrono::steady_clock::now();
+                    if (RemuxPlain(a_s->path, why)) {
+                        SKSE::log::info("VideoCapture: made seekable (a plain MP4) in {:.1f} s",
+                            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+                    } else {
+                        SKSE::log::warn("VideoCapture: could not make it seekable ({}) - the fragmented file is kept (it plays; some players cannot seek in it)", why);
+                    }
                     SetStatus(std::format("Last video: {} ({} frames{})", name, written,
                         a_s->dropped ? std::format(", {} dropped", a_s->dropped.load()) : ""));
                     // 11-14 round 12 (user: "it said saved - where did it save?"): the folder in the message too
