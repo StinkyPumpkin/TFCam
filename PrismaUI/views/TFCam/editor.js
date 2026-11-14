@@ -46,7 +46,7 @@
   var dragHandle = -1;
   var lastKey = '';
   var clearArmed = false;
-  var sceneDelArmed = false;   // 11-14 round 13
+  var sceneDelArmed = false;   // SexLab scene path delete: armed by the first click
   var preview = false;
   var seenEvent = null, flash = '', flashUntil = 0, flashWarn = false;
 
@@ -136,8 +136,8 @@
     renderMenu();
     if (force || key !== lastKey) {
       renderTrack();  // before the card: the card sits over its camera's mark
-      // 11-13 (user: cleared / added cameras only showed after closing and opening the editor): a change that came while a
-      // slider was held is drawn as soon as it is let go - the key is only kept once the card is drawn too
+      // a change that came while a slider was held is drawn as soon as it is let go - the key is only kept once the
+      // card is drawn too (otherwise cleared / added cameras would only show after reopening the editor)
       if (!busy) { renderCard(); lastKey = key; }
     }
     renderTransport();
@@ -152,7 +152,7 @@
     $('btVideo').setAttribute('aria-label', S.video ? 'Stop the video' : 'Record video');
     $('btAdd').disabled = !S.freeCam || S.recordingPath;
     setOn($('btMenu'), menuOpen);
-    setOn($('tgFreeze'), S.frozen);  // on the bar since 10-31: set things up, freeze, play
+    setOn($('tgFreeze'), S.frozen);  // on the bar: set things up, freeze, play
   }
 
   function renderMenu() {
@@ -176,7 +176,7 @@
     fix.textContent = S.fixed ? 'Let the camera go' : 'Fix the camera here';
     fix.dataset.cmd = S.fixed ? 'release' : 'fix';
     $('watch').checked = !!S.watching;
-    // 11-14 round 13: SexLab scene paths - only while a stage of your scene is known
+    // SexLab scene paths - only while a stage of your scene is known
     show($('sceneGroup'), !!S.sceneIn);
     if (S.sceneIn) {
       $('sceneLabel').textContent = S.sceneLabel + (S.scenePlaying ? ' · its path plays (loops until the stage changes)' :
@@ -205,7 +205,7 @@
       seenEvent = ev;  // old news when the editor opens: not shown
     } else if (ev !== seenEvent) {
       seenEvent = ev;
-      // 11-13: "go to <place> first" (a camera made somewhere else) stays longer, in the warning colour
+      // "go to <place> first" (a camera made somewhere else) stays longer, in the warning colour
       flashWarn = / first\b/.test(ev);
       var ms = flashWarn ? 6000 : 2500;
       if (ev) { flash = ev.charAt(0).toUpperCase() + ev.slice(1); flashUntil = Date.now() + ms; setTimeout(function () { if (S) renderToast(); }, ms + 100); }
@@ -494,7 +494,7 @@
       local(f, v); cmd('edit|' + sel + '|' + f + '|' + v); render(true); return;
     }
     if (el.dataset.preset !== undefined) { setSpeed(el.dataset.preset); return; }
-    if (el.id === 'btSceneDel') {   // 11-14 round 13: a second click deletes (as Clear all cameras)
+    if (el.id === 'btSceneDel') {   // a second click deletes (as Clear all cameras)
       if (!sceneDelArmed) { sceneDelArmed = true; el.textContent = 'Click again to delete this stage’s path'; setTimeout(function () { sceneDelArmed = false; el.textContent = 'Delete this stage’s path'; }, 3000); return; }
       sceneDelArmed = false; el.textContent = 'Delete this stage’s path'; cmd('sceneDelete'); return;
     }
@@ -613,11 +613,11 @@
       if (c) cmd('edit|' + sel + '|curve|' + c.curve.map(function (v) { return v.toFixed(3); }).join('|'));
       dragHandle = -1; busy = false; render(true); return;
     }
-    if (busy) { busy = false; if (S) render(true); }   // 11-13: whatever changed meanwhile shows now
+    if (busy) { busy = false; if (S) render(true); }   // whatever changed meanwhile shows now
   });
 
-  // 11-13 (user: "when hovering over the UI buttons can there be a hover tip?"): PrismaUI draws no browser tooltips, so the
-  // page's own - the button's title (or its label), above it, 0.45 s after the pointer rests on it
+  // hover tips: PrismaUI draws no browser tooltips, so the page draws its own - the button's title (or its label),
+  // above it, 0.45 s after the pointer rests on it
   var tipEl = null, tipFor = null, tipT = 0;
   function tipText(el) { return el.getAttribute('title') || el.getAttribute('data-tip') || el.getAttribute('aria-label') || ''; }
   function tipHide() { clearTimeout(tipT); tipFor = null; if (tipEl) tipEl.style.display = 'none'; }
@@ -642,9 +642,8 @@
   });
   document.addEventListener('mousedown', tipHide, true);
 
-  // 11-14 round 12 (user: "i also want an i information icon when hovered over shows all the controls and a small guide on
-  // some complex features ... i meant for the tfcam cam path ui"): the (i) at the end of the bar. Pointing at it shows the
-  // panel, moving off both hides it; a click keeps it up until the next click (or Esc)
+  // the (i) at the end of the bar: every control and a short guide. Pointing at it shows the panel, moving off both
+  // hides it; a click keeps it up until the next click (or Esc)
   var HELP_KEYS = [
     ['While the editor is open', [
       ['Esc / your editor key', 'Close the editor (to fly the free camera)'],
@@ -723,7 +722,7 @@
     var before = S ? S.cams.length : -1;
     S = st;
     if (!scrubbing && !S.playing) scrubAt = Math.min(scrubAt, S.total || 0);
-    // 11-13: the camera count reaches TFCam.log ("CamPathPrisma page: ...") when it changes - the next test shows where an update stops
+    // the camera count reaches TFCam.log ("CamPathPrisma page: ...") when it changes - the next test shows where an update stops
     if (S.cams.length !== before) console.info('TFCam editor: ' + S.cams.length + ' camera(s) on the page');
     render(S.cams.length !== before);
   };
@@ -805,7 +804,7 @@
       rate: 1, atCam: -1, progress: 0, total: 0, freeCam: !has('off'), frozen: false, clean: false, recordingPath: false, video: false,
       videoStatus: 'not recording', fxStatus: 'idle', fixed: false, watching: false, lastEvent: '', openKey: '1', playKey: '', addKey: '', videoKey: '',
       saved: ['whiterun', 'Before clearing'], cams: cams,
-      // 11-14 round 13: #scene = in a SexLab scene (#scene,saved: its stage has a saved scene path)
+      // #scene = in a SexLab scene (#scene,saved: its stage has a saved scene path)
       sceneIn: has('scene'), sceneLabel: 'Missionary (Billyy) - stage 2', sceneSaved: has('saved'), scenePlaying: false, sceneAuto: true
     };
     S.total = layout().total;

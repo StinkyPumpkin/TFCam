@@ -5,6 +5,7 @@
   <requiredInstallFiles>
     <file source="LICENSE.txt" destination="LICENSE.txt" />
     <file source="NOTICE.txt" destination="NOTICE.txt" />
+    <folder source="PrismaUI" destination="PrismaUI" />
   </requiredInstallFiles>
 
   <installSteps order="Explicit">
