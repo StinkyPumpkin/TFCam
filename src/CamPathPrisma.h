@@ -18,6 +18,7 @@ namespace CamPathPrisma {
     void Toggle();  // any thread
     void Open();    // main thread
     void Close();   // main thread
+    void CloseByUser(const char* a_how);  // main thread: the user closed it (Esc, Tab, its key, the page) - a playing path ends too
 
     // TFCam's input sink, first: true = the editor has focus, eat the input (its own keys are handled here).
     bool OnInput(RE::InputEvent* const* a_events);

@@ -127,6 +127,8 @@ namespace CamPath {
     bool OwnsMotion();  // playing (paused included)
     bool Playing();
     void Stop(std::string_view a_why);
+    // 11-14 round 14: the editor was closed by the user - a playing or paused path ends (not a SexLab scene path). Main thread
+    void StopForEditorClose(std::string_view a_how);
     bool OnHotkey(std::uint32_t a_code);  // keyboard key-down, no menu open; true = a camera path key
     void OnFreeCamEnd();
     void OnGameLoad();

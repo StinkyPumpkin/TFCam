@@ -2062,6 +2062,11 @@ namespace CamPath {
         EndPlay(a_why);
     }
 
+    void StopForEditorClose(std::string_view a_how) {
+        s_pendingPlay = false;
+        if (s_play.on && !s_play.scene) EndPlay(std::format("the editor was closed ({})", a_how));
+    }
+
     void ToggleEditor() {
         if (s_settings.prismaEditor && CamPathPrisma::Available()) {
             CamPathPrisma::Toggle();

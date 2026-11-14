@@ -322,7 +322,7 @@ namespace CamPathPrisma {
             if (cmd == "ready") {
                 s_dom = true;
             } else if (cmd == "close") {
-                Close();
+                CloseByUser("the page");
             } else if (cmd == "typing") {
                 s_typing = I(a, 1, 0) != 0;
             } else if (cmd == "edit") {
@@ -494,7 +494,7 @@ namespace CamPathPrisma {
     void Toggle() {
         Queue([] {
             if (s_open) {
-                Close();
+                CloseByUser("the editor key");
             } else if (NowMs() - s_closedAt > 300) {  // the key press that just closed it
                 Open();
             }
@@ -512,6 +512,15 @@ namespace CamPathPrisma {
         Show();
         StartPump();  // 11-14: the page's state every 0.1 s while open
         SKSE::log::info("CamPathPrisma: editor open");
+    }
+
+    // 11-14 round 14 (user: "while i was playing a camera path and paused it then closed the cam path ui the view is locked - i can
+    // not look around, it just shakes the view; same for if it is playing"): closing the editor yourself (Esc, Tab, its key, the page)
+    // ends a playing / paused path - the camera stays where it is and the mouse looks round again. A SexLab scene path plays on
+    void CloseByUser(const char* a_how) {
+        if (!Available() || !s_open) return;
+        CamPath::StopForEditorClose(a_how);
+        Close();
     }
 
     void Close() {
@@ -533,8 +542,9 @@ namespace CamPathPrisma {
             if (!btn || !btn->IsDown() || btn->GetDevice() != RE::INPUT_DEVICE::kKeyboard) continue;
             const int code = static_cast<int>(btn->GetIDCode());
             if (s_typing) continue;  // typing a path name: the keys are the page's
-            if (code == 1 || (set.openKey && code == set.openKey)) {  // Esc / the editor's key
-                Queue([] { Close(); });
+            // 11-14 round 14 (user: "tab should close the cam path ui - it just flashes some other view for a second"): Tab too
+            if (code == 1 || code == 0x0F || (set.openKey && code == set.openKey)) {  // Esc / Tab / the editor's key
+                Queue([code] { CloseByUser(code == 1 ? "Esc" : (code == 0x0F ? "Tab" : "the editor key")); });
             } else if (set.playKey && code == set.playKey) {
                 Queue([] { Handle("play"); });
             } else if (set.addKey && code == set.addKey) {
