@@ -110,6 +110,17 @@ namespace VideoCapture {
             s_status = std::move(a_text);
         }
 
+        // 11-14 round 12 (user: "lets test it before we try and fix it" - is the 4K recording heavy on the game?): what a
+        // recording costs the game's own thread (OnFrame: the conversion calls, the read back and its copy), and the game's
+        // frame rate while it runs. Main thread only; logged when the recording stops
+        struct Cost {
+            double   sum = 0.0, max = 0.0, readSum = 0.0, readMax = 0.0;
+            uint64_t n = 0, reads = 0;
+            LONGLONG firstQpc = 0, lastQpc = 0;
+        };
+        Cost s_cost;
+        double MsSince(LONGLONG a_qpc) { return static_cast<double>(Qpc() - a_qpc) * 1000.0 / QpcFreq(); }
+
         // 11-14 round 12: the folder setting (see VideoCapture.h), guarded: the menu writes it while a recording may start
         std::mutex  s_folderLock;
         std::string s_folder;
@@ -525,6 +536,7 @@ namespace VideoCapture {
 
         // A filled slot's picture to the writer. a_wait: block for the GPU (stopping), else try again next frame.
         void ReadBack(Slot& a_sl, bool a_wait) {
+            const LONGLONG           t0 = Qpc();
             auto*                    c = g.ctx;
             D3D11_MAPPED_SUBRESOURCE my{}, muv{};
             const UINT               flags = a_wait ? 0 : D3D11_MAP_FLAG_DO_NOT_WAIT;
@@ -545,6 +557,12 @@ namespace VideoCapture {
             c->Unmap(a_sl.uv.Get(), 0);
             c->Unmap(a_sl.y.Get(), 0);
             a_sl.filled = false;
+            {   // 11-14 round 12: the read back + copy, on the game's thread
+                const double ms = MsSince(t0);
+                s_cost.readSum += ms;
+                s_cost.readMax = (std::max)(s_cost.readMax, ms);
+                ++s_cost.reads;
+            }
             {
                 std::scoped_lock lock(s.m);
                 if (s.video.size() >= kMaxQueued) {
@@ -572,6 +590,15 @@ namespace VideoCapture {
             ReleaseGpu();
             s_active = false;
             SKSE::log::info("VideoCapture: stopping ({}) - {} frames sent, {} dropped", a_why, ses->frames.load(), ses->dropped.load());
+            // 11-14 round 12: what it cost the game (see Cost)
+            if (s_cost.n > 1) {
+                const double gameMs = static_cast<double>(s_cost.lastQpc - s_cost.firstQpc) * 1000.0 / QpcFreq() / static_cast<double>(s_cost.n - 1);
+                SKSE::log::info("VideoCapture: cost on the game's thread {}x{} - {:.2f} ms a game frame on average, {:.2f} ms at most; the read back "
+                                "and copy {:.2f} ms average, {:.2f} ms at most ({} frames); the game ran at {:.1f} fps ({:.2f} ms a frame) while recording",
+                    ses->w, ses->h, s_cost.sum / static_cast<double>(s_cost.n), s_cost.max, s_cost.reads ? s_cost.readSum / static_cast<double>(s_cost.reads) : 0.0,
+                    s_cost.readMax, s_cost.reads, gameMs > 0.0 ? 1000.0 / gameMs : 0.0, gameMs);
+            }
+            s_cost = Cost{};
             if (!ses->failed) SetStatus("Saving the video...");
         }
     }
@@ -621,7 +648,23 @@ namespace VideoCapture {
         }
     }
 
+    // 11-14 round 12: timed (see Cost) around the work below
+    static void OnFrameWork(ID3D11ShaderResourceView* a_src, unsigned a_w, unsigned a_h);
     void OnFrame(ID3D11ShaderResourceView* a_src, unsigned a_w, unsigned a_h) {
+        if (!s_session && !s_want) return;
+        const LONGLONG t0  = Qpc();
+        const bool     had = s_session != nullptr;   // the starting frame (textures made) is left out
+        OnFrameWork(a_src, a_w, a_h);
+        if (had && s_session) {   // still recording (End() logged and cleared the costs when it stopped)
+            const double ms = MsSince(t0);
+            s_cost.sum += ms;
+            s_cost.max = (std::max)(s_cost.max, ms);
+            if (!s_cost.n) s_cost.firstQpc = t0;
+            s_cost.lastQpc = t0;
+            ++s_cost.n;
+        }
+    }
+    static void OnFrameWork(ID3D11ShaderResourceView* a_src, unsigned a_w, unsigned a_h) {
         if (!s_session) {
             if (!s_want) return;
             if (!Begin(a_w, a_h)) {
