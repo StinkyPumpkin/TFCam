@@ -110,14 +110,45 @@ namespace VideoCapture {
             s_status = std::move(a_text);
         }
 
-        std::filesystem::path VideosFolder() {
+        // 11-14 round 12: the folder setting (see VideoCapture.h), guarded: the menu writes it while a recording may start
+        std::mutex  s_folderLock;
+        std::string s_folder;
+
+        std::filesystem::path OldVideosFolder() {  // Videos\TFCam: before 11-14, now only if the chosen folder can't be made
             PWSTR raw = nullptr;
             std::filesystem::path out;
             if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_Videos, 0, nullptr, &raw)) && raw) out = std::filesystem::path(raw) / L"TFCam";
             if (raw) ::CoTaskMemFree(raw);
             if (out.empty()) out = std::filesystem::path(L"Data\\SKSE\\Plugins\\TFCam\\Videos");
+            return out;
+        }
+
+        // the chosen folder as a full path: relative ones from the game's folder (through MO2's file system the same as
+        // the camera paths' Data\SKSE\Plugins\TFCam\Paths, so a new file under Data lands in overwrite)
+        std::filesystem::path ChosenFolder() {
+            std::string f;
+            {
+                std::scoped_lock lock(s_folderLock);
+                f = s_folder;
+            }
+            std::filesystem::path out = f.empty() ? std::filesystem::path(L"Data\\Movies") : std::filesystem::path(f);
+            if (out.is_relative()) {
+                wchar_t     buf[MAX_PATH] = {};
+                const DWORD len           = ::GetFullPathNameW(out.c_str(), MAX_PATH, buf, nullptr);
+                if (len > 0 && len < MAX_PATH) out = std::filesystem::path(std::wstring(buf, len));
+            }
+            return out;
+        }
+
+        std::filesystem::path VideosFolder() {
+            auto            out = ChosenFolder();
             std::error_code ec;
             std::filesystem::create_directories(out, ec);
+            if (!std::filesystem::is_directory(out, ec)) {
+                SKSE::log::warn("VideoCapture: the video folder {} could not be made - this video goes to the Videos folder instead", out.string());
+                out = OldVideosFolder();
+                std::filesystem::create_directories(out, ec);
+            }
             return out;
         }
 
@@ -381,7 +412,9 @@ namespace VideoCapture {
                         a_s->dropped.load(), static_cast<unsigned>(fin));
                     SetStatus(std::format("Last video: {} ({} frames{})", name, written,
                         a_s->dropped ? std::format(", {} dropped", a_s->dropped.load()) : ""));
-                    Notify("Video saved: Videos\\TFCam\\" + name);
+                    // 11-14 round 12 (user: "it said saved - where did it save?"): the folder in the message too
+                    const auto dir = a_s->path.parent_path().u8string();
+                    Notify("Video saved: " + std::string(dir.begin(), dir.end()) + "\\" + name);
                 }
             }
             ::MFShutdown();
@@ -544,6 +577,23 @@ namespace VideoCapture {
     }
 
     Settings& Get() { return s_settings; }
+
+    std::string Folder() {
+        std::scoped_lock lock(s_folderLock);
+        return s_folder;
+    }
+    void SetFolder(std::string a_folder) {
+        // trimmed, without quotes or a trailing slash (a pasted Explorer path)
+        auto& f = a_folder;
+        while (!f.empty() && (f.back() == ' ' || f.back() == '"' || ((f.back() == '\\' || f.back() == '/') && f.size() > 3))) f.pop_back();
+        while (!f.empty() && (f.front() == ' ' || f.front() == '"')) f.erase(f.begin());
+        std::scoped_lock lock(s_folderLock);
+        s_folder = std::move(f);
+    }
+    std::string FolderPath() {
+        const auto u8 = ChosenFolder().u8string();
+        return std::string(u8.begin(), u8.end());
+    }
 
     void Clamp() {
         auto& s   = s_settings;

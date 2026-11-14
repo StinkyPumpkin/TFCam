@@ -26,6 +26,13 @@ namespace VideoCapture {
     Settings& Get();
     void      Clamp();
 
+    // 11-14 round 12 (user: "they should go in overwrite/Movies folder - or we ask them for a path in settings"): where the
+    // videos go. "" = Data\Movies (under MO2 a new file there lands in overwrite\Movies); a relative path is from the game's
+    // folder. Any thread (the menu edits it, the main thread reads it when a recording starts)
+    std::string Folder();
+    void        SetFolder(std::string a_folder);
+    std::string FolderPath();  // the full folder the next video goes to
+
     bool Recording();    // any thread: a recording runs or is starting
     bool WantsFrames();  // FrameFx's hook: send the picture
     void RequestStart(std::string_view a_why);  // any thread

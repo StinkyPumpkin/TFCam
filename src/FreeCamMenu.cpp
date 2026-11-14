@@ -408,6 +408,7 @@ namespace FreeCamMenu {
         WriteINIInt("Video", "bSound", v.audio ? 1 : 0);
         WriteINIInt("Video", "bWithCameraPath", v.withPath ? 1 : 0);
         WriteINIInt("Video", "iKey", v.key);
+        WriteINIString("Video", "sFolder", VideoCapture::Folder().c_str());   // 11-14 round 12: "" = Data\Movies
     }
 
     // 0.16.0 conversation camera, TFCam.ini [Conversation].
@@ -1134,7 +1135,7 @@ namespace FreeCamMenu {
 
         ImGuiMCP::SeparatorText("Video");
         ImGuiMCP::TextWrapped("Records the picture - with the effects below, without the HUD, menus or these windows - as an MP4 "
-                              "(H.264 with the game's own sound) in your Videos folder, under TFCam.");
+                              "(H.264 with the game's own sound) in the folder below.");
         if (ImGuiMCP::Button(VideoCapture::Recording() ? "Stop recording##vcToggle" : "Start recording##vcToggle")) VideoCapture::Toggle("menu");
         ImGuiMCP::SameLine();
         ImGuiMCP::TextColored(grey, "%s", VideoCapture::Status().c_str());
@@ -1161,6 +1162,29 @@ namespace FreeCamMenu {
         ImGuiMCP::TextColored(grey, "Only Skyrim's own sound (Windows 10 2004 or newer) - not Discord or a music player.");
         changed |= ImGuiMCP::Checkbox("Start and stop with Camera Path playback##vcPath", &vc.withPath);
         changed |= KeyBindField("vcKey", "Start / stop recording", &vc.key);
+        // 11-14 round 12 (user: "they should go in overwrite/Movies folder - or we ask them for a path in settings")
+        {
+            static char s_folderBuf[MAX_PATH] = {};
+            static bool s_folderInit          = false;
+            if (!s_folderInit) {
+                snprintf(s_folderBuf, sizeof(s_folderBuf), "%s", VideoCapture::Folder().c_str());
+                s_folderInit = true;
+            }
+            ImGuiMCP::SetNextItemWidth(320.0f);
+            if (ImGuiMCP::InputText("Folder##vcFolder", s_folderBuf, sizeof(s_folderBuf), 0, nullptr, nullptr)) {
+                VideoCapture::SetFolder(s_folderBuf);
+                changed = true;
+            }
+            ImGuiMCP::SameLine();
+            if (ImGuiMCP::Button("Default##vcFolderDef")) {
+                s_folderBuf[0] = '\0';
+                VideoCapture::SetFolder("");
+                changed = true;
+            }
+            ImGuiMCP::TextColored(grey, "Empty = Data\\Movies (with MO2 the videos land in overwrite\\Movies). A full path (D:\\Clips) "
+                                        "or one from the game's folder.");
+            ImGuiMCP::TextColored(grey, "Saves to: %s", VideoCapture::FolderPath().c_str());
+        }
         ImGuiMCP::TextColored(grey, "Size, rate, quality and sound apply to the next recording.");
 
         ImGuiMCP::SeparatorText("Motion blur");
@@ -1778,6 +1802,11 @@ namespace FreeCamMenu {
             vf.audio    = readInt("Video", "bSound", vd.audio ? 1 : 0) != 0;
             vf.withPath = readInt("Video", "bWithCameraPath", vd.withPath ? 1 : 0) != 0;
             vf.key      = readInt("Video", "iKey", vd.key);
+            {   // 11-14 round 12: the video folder ("" = Data\Movies)
+                char folder[MAX_PATH] = {};
+                GetPrivateProfileStringA("Video", "sFolder", "", folder, sizeof(folder), ini);
+                VideoCapture::SetFolder(folder);
+            }
             VideoCapture::Clamp();
             SKSE::log::info("FovFx: action FOV {}", af.enabled ? "on" : "off");
             SKSE::log::info("CamBlur: background blur {} ({}, strength {:.2f}, sharp middle {:.2f}{})", b.enabled ? "on" : "off",
