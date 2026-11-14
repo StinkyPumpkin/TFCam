@@ -768,7 +768,9 @@ namespace FreeCam {
             // Block the mouse-button-driven vertical at its source.
             // LMB/RMB are always remapped — vanilla up/down is replaced by
             // the remap system (user can assign Move Up/Down if desired).
-            if (driving && !AnyMenuOpen() && (lmb || rmb) && a_this) {
+            // 11-14 (user: right-click in the Camera Path editor still moved the camera down): with the editor counted as a menu
+            // this zeroing was skipped too, so the GAME's own mouse-button up / down ran - it is always zeroed while the editor is up
+            if (driving && (!AnyMenuOpen() || CamPathPrisma::IsOpen()) && (lmb || rmb) && a_this) {
                 auto* fcs              = AsFreeCam(a_this);
                 fcs->verticalDirection = 0;
                 fcs->zUpDown.x         = 0.0f;
@@ -1483,6 +1485,15 @@ namespace FreeCam {
                         btn->SetUserEvent("");
                         continue;
                     }
+                }
+
+                // 11-14: the Camera Path editor is up - its clicks are the page's (PrismaUI has its own input); the game's
+                // free camera gets no mouse button (its up / down) and no remapped action
+                if (CamPathPrisma::IsOpen() && device == RE::INPUT_DEVICE::kMouse &&
+                    (code == RE::BSWin32MouseDevice::Key::kLeftButton || code == RE::BSWin32MouseDevice::Key::kRightButton)) {
+                    if (driving) ZeroFreeCamVertical();
+                    ConsumeButton(btn);
+                    continue;
                 }
 
                 // LMB/RMB in free cam: when blockAttacks is on, consume the
