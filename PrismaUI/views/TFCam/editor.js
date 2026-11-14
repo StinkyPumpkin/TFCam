@@ -315,11 +315,12 @@
     var h = check('zoomTrick', 'Dolly (the pivot keeps its size, the background stretches)', c.zoomTrick);
     if (c.zoomTrick) {
       h += '<div class="indent">' + slider('dolly', 'Pull back / push in while waiting', c,
-        c.pivotKind < 0 ? 'Needs a pivot.' : (c.wait <= 0 ? 'Needs a wait here.' : '')) + '</div>';
+        c.wait <= 0 ? 'Needs a wait here.' : (c.pivotKind < 0 ? 'No pivot: what is at your distance keeps its size.' : '')) + '</div>';
     }
     h += slider('shake', 'Camera shake', c);
     h += check('blur', 'Blur the background', c.blur);
-    if (c.blur) h += '<div class="indent">' + slider('blurStrength', 'How much', c) + '</div>';
+    if (c.blur) h += '<div class="indent">' + slider('blurStrength', 'How much', c,
+      c.pivotKind < 0 ? 'No pivot: what is at your distance stays sharp.' : '') + '</div>';
     return h;
   }
 

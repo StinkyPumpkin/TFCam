@@ -902,10 +902,31 @@ namespace CamPath {
 
         // Dolly while waiting (zoom trick on, 10-31): the camera pushes in on the pivot (+, up to 70% of the way there)
         // or pulls back (-, up to twice as far) over the wait. a_w = 0..1 of it; the move on blends back onto its path.
+        // 11-14 round 12 (user: "Dolly on a waiting camera ... did not seem to work - and blur background also did not seem to
+        // work"): both needed the camera's own pivot, and a new camera has none (camera 3 of the user's path: Dolly 100%, a 3.9 s
+        // wait, blur on, no pivot - nothing happened, and the blur said nothing). Without a pivot the subject is the point on the
+        // camera's own line of sight at your depth (you in front of it), else 300 units out: the dolly pushes along that line and
+        // keeps that depth's size, the blur keeps that depth sharp
+        RE::NiPoint3 SubjectOf(int a_k, const RE::NiPoint3& a_from, const RE::NiPoint3& a_fwd) {
+            if (HavePivot(a_k)) return AimPoint(a_k);
+            float        depth = 300.0f;
+            RE::NiPoint3 you{}, youAim{};
+            float        heading = 0.0f;
+            if (PivotRaw(0, 0, you, heading, nullptr, kBoneMiddle, &youAim)) {
+                const float d = Dot(youAim - a_from, a_fwd);
+                if (d > 50.0f) depth = (std::min)(d, 3000.0f);
+            }
+            return a_from + a_fwd * depth;
+        }
+        // the subject of camera a_k from where it was put, looking the way it was set
+        RE::NiPoint3 SetSubjectOf(int a_k) {
+            return SubjectOf(a_k, s_play.world[a_k], Forward(SetYaw(a_k), s_play.cams[a_k].pitch));
+        }
+
         RE::NiPoint3 DollyOffset(int a_k, float a_w) {
             const auto& c = s_play.cams[a_k];
-            if (!c.zoomTrick || c.dolly == 0.0f || c.wait <= 0.0f || !HavePivot(a_k)) return {};
-            return (AimPoint(a_k) - s_play.world[a_k]) * ((c.dolly > 0.0f ? 0.7f * c.dolly : c.dolly) * a_w);
+            if (!c.zoomTrick || c.dolly == 0.0f || c.wait <= 0.0f) return {};
+            return (SetSubjectOf(a_k) - s_play.world[a_k]) * ((c.dolly > 0.0f ? 0.7f * c.dolly : c.dolly) * a_w);
         }
 
         Target Evaluate() {
@@ -920,11 +941,12 @@ namespace CamPath {
                 out.roll      = ck.roll;
                 out.fov       = s_play.fovCarry;
                 if (dolly.x != 0.0f || dolly.y != 0.0f || dolly.z != 0.0f) {
-                    out.fov = KeepSizeFov(s_play.fovCarry, (std::max)(Length(AimPoint(k) - s_play.world[k]), 1.0f), Length(AimPoint(k) - out.pos));
+                    const RE::NiPoint3 subject = SetSubjectOf(k);
+                    out.fov = KeepSizeFov(s_play.fovCarry, (std::max)(Length(subject - s_play.world[k]), 1.0f), Length(subject - out.pos));
                 }
                 out.blur      = CamBlurOf(k);
-                out.focus     = AimPoint(k);
-                out.haveFocus = HavePivot(k);
+                out.focus     = HavePivot(k) ? AimPoint(k) : SubjectOf(k, out.pos, out.fwd);   // 11-14 round 12: no pivot = your depth
+                out.haveFocus = true;
                 out.shake     = ck.shake;
                 return out;
             }
@@ -973,6 +995,9 @@ namespace CamPath {
                 out.haveFocus = true;
             } else if (HavePivot(k) || HavePivot(next)) {
                 out.focus     = HavePivot(k) ? AimPoint(k) : AimPoint(next);
+                out.haveFocus = true;
+            } else {
+                out.focus     = SubjectOf(k, seenFrom, out.fwd);   // 11-14 round 12: no pivot either end = your depth on its line of sight
                 out.haveFocus = true;
             }
             return out;

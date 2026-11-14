@@ -770,7 +770,10 @@ namespace FreeCam {
             // the remap system (user can assign Move Up/Down if desired).
             // 11-14 (user: right-click in the Camera Path editor still moved the camera down): with the editor counted as a menu
             // this zeroing was skipped too, so the GAME's own mouse-button up / down ran - it is always zeroed while the editor is up
-            if (driving && (!AnyMenuOpen() || CamPathPrisma::IsOpen()) && (lmb || rmb) && a_this) {
+            // 11-14 round 12 (user: "it stops fast but it still moves down each click slightly"): the frame the button comes up
+            // GetAsyncKeyState already says up while the game's own down from the press is still set (its release is read a frame
+            // later), so that one frame moved - while the editor is up it is zeroed every frame, pressed or not
+            if (driving && (!AnyMenuOpen() || CamPathPrisma::IsOpen()) && (lmb || rmb || CamPathPrisma::IsOpen()) && a_this) {
                 auto* fcs              = AsFreeCam(a_this);
                 fcs->verticalDirection = 0;
                 fcs->zUpDown.x         = 0.0f;
