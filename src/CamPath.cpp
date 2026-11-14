@@ -402,7 +402,19 @@ namespace CamPath {
             std::scoped_lock lock(s_lock);
             if (s_loaded) return;
             s_loaded = true;
-            if (ReadLocked("Current")) SKSE::log::info("CamPath: loaded the current path - {} camera(s)", s_cams.size());
+            // 11-14 round 13 (user: "after loading a save the camera path should not show a previous saved path - it should be
+            // blank; while playing, a path that is set stays in the UI until removed or the game closes"): each game session starts
+            // blank (later loads in the same session keep the path - this runs once). The last session's path is not lost: it is kept
+            // as the saved path "Last session" (the editor's Open list), before the first edit writes Current over it
+            if (ReadLocked("Current") && !s_cams.empty()) {
+                const auto n = s_cams.size();
+                WriteLocked("Last session");
+                SKSE::log::info("CamPath: the last session's path ({} camera(s)) is kept as \"Last session\" - this session starts blank", n);
+            }
+            s_cams.clear();
+            s_follow = false;
+            s_loop   = false;
+            WriteLocked("Current");
             RefreshSavedLocked();
         }
 
