@@ -616,6 +616,7 @@
   }
   document.addEventListener('mouseover', function (e) {
     var el = e.target.closest && e.target.closest('button, .mark, select');
+    if (el && el.id === 'btInfo') el = null;   // its own panel is the tip
     if (el === tipFor) return;
     tipHide();
     if (!el || !tipText(el)) return;
@@ -624,6 +625,71 @@
     tipFor = el; tipT = setTimeout(function () { if (tipFor === el) tipShow(el); }, 450);
   });
   document.addEventListener('mousedown', tipHide, true);
+
+  // 11-14 round 12 (user: "i also want an i information icon when hovered over shows all the controls and a small guide on
+  // some complex features ... i meant for the tfcam cam path ui"): the (i) at the end of the bar. Pointing at it shows the
+  // panel, moving off both hides it; a click keeps it up until the next click (or Esc)
+  var HELP_KEYS = [
+    ['While the editor is open', [
+      ['Esc / your editor key', 'Close the editor (to fly the free camera)'],
+      ['Your Play key', 'Play / pause'],
+      ['Your Add camera key', 'Add a camera where the free camera is'],
+      ['Your Video key', 'Start / stop recording video'],
+      ['Other keys', 'Stay out of the game while the editor is open'],
+      ['', 'The keys are set in TFCam\'s settings (Camera Path, Video)']]],
+    ['The bar', [
+      ['◀  /  ▶', 'Play backwards / play or pause'],
+      ['■', 'Stop'],
+      ['Snowflake', 'Freeze the world (people, hair, grass); again lets it go'],
+      ['Timeline', 'Click or drag to jump along the path'],
+      ['Numbered circle', 'Pick that camera and jump there; again closes its card'],
+      ['Slow down here', 'Paused part way along a move: slow that part'],
+      ['+', 'Add a camera where the free camera is'],
+      ['●', 'Record video'],
+      ['…', 'The path menu: open, save, loop, follow, smoothness...']]],
+    ['A camera\'s card', [
+      ['Go here', 'Fly the free camera to this camera'],
+      ['Move camera here', 'This camera takes the free camera\'s spot and view'],
+      ['More settings', 'Every setting, in the Shot and Move tabs'],
+      ['Bin', 'Delete this camera'],
+      ['Pick / Me / Console / None', 'The pivot: what the screen centre points at / you / who you click in the console / nothing']]]
+  ];
+  var HELP_GUIDE = [
+    ['Making a path', 'Press Esc, fly the free camera to the first spot, press your Add camera key (or open the editor and press +). Do the same for each spot, then Play. The numbered circles on the timeline are your cameras.'],
+    ['Pivot', 'What a camera keeps in view and turns round. Set it in More settings > Shot. Follow moving (in the menu) lets the cameras ride along when the pivot walks.'],
+    ['Moves', 'Each camera says how it goes on to the next: Straight, Curve, Orbit (circles the pivot - which way round and extra full turns) or Cut (jumps, like a film cut). Bend left / right and up / down shape a straight move.'],
+    ['Speed', 'More settings > Move: drag the round handles on the speed curve - steep is fast, flat is slow; Reset goes back to automatic. To slow just part of a move: play, pause where it should slow, press Slow down here.'],
+    ['While a camera waits', 'Wait here holds the camera. Dolly: the camera pushes in or pulls back while the zoom keeps the pivot the same size, so only the background stretches. Shake and Blur the background work there too. Without a pivot, whatever is at your distance is the subject.'],
+    ['Saving', 'The menu (…): Save as keeps the path under a name, the list above it opens a saved one. Clear all cameras asks for a second click.']
+  ];
+  var helpPinned = false;
+  function helpHtml() {
+    var h = '<div class="hcols">';
+    HELP_KEYS.forEach(function (sec) {
+      h += '<div class="hsec"><div class="cap">' + esc(sec[0]) + '</div>';
+      sec[1].forEach(function (r) { h += '<div class="hrow' + (r[0] ? '' : ' note') + '"><b>' + esc(r[0]) + '</b><span>' + esc(r[1]) + '</span></div>'; });
+      h += '</div>';
+    });
+    h += '</div><div class="cap">How things work</div><div class="hguide">';
+    HELP_GUIDE.forEach(function (g) { h += '<p><b>' + esc(g[0]) + '.</b> ' + esc(g[1]) + '</p>'; });
+    return h + '</div>';
+  }
+  function showHelp(on) {
+    var p = $('help');
+    if (on && p.style.display === 'none') p.innerHTML = helpHtml();
+    p.style.display = on ? 'block' : 'none';
+    $('btInfo').classList.toggle('on', !!on && helpPinned);
+  }
+  document.addEventListener('mouseover', function (e) {
+    if (!e.target.closest) return;
+    if (e.target.closest('#btInfo') || e.target.closest('#help')) showHelp(true);
+    else if (!helpPinned) showHelp(false);
+  });
+  document.addEventListener('click', function (e) {
+    if (!e.target.closest || !e.target.closest('#btInfo')) return;
+    helpPinned = !helpPinned; showHelp(helpPinned);
+  }, true);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && helpPinned) { helpPinned = false; showHelp(false); } }, true);
 
   // text boxes: the game's keys stay out while typing
   document.addEventListener('focusin', function (e) { if (e.target.tagName === 'INPUT' && e.target.type === 'text') cmd('typing|1'); });
