@@ -8,6 +8,7 @@ Zip layout (the folder names are the ones fomod/ModuleConfig.xml installs from):
     fomod/info.xml, fomod/ModuleConfig.xml
     LICENSE.txt   the original TFCam GPL-3.0 license, unchanged
     NOTICE.txt
+    PrismaUI/views/TFCam/*              the Camera Path editor page (0.19.0; used when PrismaUI is installed)
     TFCam ALL/SKSE/Plugins/TFCam.dll    SE 1.5.97 + AE 1.6.x / 1.7.x + VR in one DLL
     TFCam SE/SKSE/Plugins/TFCam.dll     Skyrim SE 1.5.97 only
     TFCam AE/SKSE/Plugins/TFCam.dll     Skyrim AE 1.6.x and 1.7.x only
@@ -39,7 +40,10 @@ for xml_file in ("fomod/info.xml", "fomod/ModuleConfig.xml"):
 # Every folder the FOMOD installs from must be in the zip.
 config = (root / "fomod/ModuleConfig.xml").read_text(encoding="utf-8")
 sources = set(re.findall(r'source="([^"]+)"', config))
-expected = {"LICENSE.txt", "NOTICE.txt", *dlls}
+expected = {"LICENSE.txt", "NOTICE.txt", "PrismaUI", *dlls}
+views = sorted(p for p in (root / "PrismaUI/views/TFCam").iterdir() if p.is_file())
+if {p.name for p in views} != {"index.html", "editor.css", "editor.js"}:
+    sys.exit(f"PrismaUI/views/TFCam holds {[p.name for p in views]}, expected index.html, editor.css, editor.js")
 if sources != expected:
     sys.exit(f"ModuleConfig.xml installs from {sorted(sources)} but the zip holds {sorted(expected)}")
 
@@ -50,6 +54,8 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
     z.write(root / "fomod/ModuleConfig.xml", "fomod/ModuleConfig.xml")
     z.write(root / "LICENSE", "LICENSE.txt")
     z.write(root / "NOTICE.txt", "NOTICE.txt")
+    for p in views:
+        z.write(p, f"PrismaUI/views/TFCam/{p.name}")
     for name, path in dlls.items():
         z.write(path, f"{name}/SKSE/Plugins/TFCam.dll")
 with zipfile.ZipFile(out) as z:
