@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <limits>
 #include <mutex>
 #include <string>
 
@@ -25,6 +26,7 @@ namespace CamCollision {
         bool         s_req = false;
         RE::NiPoint3 s_pivot{};
         const char*  s_who = "";
+        bool         s_ground = false;  // 11-17: this frame's driver wants the ground probe
 
         RE::NiPoint3 s_off{};  // 0.15.2: how far the camera is moved off what the driver wrote (slid along walls), now
         double s_holdUntil = 0.0;
@@ -249,6 +251,36 @@ namespace CamCollision {
             return out;
         }
 
+        // 11-17 ground: the scene orbit's own floor is the subject's feet height, a flat plane - on a slope the ground under the
+        // camera rises above it and the camera (or its near plane) went into the hill, while the walls only look for something
+        // between the look point and the camera. Probe straight down at the camera and at the middle of its near plane, from
+        // the look point's height (or the camera's, whichever is higher, so a camera already under the ground still finds the
+        // surface above it) to a_clear below the camera. Only floor-like surfaces count (normal pointing up). Returns the
+        // lowest height the camera may have, or -inf when there is no ground within reach.
+        float GroundFloor(RE::bhkWorld* a_world, const RE::NiPoint3& a_pivot, const RE::NiPoint3& a_cam, float a_clear,
+            float a_near, Hit& a_hit) {
+            float              best = -std::numeric_limits<float>::infinity();
+            RE::NiPoint3       fwd{ a_pivot.x - a_cam.x, a_pivot.y - a_cam.y, 0.0f };
+            const float        fl   = Len(fwd);
+            fwd                     = fl > 0.01f ? fwd * ((std::min)(a_near, fl) / fl) : RE::NiPoint3{};
+            const float        topZ = (std::max)(a_cam.z, a_pivot.z) + 1.0f;
+            const RE::NiPoint3 spots[] = { a_cam, a_cam + fwd };
+            for (const auto& s : spots) {
+                const RE::NiPoint3 from{ s.x, s.y, topZ };
+                const RE::NiPoint3 to{ s.x, s.y, a_cam.z - a_clear };
+                const Hit          h = Cast(a_world, from, to);
+                if (!h.hit) continue;
+                const float nl = Len(h.normal);
+                if (!(nl > 0.5f) || std::fabs(h.normal.z / nl) < 0.5f) continue;  // a wall or a steep face: the walls handle it
+                const float z = topZ - h.dist + a_clear;
+                if (z > best) {
+                    best  = z;
+                    a_hit = h;
+                }
+            }
+            return best;
+        }
+
         void NotePush(std::string a_text) {
             std::lock_guard lock(s_statusLock);
             ++s_pushes;
@@ -268,11 +300,12 @@ namespace CamCollision {
         if (s_cfg.layer < 1 || s_cfg.layer > 46) s_cfg.layer = 36;
     }
 
-    void Request(const RE::NiPoint3& a_pivot, const char* a_who) {
+    void Request(const RE::NiPoint3& a_pivot, const char* a_who, bool a_ground) {
         if (!std::isfinite(a_pivot.x) || !std::isfinite(a_pivot.y) || !std::isfinite(a_pivot.z)) return;
-        s_req   = true;
-        s_pivot = a_pivot;
-        s_who   = a_who ? a_who : "";
+        s_req    = true;
+        s_pivot  = a_pivot;
+        s_who    = a_who ? a_who : "";
+        s_ground = a_ground;
     }
 
     void Apply(RE::FreeCameraState* a_fcs, bool a_driving) {
@@ -314,7 +347,25 @@ namespace CamCollision {
         // The camera body is kept at least the near clip (plus a hand) off the wall as well.
         const float margin = (std::max)(s_cfg.margin, nearClip + 4.0f);
 
-        const Solved       sol    = Solve(world, s_pivot, cam, side, r, margin);
+        Solved sol = Solve(world, s_pivot, cam, side, r, margin);
+        if (s_ground) {
+            Hit         gh;
+            const float minZ = GroundFloor(world, s_pivot, sol.pos, margin, nearClip, gh);
+            if (std::isfinite(minZ) && sol.pos.z < minZ) {
+                const float lift = minZ - sol.pos.z;
+                sol.pos.z        = minZ;
+                sol.moved        = true;
+                sol.nearest      = gh;
+                static double s_nextGroundLog = 0.0;
+                if (Now() >= s_nextGroundLog) {
+                    s_nextGroundLog = Now() + 2.0;
+                    const auto text = std::format("{}: lifted {:.0f} units off the ground of {:08X} (layer {}, kept {:.0f})", s_who, lift,
+                        gh.ref, gh.layer, margin);
+                    SKSE::log::info("CamCollision: {}", text);
+                    NotePush(text);
+                }
+            }
+        }
         const RE::NiPoint3 target = sol.pos - cam;
         const float        tl     = Len(target);
         const float        ol     = Len(s_off);

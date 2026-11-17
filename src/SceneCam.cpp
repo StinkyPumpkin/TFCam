@@ -1646,7 +1646,7 @@ namespace SceneCam {
             const float rollGoal = WrapPi((s_cfg.orbitRoll + s_orbit.rollPhase) * kDegToRad);
             s_orbit.roll         = WrapPi(s_orbit.roll + WrapPi(rollGoal - s_orbit.roll) * ExpWeight(a_dt, kChaseHalfLife));
             FreeCam::SetExtraRoll(s_orbit.roll);
-            CamCollision::Request(s_orbit.target, "scene orbit");  // 0.12.0
+            CamCollision::Request(s_orbit.target, "scene orbit", true);  // 0.12.0; 11-17 + the real ground under the camera
         }
 
         // 0.15.0: the chosen view, chased round the smoothed scene centre.
@@ -1704,7 +1704,7 @@ namespace SceneCam {
             p.roll  = s_preset.roll;
             p.fov   = s_preset.fov;
             WritePose(a_fcs, p, true);
-            CamCollision::Request(centre, "scene preset");
+            CamCollision::Request(centre, "scene preset", s_preset.view != 0);  // 11-17: ground too, not for a saved shot
         }
 
         void DriveEye(RE::FreeCameraState* a_fcs, float a_prePitch, float a_preYaw, float a_dt) {
