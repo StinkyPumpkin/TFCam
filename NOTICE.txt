@@ -14,8 +14,9 @@ Source code: the complete source of this download is in https://github.com/CageT
 notes). The original source is at https://github.com/StinkyPumpkin/TFCam.
 
 TFCam.dll is built with alandtse's CommonLibSSE-NG 9.1.0 (https://github.com/alandtse/CommonLibSSE-NG, GPL-3.0 with a
-modding exception) and bundles the SKSE Menu Framework header (SKSEMenuFramework.h, GPL-3.0) and the FCFW API header
-(FCFW_API.h).
+modding exception) and bundles the SKSE Menu Framework header (SKSEMenuFramework.h, GPL-3.0), the FCFW API header
+(FCFW_API.h) and the version 1 part of True Directional Movement's API header (TDM_API.h, from the header Ershin
+publishes for other mods to copy, https://github.com/ersh1/TrueDirectionalMovement).
 
 This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
 License as published by the Free Software Foundation, version 3 of the License.

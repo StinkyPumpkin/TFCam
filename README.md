@@ -117,6 +117,9 @@ TFCam stays out"), so the two never aim the same shot. Hit Where You Aim aims th
 renders, which is the archer camera's view while the string is drawn, and the dot sits there. TFCam's box is for players
 without Hit Where You Aim.
 
+**With True Directional Movement**: while its target lock is on, arrows, bolts, flames and beams go where TDM aims them
+(at the locked target), not at the dot, as Hit Where You Aim 1.4 does. Without the lock, the dot aims as usual.
+
 **With SmoothCam**: its arrow prediction, arc line, 3D crosshair and world crosshair options move the crosshair to
 SmoothCam's own guess of the vanilla arrow, which is not where either aim sends it. Turn those off in SmoothCam when you
 use the dot.
@@ -229,6 +232,11 @@ and `[Video]` (`iKey`, `iHeight`, `iFps`, `iQuality`, `bSound`, `bWithCameraPath
 default.
 
 ## Changelog
+
+**Not released yet**
+- *Arrows and spells go where the dot is*: while True Directional Movement's target lock is on, arrows, bolts, flames
+  and beams keep TDM's aim at the locked target instead of being turned to the dot (Hit Where You Aim 1.4 does the
+  same). Before, the lock-on shot went to the middle of the screen.
 
 **0.19.0**
 - **Camera Path** (see above): cameras round the world played back as one shot, a PrismaUI editor bar, pivots per

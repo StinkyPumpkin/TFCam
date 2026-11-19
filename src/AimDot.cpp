@@ -1,5 +1,6 @@
 #include "AimDot.h"
 #include "FovFx.h"
+#include "TDM_API.h"
 
 #include <Windows.h>
 
@@ -30,6 +31,17 @@ namespace AimDot {
         std::string s_status    = "not installed";
         std::string s_offStatus = "not installed";  // what the menu shows while the box is unticked
         bool        s_logged    = false;
+
+        // True Directional Movement's target lock aims the player's shots at the locked target (it rewrites the angles
+        // in the projectile init). While it is on, arrows and flames / beams are left to it (Hit Where You Aim 1.4).
+        TDM_API::IVTDM1*  s_tdm = nullptr;
+        std::atomic<bool> s_loggedTdm{ false };
+
+        bool TdmLocked() {
+            if (!s_tdm || !s_tdm->GetTargetLockState()) return false;
+            if (!s_loggedTdm.exchange(true)) SKSE::log::info("AimDot: True Directional Movement's target lock is on - its aim is kept for the shot");
+            return true;
+        }
 
         // ---- pattern scan inside a function (Hit Where You Aim's FindPatternInFunction) --------------------------
         struct Byte {
@@ -248,6 +260,10 @@ namespace AimDot {
 
             static float Yaw(RE::Projectile* a_proj, float a_angle, func_t a_func) {
                 if (On() && a_proj && Player(a_proj) && CameraAllows()) {
+                    if (TdmLocked()) {
+                        s_pitch = FLT_MAX;
+                        return a_func(a_proj, a_angle);
+                    }
                     auto& rd    = a_proj->GetProjectileRuntimeData();
                     RE::TESObjectREFR* ref   = rd.shooter.get().get();
                     RE::Actor*         actor = ref ? ref->As<RE::Actor>() : nullptr;
@@ -268,7 +284,7 @@ namespace AimDot {
             }
 
             static float Pitch(RE::Projectile* a_proj, float a_angle, func_t a_func) {
-                if (On() && a_proj && Player(a_proj) && s_pitch != FLT_MAX && CameraAllows()) return a_func(a_proj, s_pitch);
+                if (On() && a_proj && Player(a_proj) && s_pitch != FLT_MAX && CameraAllows() && !TdmLocked()) return a_func(a_proj, s_pitch);
                 return a_func(a_proj, a_angle);
             }
 
@@ -279,7 +295,8 @@ namespace AimDot {
         };
 
         // Projectile init: True Directional Movement rewrites the angles in here, so the launch's angles are put back
-        // after it (and on a horse the arrow's yaw stays within 15 degrees of the bow).
+        // after it (and on a horse the arrow's yaw stays within 15 degrees of the bow). With TDM's target lock on,
+        // its rewrite (at the locked target) stands.
         struct ProjectileInitHook {
             static void thunk(RE::Projectile* a_this) {
                 RE::NiPoint3 angle = a_this ? a_this->data.angle : RE::NiPoint3{};
@@ -287,6 +304,7 @@ namespace AimDot {
                 if (!a_this || !On()) return;
                 const auto& h = a_this->GetProjectileRuntimeData().shooter;
                 if (!h || h.native_handle() != kPlayerHandle) return;
+                if (TdmLocked()) return;
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 auto* pc     = RE::PlayerCamera::GetSingleton();
                 if (player && pc && pc->currentState && pc->currentState->id == RE::CameraState::kMount) {
@@ -439,6 +457,14 @@ namespace AimDot {
             s_status = "Hit Where You Aim is loaded - it aims the projectiles, TFCam stays out";
             SKSE::log::info("AimDot: {}", s_status);
             return;
+        }
+        if (::GetModuleHandleA("TrueDirectionalMovement.dll")) {
+            s_tdm = TDM_API::RequestV1();
+            if (s_tdm) {
+                SKSE::log::info("AimDot: True Directional Movement found - while its target lock is on, arrows and flames / beams keep its aim");
+            } else {
+                SKSE::log::warn("AimDot: True Directional Movement is loaded but gave no API - its target lock cannot be seen");
+            }
         }
         auto& tr = SKSE::GetTrampoline();
         // 1. the player's launch angles

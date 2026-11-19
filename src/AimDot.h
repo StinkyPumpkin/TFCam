@@ -9,6 +9,8 @@
 // the hook sites (the player's launch-angle call, the flame / beam aim calls, the projectile init after TDM), the
 // crosshair ray with the projectile's own collision layer + group, the angle maths and the game's own ballistic
 // solver for arrows. Its options (prediction windows, target leading, biases) are left out on purpose.
+// 11-20 (Hit Where You Aim 1.4): while True Directional Movement's target lock is on, arrows and flames / beams keep
+// TDM's aim at the locked target.
 namespace AimDot {
 
     struct Settings {
