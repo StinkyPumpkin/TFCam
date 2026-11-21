@@ -213,6 +213,7 @@ namespace ConvoCam {
             RE::NiPoint3 vLook{};
             Shot         shot      = Shot::kOverPlayer;
             double       shotSince = 0.0;
+            bool         tradeHold = false;  // a menu opened from the talk (barter, gift ...) holds the camera on one shot
             float        settle    = 1.6f;  // seconds the damping takes to arrive (the entry is slower than a shot change)
             float        clock     = 0.0f;
             // return
@@ -253,6 +254,15 @@ namespace ConvoCam {
             auto* mtm = RE::MenuTopicManager::GetSingleton();
             auto* ui  = RE::UI::GetSingleton();
             return mtm && ui && mtm->menuOpen && ui->IsMenuOpen("Dialogue Menu");
+        }
+
+        // A menu the talk opened on top of itself: trading, a gift, the NPC's things, training.
+        bool TradeMenuOpen() {
+            auto* ui = RE::UI::GetSingleton();
+            if (!ui) return false;
+            for (const char* name : { "BarterMenu", "GiftMenu", "ContainerMenu", "Training Menu" })
+                if (ui->IsMenuOpen(name)) return true;
+            return false;
         }
 
         // The NPC is saying a line (the dialogue manager holds a current topic info only then).
@@ -741,7 +751,32 @@ namespace ConvoCam {
             // Which shot: over the player's shoulder while the NPC talks, the reverse while it is the player's turn - never
             // sooner than minShotSec after the last change.
             const double now     = Now();
-            const Shot   wanted  = (s_cfg.alternate && s_s.seenMenu && DialogueOpen() && !NpcTalking() && s_s.clock > 0.5f) ? Shot::kReverse : Shot::kOverPlayer;
+            // --Claude 11-21: such a menu pauses the game, so the damped swing below stopped wherever it was when the menu opened
+            // and every barter looked different. Under it the camera sits at once on the shot over your shoulder (facing the
+            // NPC, the one you trade with) and stays there; after the menu the talk carries on from that shot.
+            if (TradeMenuOpen()) {
+                if (!s_s.tradeHold) {
+                    s_s.tradeHold = true;
+                    s_s.shot      = Shot::kOverPlayer;
+                    s_s.player    = pRaw;
+                    s_s.npc       = nRaw;
+                    const Target t0 = ShotTarget(s_s.shot);
+                    const auto   m0 = Mix(s_s.player, s_s.npc, 0.5f);
+                    s_s.ang  = std::atan2(t0.pos.x - m0.x, t0.pos.y - m0.y);
+                    s_s.rad  = Len2(t0.pos.x - m0.x, t0.pos.y - m0.y);
+                    s_s.z    = t0.pos.z;
+                    s_s.fov  = t0.fov;
+                    s_s.look = t0.look;
+                    s_s.vAng = s_s.vRad = s_s.vZ = s_s.vFov = 0.0f;
+                    s_s.vLook = {};
+                    Event("a menu opened over the talk - camera set on the shot over your shoulder until it closes");
+                }
+                s_s.shotSince = now;
+            } else if (s_s.tradeHold) {
+                s_s.tradeHold = false;
+                s_s.shotSince = now;
+            }
+            const Shot   wanted  = (s_cfg.alternate && s_s.seenMenu && DialogueOpen() && !NpcTalking() && s_s.clock > 0.5f && !s_s.tradeHold) ? Shot::kReverse : Shot::kOverPlayer;
             if (wanted != s_s.shot && now - s_s.shotSince >= s_cfg.minShotSec) {
                 s_s.shot      = wanted;
                 s_s.shotSince = now;

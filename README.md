@@ -237,6 +237,9 @@ default.
 - *Arrows and spells go where the dot is*: while True Directional Movement's target lock is on, arrows, bolts, flames
   and beams keep TDM's aim at the locked target instead of being turned to the dot (Hit Where You Aim 1.4 does the
   same). Before, the lock-on shot went to the middle of the screen.
+- *Conversation camera*: when the talk opens a menu (barter, a gift, the NPC's things, training), the camera goes at
+  once to the shot over your shoulder, facing the NPC, and stays there until the menu closes. Before, the menu stopped
+  the camera wherever it was on its way between shots, so each barter was framed differently.
 
 **0.19.0**
 - **Camera Path** (see above): cameras round the world played back as one shot, a PrismaUI editor bar, pivots per
