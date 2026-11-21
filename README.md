@@ -2,12 +2,12 @@
 
 A free camera overhaul for Skyrim SE / AE (SKSE plugin, no ESP): camera roll, an attached camera light, time freeze,
 FOV control, screenshot keys, a cell-entry camera, and the Scene Camera below. Settings live on the SKSE Menu Framework
-pages under **FreeCam** and in `Data/SKSE/Plugins/TFCam.ini`, which TFCam creates on first launch (it is never part of
+pages under **TFCam** and in `Data/SKSE/Plugins/TFCam.ini`, which TFCam creates on first launch (it is never part of
 the download). The Nexus page text is in `nexus_description.txt`; build steps are in `BUILD.md`.
 
 ## Idle camera and Furniture camera (0.11.0, routines reworked in 0.11.1)
 
-Page: **SKSE Menu Framework > FreeCam > Idle & Furniture**. Both drive TFCam's free camera and give it back with a short
+Page: **SKSE Menu Framework > TFCam > Idle and furniture**. Both drive TFCam's free camera and give it back with a short
 blend.
 
 **Idle camera.** After a set time without input (default 25 s; not in menus, combat, SexLab scenes or while another free
@@ -28,17 +28,17 @@ camera is on) the camera circles you, playing these routines in turn:
 Any key, click or mouse movement gives the camera back. It works in first and third person. After *Runs for* seconds it
 hands over to **Sandbox When Idle** (po3): that mod starts when the engine's idle timer passes `fAutoVanityModeDelay`, so
 TFCam sets `PlayerCamera::idleTimer` past it as the camera is given back. Keep *starts after* + *runs for* below
-`fAutoVanityModeDelay` (120 s by default). *Distances in interiors* shrinks the radii indoors; walls are handled by
-*Walls* (below).
+`fAutoVanityModeDelay` (120 s by default). *Distances in interiors* shrinks the radii indoors; walls are handled on the
+*Walls* page (below).
 
 **Furniture camera.** A camera shot saved per furniture (its base form, in the player's frame). Sit on the furniture,
 turn on free-fly, fly to where the camera should be and press the Scene Camera **Save camera shot** key (bind it on the
-Scene Camera page; **Go to saved shot** and **Delete saved shot** work the same way). From then on, sitting on that
+Scene camera page; **Go to saved shot** and **Delete saved shot** work the same way). From then on, sitting on that
 furniture, by hand or through Sandbox When Idle, blends the camera there after a short delay, and standing up gives it
 back. Movement, jump and activate keys also give it back (not TFCam's own roll / reset / freeze / screenshot / slow keys).
 Shots are kept in `SceneShots.tsv` under `furn:<plugin>|<local id>`.
 
-**Walls.** The automatic cameras keep out of walls: the idle camera (and its blend back), the Scene Camera orbit
+**Walls** (page **SKSE Menu Framework > TFCam > Walls**). The automatic cameras keep out of walls: the idle camera (and its blend back), the Scene Camera orbit
 and every blend to a saved shot (scene stage, pose, furniture). Each frame TFCam casts rays from the point the camera
 looks at to the camera (one on the camera, one either side of it, level with it, as wide apart as the corners of the
 camera's near plane). If a wall is in between, the camera is moved out along the wall's own direction to *Distance kept
@@ -57,7 +57,7 @@ defaults).
 
 ## Conversation camera (0.16.0)
 
-Page: **SKSE Menu Framework > FreeCam > Idle & Furniture > Conversation**. Off by default (tick *Conversation camera on*).
+Page: **SKSE Menu Framework > TFCam > Conversation camera**. Off by default (tick *Conversation camera on*).
 When you talk to an NPC in third person, TFCam's free camera takes over and films the conversation like a film scene:
 
 - *Over your shoulder* while the NPC speaks (the NPC sits off to one side of the frame), and a *reverse shot* while it is your turn:
@@ -80,7 +80,7 @@ Settings: `TFCam.ini` section `[Conversation]`: `bEnabled`, `bThirdPersonOnly`, 
 
 ## Action FOV, archer camera and aim dot (0.18.0)
 
-Page: **SKSE Menu Framework > FreeCam > Action FOV**. Action FOV is off by default (tick *On*).
+Page: **SKSE Menu Framework > TFCam > Action FOV and archery**. Action FOV is off by default (tick *On*).
 
 - **Action FOV**: drawing a bow pulls the view in, letting the arrow go snaps it out, power attacks punch in, big spells
   (from a chosen skill level) and shouts warp it out, and moving fast stretches it wide. It is an offset on the render
@@ -104,7 +104,7 @@ Page: **SKSE Menu Framework > FreeCam > Action FOV**. Action FOV is off by defau
   many of its 5 hooks went in ("AimDot: ...").
 - While the string is drawn, optionally: the Background blur's edge blur (*Blur round the edge*) and darker corners
   (*Vignette*, 0..1).
-- **Background blur** (Scene Camera page) has a new default style, *Blurry round the edge, sharp in the middle*: TFCam's
+- **Background blur** (now on the Image and video page) has a new default style, *Blurry round the edge, sharp in the middle*: TFCam's
   own image pass blurs the picture more and more toward the screen's edge, the sharp middle on the subject, before the
   HUD and without ENB. The ENB depth of field stays as the other style.
 
@@ -132,7 +132,7 @@ Settings: `TFCam.ini` section `[ActionFOV]`: `bEnabled`, `fStrength`, `bBow`, `b
 ## Scene Camera (0.10.0, extended in 0.13.0)
 
 TFCam's free camera can work as a scene camera for SexLab P+ scenes (with SexLab P+'s automatic free camera on, a scene
-starts in TFCam free-fly as usual). Page: **SKSE Menu Framework > FreeCam > Scene Camera**.
+starts in TFCam free-fly as usual). Page: **SKSE Menu Framework > TFCam > Scene camera**.
 
 - **Orbit** circles the actors of your SexLab scene (outside a scene: the actor SLUI posed, else you), always looking at
   the smoothed centre of their torsos. *Orbit round* = **You only** always circles you instead. Radius, tilt (the
@@ -189,7 +189,7 @@ the scene / stage ids, shots saved / recalled / deleted, refusals, automatic fre
 ## Camera Path, fixed camera, image effects and video (0.19.0)
 
 Film anything: put cameras round the world with TFCam's free camera and play them back as one moving shot.
-Page: **SKSE Menu Framework > FreeCam > Camera Path** (keys) and **Image & Video**.
+Page: **SKSE Menu Framework > TFCam > Camera path** (keys) and **Image and video**.
 
 - **The editor.** With PrismaUI installed the editor key opens a small bar at the bottom of the screen (else the SKSE
   Menu Framework window, `bPrismaEditor=0` keeps that one). Fly the free camera to a spot, press **Add camera** (or +),
@@ -214,7 +214,7 @@ Page: **SKSE Menu Framework > FreeCam > Camera Path** (keys) and **Image & Video
   second click. Normal paths stay where you put them in the world.
 - **Fixed camera.** *Fix the camera here* (path menu) ends the free camera and keeps its view while you play on with
   the normal controls; *The fixed camera turns to watch me* keeps the spot and turns to follow you.
-- **Image effects** (`[ImageFX]`, page *Image & Video*): motion blur when the camera turns, zoom blur, lens distortion,
+- **Image effects** (`[ImageFX]`, page *Image and video*): motion blur when the camera turns, zoom blur, lens distortion,
   colour fringes, vignette, light streaks, cinema bars. They are drawn before the game's UI, so they are in videos and
   screenshots but never on the menus.
 - **Video.** The record key (or ● in the editor) records the game's picture, without TFCam's or the game's UI, to an
@@ -234,6 +234,11 @@ default.
 ## Changelog
 
 **Not released yet**
+- *Settings pages*: the SKSE Menu Framework section is now **TFCam** (was FreeCam), with ten pages, one subject
+  each: Free camera, Camera light, Walls, Conversation camera, Idle and furniture, Cell entry, Scene camera, Action FOV
+  and archery, Camera path, Image and video. The camera light, the walls and the conversation camera have their own
+  pages, Background blur is on Image and video, and the archer camera and the dot are no longer folded away. Every
+  setting keeps its `TFCam.ini` key, so nothing resets.
 - *Arrows and spells go where the dot is*: while True Directional Movement's target lock is on, arrows, bolts, flames
   and beams keep TDM's aim at the locked target instead of being turned to the dot (Hit Where You Aim 1.4 does the
   same). Before, the lock-on shot went to the middle of the screen.

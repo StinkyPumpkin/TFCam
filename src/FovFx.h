@@ -4,7 +4,7 @@
 // letting the arrow go snaps it out, a power attack punches in, a big spell or a shout warps it out, and moving fast
 // (sprint, Whirlwind Sprint - or the free camera) stretches it wide. An offset on top of whatever FOV is in use (yours,
 // another mod's, TFCam's): it goes on the render camera's view, never into the game's FOV value (Camera Studio holds
-// that one). Off by default (FreeCam > Action FOV).
+// that one). Off by default (TFCam > Action FOV and archery).
 namespace FovFx {
     struct Settings {
         bool  enabled     = false;

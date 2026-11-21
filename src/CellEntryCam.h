@@ -7,7 +7,7 @@
 //
 // Any mouse movement (or mouse wheel / right stick) cancels it at once and hands the camera back
 // where it is; keys and buttons do too unless that option is off. Settings live in TFCam.ini
-// [CellEntry] and on the SKSE Menu Framework page FreeCam > Cell Entry.
+// [CellEntry] and on the SKSE Menu Framework page TFCam > Cell entry.
 //
 // Driven from a ThirdPersonState::Update vtable hook (plain third person only - horse, bleedout,
 // furniture and dragon cameras have their own vtables), written before the original runs so the

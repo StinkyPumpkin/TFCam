@@ -466,7 +466,7 @@ namespace CamPathWindow {
             auto&       set = CamPath::Get();
             const int   key = set.openKey;
             ImGuiMCP::TextColored(kGrey, "%s", key ? std::format("{} closes this window so you can fly the camera.", FreeCamMenu::KeyName(key)).c_str()
-                                                   : "The X closes this window. Bind a key to open it: FreeCam > Camera Path.");
+                                                   : "The X closes this window. Bind a key to open it: TFCam > Camera path.");
             if (!s.freeCam) ImGuiMCP::TextColored(kRed, "The free camera is off - turn it on (tfc) to add cameras.");
 
             // ---- the big buttons
@@ -512,7 +512,7 @@ namespace CamPathWindow {
             const bool recVideo = VideoCapture::Recording();
             if (Big(kIconVideo, recVideo ? "Stop video" : "Record video", "video", recVideo ? 2 : 0)) VideoCapture::Toggle("window");
             Tip("Records an MP4 in Videos\\TFCam - the picture with TFCam's image effects, never the HUD, menus or this window.\n"
-                "Size, frame rate, sound and auto-start with the path: FreeCam > Image & Video.");
+                "Size, frame rate, sound and auto-start with the path: TFCam > Image and video.");
             ImGuiMCP::SameLine();
             if (s.recording) {
                 if (Big(kIconStop, "Stop recording", "rec", 2)) CamPath::RequestRecord(0);

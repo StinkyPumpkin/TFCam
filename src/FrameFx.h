@@ -9,7 +9,7 @@ struct ID3D11ShaderResourceView;
 // HUD, the menus and SKSE Menu Framework's windows, so none of those blur and videos have no UI:
 //   motion blur from the camera's turn (film shutter), zoom blur from moving forward and from FOV changes (crash zoom,
 //   Action FOV), lens distortion, colour fringes, vignette, anamorphic streaks from bright lights, cinema bars.
-// The same spot feeds the video recorder (VideoCapture). Off unless something is turned on (FreeCam > Image & Video).
+// The same spot feeds the video recorder (VideoCapture). Off unless something is turned on (TFCam > Image and video).
 //
 // Hooked at the game's menu draw call in Main::Draw (SE 35556 + 0x3ab, AE 36555 + 0x371 - where SKSE Menu Framework
 // draws): main thread, the game's D3D11 immediate context, the render target the menus are about to draw on.

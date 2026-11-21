@@ -484,7 +484,7 @@ namespace VideoCapture {
             if (!error.empty()) {
                 SKSE::log::error("VideoCapture: {}", error);
                 SetStatus("Recording failed: " + error);
-                Notify("Video recording failed - see FreeCam > Image & Video");
+                Notify("Video recording failed - see TFCam > Image and video");
                 a_s->soundStop = true;
                 a_s->failed    = true;
             }
@@ -518,7 +518,7 @@ namespace VideoCapture {
                         error = std::format("writing failed ({:08X})", static_cast<unsigned>(hr));
                         SKSE::log::error("VideoCapture: {}", error);
                         SetStatus("Recording failed: " + error);
-                        Notify("Video recording failed - see FreeCam > Image & Video");
+                        Notify("Video recording failed - see TFCam > Image and video");
                         a_s->soundStop = true;
                         a_s->failed    = true;
                     }

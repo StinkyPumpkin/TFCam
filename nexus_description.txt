@@ -10,7 +10,7 @@ Installation
 1. Install SKSE (https://skse.silverlock.org/). The installer (FOMOD) picks the TFCam.dll for your game version: AE 1.6.x / 1.7.x, SE 1.5.97, or one DLL for all versions (Skyrim VR).
 2. Install SKSE Menu Framework (https://www.nexusmods.com/skyrimspecialedition/mods/96353)
 3. Install TFCam with your mod manager (or manually drop the SKSE folder into Data)
-4. Launch the game. Open the SKSE Menu Framework overlay to configure settings under "FreeCam"
+4. Launch the game. Open the SKSE Menu Framework overlay to configure settings under "TFCam"
 
 
 Main Features
