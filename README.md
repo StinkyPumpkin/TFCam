@@ -240,6 +240,9 @@ default.
 - *Conversation camera*: when the talk opens a menu (barter, a gift, the NPC's things, training), the camera goes at
   once to the shot over your shoulder, facing the NPC, and stays there until the menu closes. Before, the menu stopped
   the camera wherever it was on its way between shots, so each barter was framed differently.
+- *Conversation camera, Trade menus*: new settings for that shot - over your shoulder, both from the side or close on
+  the NPC, with its distance, height, turn round the two and lens. *Keep moving under the menu* (on by default) runs
+  the shot on real time while the menu pauses the game, so its sway goes on and it follows the two.
 
 **0.19.0**
 - **Camera Path** (see above): cameras round the world played back as one shot, a PrismaUI editor bar, pivots per

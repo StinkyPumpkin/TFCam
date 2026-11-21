@@ -88,6 +88,8 @@ namespace ConvoCam {
             return static_cast<double>(t.QuadPart) / freq;
         }
 
+        float g_realDt = 0.0f;  // the last frame's real time, paused or not (a trade menu's shot runs on it)
+
         // Own frame time for the drive: capped at 0.1 s, 0 while the game is paused.
         float FrameDt() {
             static double s_last = 0.0;
@@ -95,6 +97,7 @@ namespace ConvoCam {
             float         dt     = s_last > 0.0 ? static_cast<float>(now - s_last) : 0.0f;
             s_last               = now;
             dt                   = std::clamp(dt, 0.0f, 0.1f);
+            g_realDt             = dt;
             auto* ui             = RE::UI::GetSingleton();
             if (ui && ui->GameIsPaused()) dt = 0.0f;
             return dt;
@@ -431,7 +434,34 @@ namespace ConvoCam {
             return t;
         }
 
+        // --Claude 11-21: the shot under a menu the talk opened (barter, gift, training), from the Trade menus settings.
+        Target TradeTarget() {
+            const float side = s_cfg.swapSide ? -1.0f : 1.0f;
+            Target      t    = s_cfg.tradeShot == 1 ? TwoShot(s_s.player, s_s.npc, side) : OverShoulder(s_s.player, s_s.npc, side);
+            if (s_cfg.tradeShot == 2) {  // closer on the NPC: the camera 40 % of the way to what it looks at, a longer lens
+                t.pos = Mix(t.pos, t.look, 0.4f);
+                t.fov = (std::max)(20.0f, t.fov - 8.0f);
+            }
+            const RE::NiPoint3 back{ t.pos.x - t.look.x, t.pos.y - t.look.y, t.pos.z - t.look.z };
+            t.pos = { t.look.x + back.x * s_cfg.tradeDistance, t.look.y + back.y * s_cfg.tradeDistance, t.look.z + back.z * s_cfg.tradeDistance };
+            if (s_cfg.tradeTurn != 0.0f) {  // round the midpoint of the two
+                const auto  m = Mix(s_s.player, s_s.npc, 0.5f);
+                const float a = s_cfg.tradeTurn * 0.01745329f, c = std::cos(a), s = std::sin(a);
+                const float x = t.pos.x - m.x, y = t.pos.y - m.y;
+                t.pos.x = m.x + x * c - y * s;
+                t.pos.y = m.y + x * s + y * c;
+            }
+            t.pos.z += s_cfg.tradeHeight;
+            if (s_cfg.tradeFov > 1.0f) t.fov = s_cfg.tradeFov;
+            return t;
+        }
+
+        const char* TradeShotName() {
+            return s_cfg.tradeShot == 1 ? "both from the side" : s_cfg.tradeShot == 2 ? "close on the NPC" : "over your shoulder";
+        }
+
         Target ShotTarget(Shot shot) {
+            if (s_s.tradeHold) return TradeTarget();
             const float side = s_cfg.swapSide ? -1.0f : 1.0f;
             if (shot == Shot::kOverPlayer) return OverShoulder(s_s.player, s_s.npc, side);
             return s_cfg.reverseKind == 1 ? TwoShot(s_s.player, s_s.npc, side) : OverShoulder(s_s.npc, s_s.player, side);
@@ -734,6 +764,9 @@ namespace ConvoCam {
                 BeginReturn(0.6f, "the speaker is gone");
                 return;
             }
+            // --Claude 11-21: under a trade menu the paused game gives dt 0; with Keep moving on the shot runs on real time (its
+            // sway goes on and it follows the two when another mod keeps their animation stepping under the pause)
+            if (s_cfg.tradeLive && TradeMenuOpen()) dt = g_realDt;
             const RE::NiPoint3 pRaw = EyePoint(player);
             const RE::NiPoint3 nRaw = EyePoint(npc);
             if (!s_s.seeded) {
@@ -769,7 +802,8 @@ namespace ConvoCam {
                     s_s.look = t0.look;
                     s_s.vAng = s_s.vRad = s_s.vZ = s_s.vFov = 0.0f;
                     s_s.vLook = {};
-                    Event("a menu opened over the talk - camera set on the shot over your shoulder until it closes");
+                    Event(std::format("a menu opened over the talk - camera set on the trade shot ({}) until it closes{}", TradeShotName(),
+                        s_cfg.tradeLive ? ", moving on real time" : ""));
                 }
                 s_s.shotSince = now;
             } else if (s_s.tradeHold) {
@@ -843,6 +877,12 @@ namespace ConvoCam {
         range(s_cfg.fovWide, 20.0f, 110.0f, 56.0f);
         range(s_cfg.drift, 0.0f, 3.0f, 1.0f);
         s_cfg.reverseKind = std::clamp(s_cfg.reverseKind, 0, 1);
+        s_cfg.tradeShot   = std::clamp(s_cfg.tradeShot, 0, 2);
+        range(s_cfg.tradeDistance, 0.4f, 2.5f, 1.0f);
+        range(s_cfg.tradeHeight, -60.0f, 80.0f, 0.0f);
+        range(s_cfg.tradeTurn, -90.0f, 90.0f, 0.0f);
+        range(s_cfg.tradeFov, 0.0f, 100.0f, 0.0f);
+        if (s_cfg.tradeFov > 0.0f && s_cfg.tradeFov < 20.0f) s_cfg.tradeFov = 20.0f;
     }
 
     void Install() {

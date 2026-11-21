@@ -432,6 +432,12 @@ namespace FreeCamMenu {
         WriteINIInt("Conversation", "bSwapSide", c.swapSide ? 1 : 0);
         WriteINIFloat("Conversation", "fDrift", c.drift);
         WriteINIInt("Conversation", "bNoEdgePan", c.noEdgePan ? 1 : 0);
+        WriteINIInt("Conversation", "iTradeShot", c.tradeShot);
+        WriteINIFloat("Conversation", "fTradeDistance", c.tradeDistance);
+        WriteINIFloat("Conversation", "fTradeHeight", c.tradeHeight);
+        WriteINIFloat("Conversation", "fTradeTurn", c.tradeTurn);
+        WriteINIFloat("Conversation", "fTradeFov", c.tradeFov);
+        WriteINIInt("Conversation", "bTradeLive", c.tradeLive ? 1 : 0);
     }
 
     // 0.12.0 walls for the automatic cameras, TFCam.ini [Collision].
@@ -1473,6 +1479,21 @@ namespace FreeCamMenu {
             cvChanged |= ImGuiMCP::SliderFloat("FOV two-shot##cvF2", &cv.fovWide, 20.0f, 110.0f, "%.0f");
             ImGuiMCP::SetNextItemWidth(200.0f);
             cvChanged |= ImGuiMCP::SliderFloat("Handheld sway##cvDr", &cv.drift, 0.0f, 3.0f, "%.1f");
+            // --Claude 11-21: the shot while a menu the talk opened (barter, gift, training) pauses the game
+            ImGuiMCP::SeparatorText("Trade menus (barter, gift, training)");
+            ImGuiMCP::TextColored(grey, "The game pauses under these menus; the camera sits on this shot until the menu closes.");
+            static const char* tradeShots[] = { "Over your shoulder", "Both from the side", "Close on the NPC" };
+            ImGuiMCP::SetNextItemWidth(200.0f);
+            cvChanged |= ImGuiMCP::Combo("Shot##cvTs", &cv.tradeShot, tradeShots, 3, 3);
+            ImGuiMCP::SetNextItemWidth(200.0f);
+            cvChanged |= ImGuiMCP::SliderFloat("Distance (x the shot's)##cvTd", &cv.tradeDistance, 0.4f, 2.5f, "%.2f");
+            ImGuiMCP::SetNextItemWidth(200.0f);
+            cvChanged |= ImGuiMCP::SliderFloat("Height##cvTh", &cv.tradeHeight, -60.0f, 80.0f, "%.0f");
+            ImGuiMCP::SetNextItemWidth(200.0f);
+            cvChanged |= ImGuiMCP::SliderFloat("Turn round the two (deg)##cvTt", &cv.tradeTurn, -90.0f, 90.0f, "%.0f");
+            ImGuiMCP::SetNextItemWidth(200.0f);
+            cvChanged |= ImGuiMCP::SliderFloat("FOV (0 = the shot's own)##cvTf", &cv.tradeFov, 0.0f, 100.0f, "%.0f");
+            cvChanged |= ImGuiMCP::Checkbox("Keep moving under the menu (sway, follows them)##cvTl", &cv.tradeLive);
             if (cs.lastEvent[0]) ImGuiMCP::TextColored(grey, "Last: %s", cs.lastEvent);
             if (cvChanged) {
                 ConvoCam::Clamp();
@@ -1730,6 +1751,12 @@ namespace FreeCamMenu {
             c.swapSide        = readInt("Conversation", "bSwapSide", d.swapSide ? 1 : 0) != 0;
             c.drift           = readFloat("Conversation", "fDrift", d.drift);
             c.noEdgePan       = readInt("Conversation", "bNoEdgePan", d.noEdgePan ? 1 : 0) != 0;
+            c.tradeShot       = readInt("Conversation", "iTradeShot", d.tradeShot);
+            c.tradeDistance   = readFloat("Conversation", "fTradeDistance", d.tradeDistance);
+            c.tradeHeight     = readFloat("Conversation", "fTradeHeight", d.tradeHeight);
+            c.tradeTurn       = readFloat("Conversation", "fTradeTurn", d.tradeTurn);
+            c.tradeFov        = readFloat("Conversation", "fTradeFov", d.tradeFov);
+            c.tradeLive       = readInt("Conversation", "bTradeLive", d.tradeLive ? 1 : 0) != 0;
             ConvoCam::Clamp();
             SKSE::log::info("ConvoCam: conversation camera {} - {} shot, settle {:.1f} s, shot change {:.1f} s",
                 c.enabled ? "on" : "off", c.reverseKind == 1 ? "two-shot reverse" : "over-the-shoulder reverse", c.blendIn, c.shotSwitch);

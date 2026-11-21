@@ -33,6 +33,13 @@ namespace ConvoCam {
         bool  swapSide       = false;   // the other shoulder
         float drift          = 1.0f;    // slow handheld sway, 0 = still; 0..3
         bool  noEdgePan      = false;   // the game's mouse edge-pan in dialogue (fPCDialogueLookSpeed) off in every dialogue; always off while the camera films
+        // A menu the talk opens (barter, gift, training) pauses the game; the camera sits on this shot until it closes.
+        int   tradeShot      = 0;       // 0 = over your shoulder, 1 = both from the side, 2 = close on the NPC over your shoulder
+        float tradeDistance  = 1.0f;    // x the shot's own distance (0.4..2.5)
+        float tradeHeight    = 0.0f;    // units up / down
+        float tradeTurn      = 0.0f;    // degrees round the pair (-90..90)
+        float tradeFov       = 0.0f;    // lens; 0 = the shot's own
+        bool  tradeLive      = true;    // the camera keeps its sway and follows them under the paused menu (real time)
     };
 
     Settings& Get();
