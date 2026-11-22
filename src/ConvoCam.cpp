@@ -262,7 +262,37 @@ namespace ConvoCam {
             return state ? static_cast<RE::FreeCameraState*>(state) : nullptr;
         }
 
-        void ResetSession() { s_s = Session{}; }
+        // --Claude 11-22: the player's head (FaceGen node: head, hair, eyes) hidden while a face to face camera is in or behind it
+        // (Distance moved out) - the same cull as the scene camera's eye view. Re-checked every frame (a 3D reload makes a new node).
+        RE::NiPointer<RE::NiAVObject> s_headCulled;
+        bool                          s_headCulledPrev = false;
+
+        void ShowPlayerHead(const char* a_why) {
+            if (!s_headCulled) return;
+            s_headCulled->SetAppCulled(s_headCulledPrev);
+            SKSE::log::info("ConvoCam: your head shown again ({})", a_why);
+            s_headCulled.reset();
+        }
+
+        void HidePlayerHead() {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            RE::NiAVObject* node = player ? player->GetFaceNodeSkinned() : nullptr;
+            if (!node) return;
+            if (s_headCulled.get() == node) {
+                if (!node->GetAppCulled()) node->SetAppCulled(true);
+                return;
+            }
+            ShowPlayerHead("a new head node");
+            s_headCulled     = RE::NiPointer<RE::NiAVObject>(node);
+            s_headCulledPrev = node->GetAppCulled();
+            node->SetAppCulled(true);
+            SKSE::log::info("ConvoCam: your head hidden - the face to face camera is in or behind it");
+        }
+
+        void ResetSession() {
+            ShowPlayerHead("the conversation camera ended");
+            s_s = Session{};
+        }
 
         // The dialogue menu hold (defined above FrameCheck): a Dialogue Menu asked to open waits until the free camera is in.
         void   ReleaseHeld(const std::string& a_why);
@@ -1111,6 +1141,22 @@ namespace ConvoCam {
             p.roll = 0.0f;
             p.fov  = s_s.fov;
             WritePose(fcs, p);
+            // 11-22: face to face with the camera in or behind the player's head (Distance moved out): the head is hidden, so
+            // it does not block the NPC; shown again as soon as the camera is clear of it
+            bool hideHead = false;
+            if (s_s.tradeHold && (s_cfg.tradeShot == 3 || s_s.tradeBlocked)) {
+                const float d  = (std::max)(Len2(s_s.npc.x - s_s.player.x, s_s.npc.y - s_s.player.y), 1.0f);
+                const float fx = (s_s.npc.x - s_s.player.x) / d, fy = (s_s.npc.y - s_s.player.y) / d;
+                const float rx = p.pos.x - s_s.player.x, ry = p.pos.y - s_s.player.y, rz = p.pos.z - s_s.player.z;
+                const float along = rx * fx + ry * fy;            // + = towards the NPC from the player's head
+                const float off   = std::fabs(rx * fy - ry * fx);  // to the side of the line between them
+                hideHead          = along < 14.0f && off < 26.0f && rz > -30.0f && rz < 40.0f;
+            }
+            if (hideHead) {
+                HidePlayerHead();
+            } else {
+                ShowPlayerHead("the camera is clear of it");
+            }
             // 11-22: under a trade menu the paused game froze the wall push (0 time) while the shot glided on real time, so the
             // last push stayed on as the camera went round the two - near walls the push pointed the wrong way. It runs on
             // real time there now, also when the shot is set at once (its push from the old spot eases off instead of sticking).

@@ -256,6 +256,7 @@ default.
 - *Conversation camera, trade menus*: a **Face to face** shot (the new default) looks from just in front of your face
   at the NPC, who then stands in the middle of the screen, clear of a trade menu's lists. New *Side* slider. With
   *Over your shoulder* or *Close on the NPC* and a wall in the way, that menu gets the face to face shot instead.
+  With *Distance* moved out past your face, your head (and hair) is hidden while the camera is in or behind it.
 - *Walls*: under a trade menu the push off a wall now eases on real time like the trade shot itself; it froze where
   it was when the menu opened, so near walls the push pointed the wrong way.
 - *Idle camera*: a **Speed** slider (Idle and furniture page, Routines; `[Idle] fSpeed`, 0.25x to 3x) plays the spiral
