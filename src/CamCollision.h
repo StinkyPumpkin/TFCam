@@ -29,7 +29,9 @@ namespace CamCollision {
 
     // a driver wrote the camera this frame. a_ground (11-17): also keep the camera above the real ground under it (a probe
     // straight down), not just out of walls between the look point and the camera - for the scene orbit / preset on uneven ground.
-    void Request(const RE::NiPoint3& a_pivot, const char* a_who, bool a_ground = false);
+    // a_realTime (11-22): the driver moves on real time under a menu that pauses the game (the conversation camera's trade
+    // shot), so the push off the wall eases on real time too instead of freezing where it was when the menu opened.
+    void Request(const RE::NiPoint3& a_pivot, const char* a_who, bool a_ground = false, bool a_realTime = false);
     void Apply(RE::FreeCameraState* a_fcs, bool a_driving);       // Update hook, after every driver
 
     // 10-29: the same walls for a camera that is not the free camera (the archer camera): where a camera wanted at a_cam,

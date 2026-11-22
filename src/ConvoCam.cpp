@@ -921,7 +921,10 @@ namespace ConvoCam {
             p.roll = 0.0f;
             p.fov  = s_s.fov;
             WritePose(fcs, p);
-            CamCollision::Request(look, "conversation camera");
+            // 11-22: under a trade menu the paused game froze the wall push (0 time) while the shot glided on real time, so the
+            // last push stayed on as the camera went round the two - near walls the push pointed the wrong way. It runs on
+            // real time there now, also when the shot is set at once (its push from the old spot eases off instead of sticking).
+            CamCollision::Request(look, "conversation camera", false, TradeMenuOpen());
         }
     }
 

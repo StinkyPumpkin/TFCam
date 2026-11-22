@@ -27,6 +27,7 @@ namespace CamCollision {
         RE::NiPoint3 s_pivot{};
         const char*  s_who = "";
         bool         s_ground = false;  // 11-17: this frame's driver wants the ground probe
+        bool         s_realTime = false;  // 11-22: this frame's driver runs on real time under a paused menu
 
         RE::NiPoint3 s_off{};  // 0.15.2: how far the camera is moved off what the driver wrote (slid along walls), now
         double s_holdUntil = 0.0;
@@ -48,15 +49,15 @@ namespace CamCollision {
             return static_cast<double>(t.QuadPart) / freq;
         }
 
-        // Own frame time: capped at 0.1 s, 0 while the game is paused.
-        float FrameDt() {
+        // Own frame time: capped at 0.1 s, 0 while the game is paused unless this frame's driver runs on real time.
+        float FrameDt(bool a_realTime) {
             static double s_lastT = 0.0;
             const double  now     = Now();
             float         dt      = s_lastT > 0.0 ? static_cast<float>(now - s_lastT) : 0.0f;
             s_lastT               = now;
             dt                    = std::clamp(dt, 0.0f, 0.1f);
             auto* ui              = RE::UI::GetSingleton();
-            if (ui && ui->GameIsPaused()) dt = 0.0f;
+            if (!a_realTime && ui && ui->GameIsPaused()) dt = 0.0f;
             return dt;
         }
 
@@ -300,18 +301,28 @@ namespace CamCollision {
         if (s_cfg.layer < 1 || s_cfg.layer > 46) s_cfg.layer = 36;
     }
 
-    void Request(const RE::NiPoint3& a_pivot, const char* a_who, bool a_ground) {
+    void Request(const RE::NiPoint3& a_pivot, const char* a_who, bool a_ground, bool a_realTime) {
         if (!std::isfinite(a_pivot.x) || !std::isfinite(a_pivot.y) || !std::isfinite(a_pivot.z)) return;
-        s_req    = true;
-        s_pivot  = a_pivot;
-        s_who    = a_who ? a_who : "";
-        s_ground = a_ground;
+        s_req      = true;
+        s_pivot    = a_pivot;
+        s_who      = a_who ? a_who : "";
+        s_ground   = a_ground;
+        s_realTime = a_realTime;
     }
 
     void Apply(RE::FreeCameraState* a_fcs, bool a_driving) {
-        const float dt  = FrameDt();
-        const bool  req = s_req;
-        s_req           = false;
+        const bool  realTime = s_req && s_realTime;
+        s_realTime           = false;
+        const float dt       = FrameDt(realTime);
+        const bool  req      = s_req;
+        s_req                = false;
+        static bool s_wasRealTime = false;
+        if (realTime != s_wasRealTime) {
+            s_wasRealTime = realTime;
+            if (realTime) {
+                SKSE::log::info("CamCollision: {}: the game is paused but the camera moves - walls on real time (push now {:.0f} units)", s_who, Len(s_off));
+            }
+        }
         if (!req || !a_fcs || !a_driving || !s_cfg.enabled) {
             s_off = {};
             return;
