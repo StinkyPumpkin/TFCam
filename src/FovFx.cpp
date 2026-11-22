@@ -211,15 +211,16 @@ namespace FovFx {
         if (!std::isfinite(s.strength)) s.strength = 1.0f;
         s.strength   = std::clamp(s.strength, 0.0f, 2.0f);
         s.spellLevel = std::clamp(s.spellLevel, 0, 100);
-        if (!std::isfinite(s.aimTurn)) s.aimTurn = 22.0f;
-        if (!std::isfinite(s.aimBack)) s.aimBack = 61.0f;
-        if (!std::isfinite(s.aimUp)) s.aimUp = -1.0f;
+        const Settings d{};
+        if (!std::isfinite(s.aimTurn)) s.aimTurn = d.aimTurn;
+        if (!std::isfinite(s.aimBack)) s.aimBack = d.aimBack;
+        if (!std::isfinite(s.aimUp)) s.aimUp = d.aimUp;
         s.aimTurn = std::clamp(s.aimTurn, -110.0f, 110.0f);
         s.aimBack = std::clamp(s.aimBack, 10.0f, 400.0f);  // 10-31: further out (was 120)
         s.aimUp   = std::clamp(s.aimUp, -80.0f, 80.0f);    // 10-31: was -20..30
-        if (!std::isfinite(s.aimDotSize)) s.aimDotSize = 1.2f;
+        if (!std::isfinite(s.aimDotSize)) s.aimDotSize = d.aimDotSize;
         s.aimDotSize = std::clamp(s.aimDotSize, 0.5f, 8.0f);
-        if (!std::isfinite(s.aimVignette)) s.aimVignette = 0.0f;
+        if (!std::isfinite(s.aimVignette)) s.aimVignette = d.aimVignette;
         s.aimVignette = std::clamp(s.aimVignette, 0.0f, 1.0f);
     }
 
@@ -496,7 +497,7 @@ namespace FovFx {
         }
         // 10-31: when the projectiles go through the middle of the screen anyway (TFCam's own aim or Hit Where You Aim)
         // the view keeps your aim's direction - looking at the arrow line's hit made the world swing whenever that
-        // hit jumped between a near tree and the far sky ("the crosshair jumps around", user). The arrow-line look
+        // hit jumped between a near tree and the far sky, and the middle of the screen with it. The arrow-line look
         // stays for the case where nothing corrects the arrow.
         RE::NiPoint3 look = steered ? dir : aimAt - want;
         look              = look * (1.0f / (std::max)(look.Length(), 1e-3f));
@@ -599,7 +600,7 @@ namespace FovFx {
                 using A           = RE::ATTACK_STATE_ENUM;
                 const A    st      = player->AsActorState()->GetAttackState();
                 // 10-31: from kBowAttached, not kBowDraw - kBowDraw is the arrow coming out of the quiver; the string is pulled
-                // between the arrow attaching and kBowDrawn, and the user wants the view to move WITH the pull.
+                // between the arrow attaching and kBowDrawn, so from there the view moves with the pull.
                 const bool drawing = st == A::kBowAttached || st == A::kBowDrawn;
                 if (drawing && !s_bowDrawn) s_bowStart = now;
                 s_bowDrawn = drawing;

@@ -16,17 +16,17 @@ namespace FovFx {
         bool  shouts      = true;   // shouts warp out
         bool  speedPlayer = true;   // your speed stretches it (sprint, Whirlwind Sprint)
         bool  speedCamera = false;  // the free camera's speed stretches it (flying, camera paths)
-        // archer camera: while the string is drawn the third-person camera comes in close round your head (a side-on
-        // shot that shows your face, the drawn bow and where the arrow flies - user's Horizon reference, 10-29). It
-        // looks at where the arrow will land, so the middle of the screen is the aim point. Defaults = the user's own.
+        // archer camera: while the string is drawn the third-person camera comes in round your head, a little to your
+        // right (your face, the drawn bow and where the arrow flies). It looks at where the arrow will land, so the
+        // middle of the screen is the aim point. 11-22: the defaults sit further out and lower, with darker corners.
         bool  aimCam  = true;
-        float aimTurn = 22.0f;  // degrees round your head from straight behind (90 = side-on), to your right
-        float aimBack = 61.0f;  // units from the eyes
-        float aimUp   = -1.0f;  // units above the eyes
+        float aimTurn = 21.0f;   // degrees round your head from straight behind (90 = side-on), to your right
+        float aimBack = 139.0f;  // units from the eyes
+        float aimUp   = -13.0f;  // units above the eyes
         bool  aimDot      = true;   // 10-31: a tiny dot where the arrow will land (the game's crosshair is not needed)
-        float aimDotSize  = 1.2f;   // its radius in pixels at 1080p (user 10-31: "much smaller" than 3)
+        float aimDotSize  = 1.2f;   // its radius in pixels at 1080p (10-31: was 3)
         bool  aimBlur     = false;  // 10-31: the Background blur's edge blur while the string is drawn
-        float aimVignette = 0.0f;   // 10-31: darker corners while the string is drawn, 0..1
+        float aimVignette = 0.96f;  // 10-31: darker corners while the string is drawn, 0..1 (11-22: was 0)
     };
 
     float ArcherVignette();  // 0..1 this frame (aimVignette faded with the archer view). Main thread.
