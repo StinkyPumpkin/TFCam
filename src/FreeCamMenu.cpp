@@ -820,9 +820,13 @@ namespace FreeCamMenu {
             SaveINI();
         }
 
-        ImGuiMCP::TextColored(
+        // A filled swatch: the menu font has no block glyph, so text-drawn squares came out as '?'.
+        ImGuiMCP::ColorButton("##camLightSwatch",
             { s_lightColorR / 255.0f, s_lightColorG / 255.0f, s_lightColorB / 255.0f, 1.0f },
-            "Color Preview ████████");
+            ImGuiMCP::ImGuiColorEditFlags_NoTooltip | ImGuiMCP::ImGuiColorEditFlags_NoDragDrop,
+            { 200.0f, 20.0f });
+        ImGuiMCP::SameLine();
+        ImGuiMCP::Text("Colour");
 
         // --- Presets ---
         struct LightPreset {
