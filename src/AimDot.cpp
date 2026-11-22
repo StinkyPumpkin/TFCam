@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <format>
 #include <numbers>
 #include <string>
@@ -32,14 +33,55 @@ namespace AimDot {
         std::string s_offStatus = "not installed";  // what the menu shows while the box is unticked
         bool        s_logged    = false;
 
-        // True Directional Movement's target lock aims the player's shots at the locked target (it rewrites the angles
-        // in the projectile init). While it is on, arrows and flames / beams are left to it (Hit Where You Aim 1.4).
+        // True Directional Movement's target lock can aim the player's shots at the locked target (it rewrites the
+        // angles in the projectile init). Whether it does is its own Target Lock setting, one for arrows and one for
+        // spells: 0 Free Aim (it leaves the shot alone), 1 Predictive, 2 Homing. Only when it aims are the shots left
+        // to it. Hit Where You Aim 1.4 hands over on the lock alone; under Free Aim that leaves the arrow aimed by
+        // nobody, so it flies wherever the bow happens to point.
+        enum class TdmShot { kArrow, kSpell };
         TDM_API::IVTDM1*  s_tdm = nullptr;
         std::atomic<bool> s_loggedTdm{ false };
+        std::atomic<bool> s_loggedTdmFree{ false };
 
-        bool TdmLocked() {
+        // TDM's aim mode for one kind of shot, from its MCM settings (the defaults file when the player never changed
+        // it; TDM's own default is Predictive). Read again at most every 2 s, so a change in its menu is picked up.
+        int TdmAimType(TdmShot a_kind) {
+            static std::atomic<int>           s_arrow{ 1 }, s_spell{ 1 };
+            static std::atomic<std::uint64_t> s_readAt{ 0 };
+            const std::uint64_t               now = ::GetTickCount64();
+            const std::uint64_t               at  = s_readAt.load();
+            if (at == 0 || now - at > 2000) {
+                s_readAt = now;
+                std::error_code ec;
+                const auto      base = std::filesystem::current_path(ec);
+                const auto      user = (base / "Data/MCM/Settings/TrueDirectionalMovement.ini").string();
+                const auto      def  = (base / "Data/MCM/Config/TrueDirectionalMovement/settings.ini").string();
+                auto read = [&](const char* a_key) {
+                    int v = static_cast<int>(::GetPrivateProfileIntA("TargetLock", a_key, -1, user.c_str()));
+                    if (v < 0) v = static_cast<int>(::GetPrivateProfileIntA("TargetLock", a_key, -1, def.c_str()));
+                    return v < 0 ? 1 : v;
+                };
+                s_arrow = read("uTargetLockArrowAimType");
+                s_spell = read("uTargetLockMissileAimType");
+            }
+            return a_kind == TdmShot::kArrow ? s_arrow.load() : s_spell.load();
+        }
+
+        // True = TDM's target lock is on AND it aims this kind of shot, so TFCam keeps out of it.
+        bool TdmAims(TdmShot a_kind) {
             if (!s_tdm || !s_tdm->GetTargetLockState()) return false;
-            if (!s_loggedTdm.exchange(true)) SKSE::log::info("AimDot: True Directional Movement's target lock is on - its aim is kept for the shot");
+            const char* what = a_kind == TdmShot::kArrow ? "arrows" : "spells";
+            const int   type = TdmAimType(a_kind);
+            if (type == 0) {
+                if (!s_loggedTdmFree.exchange(true)) {
+                    SKSE::log::info("AimDot: True Directional Movement's target lock is on, but its aim mode for {} is Free Aim - TFCam aims the shot at the dot", what);
+                }
+                return false;
+            }
+            if (!s_loggedTdm.exchange(true)) {
+                SKSE::log::info("AimDot: True Directional Movement's target lock is on and aims {} ({}) - its aim is kept for the shot", what,
+                    type == 2 ? "Homing" : "Predictive");
+            }
             return true;
         }
 
@@ -260,7 +302,7 @@ namespace AimDot {
 
             static float Yaw(RE::Projectile* a_proj, float a_angle, func_t a_func) {
                 if (On() && a_proj && Player(a_proj) && CameraAllows()) {
-                    if (TdmLocked()) {
+                    if (TdmAims(TdmShot::kSpell)) {
                         s_pitch = FLT_MAX;
                         return a_func(a_proj, a_angle);
                     }
@@ -284,7 +326,7 @@ namespace AimDot {
             }
 
             static float Pitch(RE::Projectile* a_proj, float a_angle, func_t a_func) {
-                if (On() && a_proj && Player(a_proj) && s_pitch != FLT_MAX && CameraAllows() && !TdmLocked()) return a_func(a_proj, s_pitch);
+                if (On() && a_proj && Player(a_proj) && s_pitch != FLT_MAX && CameraAllows() && !TdmAims(TdmShot::kSpell)) return a_func(a_proj, s_pitch);
                 return a_func(a_proj, a_angle);
             }
 
@@ -295,8 +337,8 @@ namespace AimDot {
         };
 
         // Projectile init: True Directional Movement rewrites the angles in here, so the launch's angles are put back
-        // after it (and on a horse the arrow's yaw stays within 15 degrees of the bow). With TDM's target lock on,
-        // its rewrite (at the locked target) stands.
+        // after it (and on a horse the arrow's yaw stays within 15 degrees of the bow). With TDM's target lock on and
+        // TDM aiming this kind of shot, its rewrite (at the locked target) stands.
         struct ProjectileInitHook {
             static void thunk(RE::Projectile* a_this) {
                 RE::NiPoint3 angle = a_this ? a_this->data.angle : RE::NiPoint3{};
@@ -304,7 +346,7 @@ namespace AimDot {
                 if (!a_this || !On()) return;
                 const auto& h = a_this->GetProjectileRuntimeData().shooter;
                 if (!h || h.native_handle() != kPlayerHandle) return;
-                if (TdmLocked()) return;
+                if (TdmAims(a_this->GetFormType() == RE::FormType::ProjectileArrow ? TdmShot::kArrow : TdmShot::kSpell)) return;
                 auto* player = RE::PlayerCharacter::GetSingleton();
                 auto* pc     = RE::PlayerCamera::GetSingleton();
                 if (player && pc && pc->currentState && pc->currentState->id == RE::CameraState::kMount) {
@@ -461,7 +503,9 @@ namespace AimDot {
         if (::GetModuleHandleA("TrueDirectionalMovement.dll")) {
             s_tdm = TDM_API::RequestV1();
             if (s_tdm) {
-                SKSE::log::info("AimDot: True Directional Movement found - while its target lock is on, arrows and flames / beams keep its aim");
+                SKSE::log::info("AimDot: True Directional Movement found - while its target lock is on, arrows and flames / beams keep its aim "
+                    "(arrow aim mode {}, spell aim mode {}; 0 = Free Aim, the dot aims)",
+                    TdmAimType(TdmShot::kArrow), TdmAimType(TdmShot::kSpell));
             } else {
                 SKSE::log::warn("AimDot: True Directional Movement is loaded but gave no API - its target lock cannot be seen");
             }

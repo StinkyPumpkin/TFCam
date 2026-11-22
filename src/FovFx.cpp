@@ -340,12 +340,18 @@ namespace FovFx {
         RE::NiTransform    t    = root->world;
         const auto&        m    = t.rotate.entry;
         const RE::NiPoint3 view{ m[0][1], m[1][1], m[2][1] };  // the game's view (your mouse)
-        const float        h  = player->GetAngleZ();
-        const float        ah = player->GetAimHeading();  // the way the shot leaves the bow
-        const RE::NiPoint3 f{ std::sin(ah), std::cos(ah), 0.0f };
-        const RE::NiPoint3 r{ f.y, -f.x, 0.0f };  // your right
+        const float        h    = player->GetAngleZ();
+        const float        ah   = player->GetAimHeading();  // the way the shot leaves the bow
         const float        flat = std::hypot(view.x, view.y);
-        const RE::NiPoint3 dir{ f.x * flat, f.y * flat, view.z };  // the aim heading at the view's height (unit length)
+        // 11-22: when the shots go through the middle of the screen anyway (TFCam's own aim or Hit Where You Aim) the
+        // frame follows your view's heading, not the body's. True Directional Movement turns you to face the crosshair
+        // during the draw, and a frame hung off that turn swung in late, at the end of the pull. Without either, the
+        // body's aim heading still sets it: that is where the arrow goes.
+        const bool         steered = AimDot::Active() || s_hwya;
+        const float        yaw     = steered && flat > 0.05f ? std::atan2(view.x, view.y) : ah;
+        const RE::NiPoint3 f{ std::sin(yaw), std::cos(yaw), 0.0f };
+        const RE::NiPoint3 r{ f.y, -f.x, 0.0f };  // your right
+        const RE::NiPoint3 dir{ f.x * flat, f.y * flat, view.z };  // that heading at the view's height (unit length)
         // The eyes, steadied (10-31): the head bone sways through the hold animation and the camera hung off it, so the
         // shot swayed too. The head's offset from your feet is kept in your own frame (turning with you) and eased; your
         // feet move the camera at once, the sway does not.
@@ -408,7 +414,7 @@ namespace FovFx {
         // the view keeps your aim's direction - looking at the arrow line's hit made the world swing whenever that
         // hit jumped between a near tree and the far sky ("the crosshair jumps around", user). The arrow-line look
         // stays for the case where nothing corrects the arrow.
-        RE::NiPoint3 look = AimDot::Active() || s_hwya ? dir : aimAt - want;
+        RE::NiPoint3 look = steered ? dir : aimAt - want;
         look              = look * (1.0f / (std::max)(look.Length(), 1e-3f));
         const float w     = SmoothStep(s_aimW);
         {
@@ -455,8 +461,12 @@ namespace FovFx {
         static bool s_logged = false;
         if (!s_logged && s_aimW > 0.95f) {
             s_logged = true;
-            SKSE::log::info("FovFx: archer camera in - {:.0f} units from the eyes, aim point {:.0f} out from the arrow tip",
-                (want - eye).Length(), s_reach);
+            float off = (ah - std::atan2(view.x, view.y)) * 57.29578f;  // the body's aim heading against the view, degrees
+            while (off > 180.0f) off -= 360.0f;
+            while (off < -180.0f) off += 360.0f;
+            SKSE::log::info("FovFx: archer camera in - {:.0f} units from the eyes, aim point {:.0f} out from the arrow tip; framed on {} "
+                "(the body's aim heading is {:.0f} deg off the view)",
+                (want - eye).Length(), s_reach, steered ? "your view" : "the body's aim", off);
         }
         if (s_aimW < 0.05f) s_logged = false;
     }

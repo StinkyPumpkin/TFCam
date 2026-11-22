@@ -118,7 +118,9 @@ renders, which is the archer camera's view while the string is drawn, and the do
 without Hit Where You Aim.
 
 **With True Directional Movement**: while its target lock is on, arrows, bolts, flames and beams go where TDM aims them
-(at the locked target), not at the dot, as Hit Where You Aim 1.4 does. Without the lock, the dot aims as usual.
+(at the locked target), not at the dot, as Hit Where You Aim 1.4 does - when TDM aims them. TDM's Target Lock page has
+an aim mode for arrows and one for spells; with **Free Aim** TDM leaves the shot alone, so the dot aims it. Without the
+lock, the dot aims as usual.
 
 **With SmoothCam**: its arrow prediction, arc line, 3D crosshair and world crosshair options move the crosshair to
 SmoothCam's own guess of the vanilla arrow, which is not where either aim sends it. Turn those off in SmoothCam when you
@@ -241,7 +243,8 @@ default.
   setting keeps its `TFCam.ini` key, so nothing resets.
 - *Arrows and spells go where the dot is*: while True Directional Movement's target lock is on, arrows, bolts, flames
   and beams keep TDM's aim at the locked target instead of being turned to the dot (Hit Where You Aim 1.4 does the
-  same). Before, the lock-on shot went to the middle of the screen.
+  same). Before, the lock-on shot went to the middle of the screen. Only when TDM aims that kind of shot: with its aim
+  mode for arrows or for spells set to Free Aim, TDM leaves the shot alone and the dot aims it.
 - *Conversation camera*: when the talk opens a menu (barter, a gift, the NPC's things, training), the camera goes at
   once to the shot over your shoulder, facing the NPC, and stays there until the menu closes. Before, the menu stopped
   the camera wherever it was on its way between shots, so each barter was framed differently.
