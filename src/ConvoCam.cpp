@@ -89,6 +89,7 @@ namespace ConvoCam {
         }
 
         float g_realDt = 0.0f;  // the last frame's real time, paused or not (a trade menu's shot runs on it)
+        bool  g_turnPending = false;  // a change of shot is under way: its time goes in the log when it lands
 
         // Own frame time for the drive: capped at 0.1 s, 0 while the game is paused.
         float FrameDt() {
@@ -831,6 +832,7 @@ namespace ConvoCam {
                 if (!s_s.tradeHold) {
                     s_s.tradeHold = true;
                     s_s.shot      = Shot::kOverPlayer;
+                    g_turnPending = false;
                     if (!s_cfg.tradeLive) {
                         s_s.player = pRaw;
                         s_s.npc    = nRaw;
@@ -863,6 +865,7 @@ namespace ConvoCam {
                 s_s.shot      = wanted;
                 s_s.shotSince = now;
                 s_s.settle    = s_cfg.shotSwitch;
+                g_turnPending = true;
                 Event(std::format("shot: {}", ShotName(wanted)));
             } else if (s_s.settle != s_cfg.shotSwitch && now - s_s.shotSince > s_cfg.blendIn) {
                 s_s.settle = s_cfg.shotSwitch;  // the entry is over: later changes use the shot-change time
@@ -876,13 +879,26 @@ namespace ConvoCam {
             const float tAng = std::atan2(t.pos.x - m.x, t.pos.y - m.y);
             const float tRad = Len2(t.pos.x - m.x, t.pos.y - m.y);
             const float settle = (std::max)(s_s.settle, 0.2f);
-            s_s.ang  = SmoothDampAngle(s_s.ang, tAng, s_s.vAng, settle, 1.3f, dt);
-            s_s.rad  = SmoothDamp(s_s.rad, tRad, s_s.vRad, settle, 240.0f, dt);
-            s_s.z    = SmoothDamp(s_s.z, t.pos.z, s_s.vZ, settle, 150.0f, dt);
-            s_s.fov  = SmoothDamp(s_s.fov, t.fov, s_s.vFov, settle, 22.0f, dt);
-            s_s.look.x = SmoothDamp(s_s.look.x, t.look.x, s_s.vLook.x, settle, 300.0f, dt);
-            s_s.look.y = SmoothDamp(s_s.look.y, t.look.y, s_s.vLook.y, settle, 300.0f, dt);
-            s_s.look.z = SmoothDamp(s_s.look.z, t.look.z, s_s.vLook.z, settle, 300.0f, dt);
+            // 11-22: a change of shot is a half turn round the two; at 1.3 rad/s it took about 3 s whatever 'Change of shot
+            // takes' said (1.0 s gave 2.7 s), longer than the setting asked for. The speed limits now scale with
+            // that time, so the turn ends when the setting says; the entry keeps its old limits.
+            const bool  switching = s_s.settle == s_cfg.shotSwitch;
+            const float angCap    = switching ? (std::max)(1.3f, 6.0f / settle) : 1.3f;
+            const float k         = switching ? (std::max)(1.0f, 2.25f / settle) : 1.0f;
+            s_s.ang  = SmoothDampAngle(s_s.ang, tAng, s_s.vAng, settle, angCap, dt);
+            s_s.rad  = SmoothDamp(s_s.rad, tRad, s_s.vRad, settle, 240.0f * k, dt);
+            s_s.z    = SmoothDamp(s_s.z, t.pos.z, s_s.vZ, settle, 150.0f * k, dt);
+            s_s.fov  = SmoothDamp(s_s.fov, t.fov, s_s.vFov, settle, 22.0f * k, dt);
+            s_s.look.x = SmoothDamp(s_s.look.x, t.look.x, s_s.vLook.x, settle, 300.0f * k, dt);
+            s_s.look.y = SmoothDamp(s_s.look.y, t.look.y, s_s.vLook.y, settle, 300.0f * k, dt);
+            s_s.look.z = SmoothDamp(s_s.look.z, t.look.z, s_s.vLook.z, settle, 300.0f * k, dt);
+            {
+                if (g_turnPending && !s_s.tradeHold && std::fabs(WrapPi(tAng - s_s.ang)) < 0.05f) {
+                    g_turnPending = false;
+                    SKSE::log::info("ConvoCam: {} - the turn took {:.2f} s (change of shot set to {:.1f} s)", ShotName(s_s.shot),
+                        now - s_s.shotSince, s_cfg.shotSwitch);
+                }
+            }
 
             static double s_nextTrace = 0.0;
             if (s_s.clock < 0.05f) s_nextTrace = 0.0;

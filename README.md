@@ -247,7 +247,12 @@ default.
   (the default shoulder offset put your head over the NPC when the two of you stand close).
 - *Archer camera*: the bow's zoom now follows the camera's own move into the shot, and the camera keeps up with your
   head while it moves in, so both finish together - before, the zoom ran on about a third of a second after the camera
-  had arrived.
+  had arrived. The move starts as the arrow comes out of the quiver, goes most of the way while your head moves, and
+  lands once the arrow is on the string and your head has stopped, so the shot is in as the pull begins (some bow
+  animations turn the head late, and the camera used to drift on after it had arrived). Through the pull the camera
+  keeps your head where it is in the frame; the slow steadying against the hold's sway starts once the string is back.
+- *Conversation camera*: a change of shot now takes the time **Change of shot takes** says. A speed limit made the half
+  turn round the two of you take about 3 s whatever it was set to.
 - *Conversation camera*: talks the NPC starts, and talks the game opens on the Activate press, are filmed too: the
   Dialogue Menu's open request waits at the menu queue until the free camera is in (where another mod's jump on
   `UIMessageQueue::AddMessage` lets TFCam chain on; see Conversation camera).

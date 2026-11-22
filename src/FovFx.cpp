@@ -73,6 +73,8 @@ namespace FovFx {
         };
         std::vector<Pulse> s_pulses;
         bool               s_bowDrawn  = false;
+        bool               s_bowDraw   = false;  // 11-22: from the arrow coming out of the quiver to the release (the archer camera)
+        bool               s_bowFull   = false;  // 11-22: the string is fully back (kBowDrawn)
         double             s_bowStart  = 0.0;
         float              s_bowNow    = 0.0f;  // the pull, smoothed
         double             s_last      = 0.0;
@@ -299,6 +301,20 @@ namespace FovFx {
         static double       s_wallHold  = 0.0;    // stays in this long after the last push
         static RE::NiPoint3 s_headOff{};          // 10-31: the head's offset from your feet, in your own frame, eased
         static bool         s_haveHead  = false;  //        (the hold animation sways the head; the camera must not sway)
+        // 11-22: the draw's timeline, for landing the camera when the head has stopped (see below)
+        static bool         s_drawWas    = false;
+        static double       s_drawAt     = 0.0;    // the arrow came out of the quiver
+        static double       s_attachAt   = 0.0;    // the arrow went on the string (0 = not yet)
+        static bool         s_arrived    = false;  // the camera may land
+        static const char*  s_arriveWhy  = "";
+        static double       s_arriveAt   = 0.0;
+        static bool         s_headMoved  = false;
+        static double       s_headStopAt = 0.0;
+        static float        s_headSpeed  = 0.0f;   // the head against your feet, in your frame (units / s, eased)
+        static float        s_headPeak   = 0.0f;
+        static float        s_stillFor   = 0.0f;
+        static RE::NiPoint3 s_headPrev{};
+        static bool         s_havePrev   = false;
         const double        now         = Now();
         const float         dt          = s_aimLast > 0.0 ? static_cast<float>(std::clamp(now - s_aimLast, 0.0, 0.1)) : 0.0f;
         s_aimLast                       = now;
@@ -310,7 +326,9 @@ namespace FovFx {
             s_aimW     = 0.0f;
             s_haveAim  = false;
             s_haveHead = false;
+            s_havePrev = false;
             s_wasDrawn = false;
+            s_drawWas  = false;
             s_wallOff  = {};
             s_pubOn    = false;
             s_pubIn    = 0.0f;
@@ -319,14 +337,52 @@ namespace FovFx {
         }
         if (s_wasDrawn && !s_bowDrawn) s_holdUntil = now + kAimHold;
         s_wasDrawn = s_bowDrawn;
+        // 11-22: the camera came in over the first 0.6 s of the pull and the head was still moving after it had arrived
+        // (some bow animations turn the head to the arrow late), so the shot drifted on at the end. Now it starts as the arrow
+        // comes out of the quiver, goes most of the way (kApproach) while the head moves, and lands once the arrow is on the
+        // string and the head has stopped - in as the pull begins. A head that never settles lands it kMaxWait after the arrow
+        // went on the string; a draw straight after a shot (the camera still in) stays in.
+        constexpr float  kApproach = 0.7f;
+        constexpr float  kMoving   = 40.0f;  // head speed against your feet (units / s) that counts as moving
+        constexpr float  kStill    = 15.0f;  // ... and as stopped, for kStillSec
+        constexpr float  kStillSec = 0.08f;
+        constexpr double kMaxWait  = 1.2;
+        if (s_bowDraw && !s_drawWas) {
+            s_drawAt     = now;
+            s_attachAt   = 0.0;
+            s_arrived    = s_aimW > 0.9f;
+            s_arriveWhy  = s_arrived ? "the camera was still in from the last shot" : "";
+            s_arriveAt   = s_arrived ? now : 0.0;
+            s_headMoved  = false;
+            s_headStopAt = 0.0;
+            s_headPeak   = 0.0f;
+            s_stillFor   = 0.0f;
+        }
+        s_drawWas = s_bowDraw;
+        if (s_bowDraw && s_bowDrawn && s_attachAt <= 0.0) s_attachAt = now;
+        if (s_bowDraw && !s_arrived && s_attachAt > 0.0) {
+            if (s_headMoved && s_stillFor >= kStillSec) {
+                s_arrived   = true;
+                s_arriveWhy = "the head stopped";
+            } else if (!s_headMoved && now - s_attachAt >= 0.1) {
+                s_arrived   = true;
+                s_arriveWhy = "the head did not move";
+            } else if (now - s_attachAt >= kMaxWait) {
+                s_arrived   = true;
+                s_arriveWhy = "the head kept moving - landed anyway";
+            }
+            if (s_arrived) s_arriveAt = now;
+        }
         if (!(ui && ui->GameIsPaused())) {
-            const float target = s_bowDrawn || now < s_holdUntil ? 1.0f : 0.0f;
-            const float tau    = target > s_aimW ? 0.22f : 0.2f;  // 10-31: in over the pull (was 0.12)
+            const bool  hold   = now < s_holdUntil;
+            const float target = s_bowDraw ? (s_arrived ? 1.0f : kApproach) : (hold ? 1.0f : 0.0f);
+            const float tau    = target < s_aimW ? 0.2f : (s_arrived || hold ? 0.1f : 0.22f);
             s_aimW += (target - s_aimW) * (dt > 0.0f ? 1.0f - std::exp(-dt / tau) : 0.0f);
         }
         if (s_aimW < 0.002f) {
             s_haveAim  = false;
             s_haveHead = false;
+            s_havePrev = false;
             s_wallOff  = {};
             s_pubOn    = false;
             s_pubIn    = 0.0f;
@@ -367,11 +423,34 @@ namespace FovFx {
                 s_haveHead = true;
             } else {
                 // 11-22: quick while the camera is still moving in (the pull carries the head forward and down; eased at
-                // 0.3 s the camera kept drifting after the pull had stopped), the slow steadying only once it is in.
-                const float tau = s_aimW < 0.98f ? 0.08f : 0.3f;
+                // 0.3 s the camera kept drifting after the pull had stopped), the slow steadying only once it is in and the
+                // string is fully back (the hold's sway); through the pull the head stays put in the frame.
+                const float tau = s_aimW < 0.98f || !s_bowFull ? 0.08f : 0.3f;
                 s_headOff = s_headOff + (local - s_headOff) * (1.0f - std::exp(-dt / tau));
             }
             headGap = (local - s_headOff).Length();
+            // how fast the head moves against your feet: the camera lands once it has stopped
+            if (dt > 0.0f) {
+                if (s_havePrev) {
+                    const float raw = (local - s_headPrev).Length() / dt;
+                    s_headSpeed += (raw - s_headSpeed) * (1.0f - std::exp(-dt / 0.04f));
+                }
+                s_headPrev = local;
+                s_havePrev = true;
+                if (s_bowDraw && !s_arrived) {
+                    s_headPeak = (std::max)(s_headPeak, s_headSpeed);
+                    if (s_headSpeed > kMoving) {
+                        s_headMoved  = true;
+                        s_stillFor   = 0.0f;
+                        s_headStopAt = 0.0;
+                    } else if (s_headSpeed < kStill) {
+                        if (s_stillFor <= 0.0f) s_headStopAt = now;
+                        s_stillFor += dt;
+                    } else {
+                        s_stillFor = 0.0f;
+                    }
+                }
+            }
             const RE::NiPoint3 back{ s_headOff.x * ch + s_headOff.y * sh, -s_headOff.x * sh + s_headOff.y * ch, s_headOff.z };  // by +h
             eye = feet + back + RE::NiPoint3{ sh * 4.0f, ch * 4.0f, 7.0f };
         }
@@ -473,6 +552,10 @@ namespace FovFx {
                 "(the body's aim heading is {:.0f} deg off the view); zoom {:.1f} of {:.1f} deg, head trailing {:.1f} units",
                 (want - eye).Length(), s_reach, steered ? "your view" : "the body's aim", off, s_bowNow * s_settings.strength,
                 s_settings.bow ? kBowPull * s_settings.strength : 0.0f, headGap);
+            const auto at = [](double t) { return t > 0.0 ? std::format("+{:.2f} s", t - s_drawAt) : std::string("-"); };
+            SKSE::log::info("FovFx: archer draw - arrow on the string {}, head {} (fastest {:.0f} units/s), {} {}, camera in {}",
+                at(s_attachAt), s_headMoved ? std::format("stopped {}", at(s_headStopAt)) : std::string("never moved"), s_headPeak,
+                s_arriveWhy, at(s_arriveAt), at(now));
         }
         if (s_aimW < 0.05f) s_logged = false;
     }
@@ -520,9 +603,15 @@ namespace FovFx {
                 const bool drawing = st == A::kBowAttached || st == A::kBowDrawn;
                 if (drawing && !s_bowDrawn) s_bowStart = now;
                 s_bowDrawn = drawing;
+                // 11-22: the archer camera starts with the arrow coming out of the quiver, so it can be in as the pull
+                // begins (it lands once the head has stopped, see ApplyAimCam)
+                s_bowDraw = drawing || st == A::kBowDraw;
+                s_bowFull = st == A::kBowDrawn;
             }
         } else {
             s_bowDrawn = false;  // your actions only count when the camera is on you
+            s_bowDraw  = false;
+            s_bowFull  = false;
         }
 
         // speed: yours (on foot / on a horse) or the free camera's
@@ -565,10 +654,11 @@ namespace FovFx {
         // move in (the same SmoothStep of its weight), so the zoom and the move into the shot end together; the separate
         // 0.6 s pull plus its 0.15 s easing ran on about a third of a second after the camera had arrived.
         const bool  withCam   = s_settings.aimCam && s_pubOn;
-        const float bowTarget = !(s_bowDrawn && s_settings.bow) ? 0.0f
+        const bool  pulling   = withCam ? s_bowDraw : s_bowDrawn;  // 11-22: with the camera from the quiver on, as the camera moves
+        const float bowTarget = !(pulling && s_settings.bow) ? 0.0f
                               : withCam ? kBowPull * SmoothStep(s_pubIn)
                                         : kBowPull * SmoothStep(static_cast<float>(now - s_bowStart) / kBowPullTime);
-        const float bowTau    = withCam && s_bowDrawn ? 0.03f : (s_bowDrawn ? 0.15f : 0.08f);
+        const float bowTau    = withCam && pulling ? 0.03f : (s_bowDrawn ? 0.15f : 0.08f);
         s_bowNow += (bowTarget - s_bowNow) * (dt > 0.0f ? 1.0f - std::exp(-dt / bowTau) : 0.0f);
 
         float pulses = 0.0f;
