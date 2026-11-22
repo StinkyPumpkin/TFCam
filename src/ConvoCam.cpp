@@ -497,10 +497,10 @@ namespace ConvoCam {
         // to the NPC (the player is turned to face them, faceSpeaker), so their own head is behind it, and looks at the NPC's face
         // and chest: the NPC stands in the open middle of a trade page, where the side shots hid them behind its panels.
         // 11-22: the eye points are the head BONES, which sit at the jaw, and the lens was
-        // the over-the-shoulder one. The frame now runs from above the NPC's head to mid-chest (centre kFaceCentre from the head
+        // the over-the-shoulder one. The frame now runs from above the NPC's head to the hips (centre kFaceCentre from the head
         // bone, half height kFaceHalf), the camera at eye height, and the lens is worked out for the real distance (FitFov).
         constexpr float kFaceCentre = -13.0f;
-        constexpr float kFaceHalf   = 32.0f;
+        constexpr float kFaceHalf   = 60.0f;   // head to hips: an FOV of about 95 at ~100 units from the face shows about this much
 
         // the screen's width / height from the live world camera's frustum (16:9 if it cannot be read)
         float ScreenAspect() {

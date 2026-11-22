@@ -69,7 +69,7 @@ When you talk to an NPC in third person, TFCam's free camera takes over and film
   screen; a reply with no sound at all turns the camera after 10 s.
 - *Turn me to face who I talk to* turns you to face the NPC (you can talk to someone standing behind you).
 - Trade menus (barter, gift, training) pause the game; the camera sits on the *Trade menus* shot until the menu closes. *Face to face*
-  (the default) looks from just in front of your face at the NPC's face and chest, so they stand in the middle of the screen, clear of
+  (the default) looks from just in front of your face at the NPC from head to hips, so they stand in the middle of the screen, clear of
   a trade menu's lists; *Distance*, *Height*, *Side*, *Turn round the two* and *FOV* move it.
 - The camera starts on the **release** of the Activate tap, once the game has started the dialogue (the game acts on the release; starting the
   free camera before it kept the dialogue from opening), and ends after the Dialogue Menu closes, easing back behind the player. It is
