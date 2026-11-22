@@ -226,6 +226,7 @@ namespace ConvoCam {
             // --Claude 11-22: turning the player to face the NPC
             bool turning    = false;
             bool turnLogged = false;
+            int  turnBacks  = 0;
             float        tradePush = 0.0f;   // how far the trade shot was moved out to keep the player's head off the NPC
             bool         tradeBlocked = false;  // 11-22: a wall in the way of the shoulder trade shot - face to face for this menu
             float        settle    = 1.6f;  // seconds the damping takes to arrive (the entry is slower than a shot change)
@@ -465,15 +466,41 @@ namespace ConvoCam {
         // --Claude 11-22: from the player's eyes to the NPC. The camera stands a little in front of the player's face on the line
         // to the NPC (the player is turned to face them, faceSpeaker), so their own head is behind it, and looks at the NPC's face
         // and chest: the NPC stands in the open middle of a trade page, where the side shots hid them behind its panels.
+        // 11-22: the eye points are the head BONES, which sit at the jaw, and the lens was
+        // the over-the-shoulder one. The frame now runs from above the NPC's head to mid-chest (centre kFaceCentre from the head
+        // bone, half height kFaceHalf), the camera at eye height, and the lens is worked out for the real distance (FitFov).
+        constexpr float kFaceCentre = -13.0f;
+        constexpr float kFaceHalf   = 32.0f;
+
+        // the screen's width / height from the live world camera's frustum (16:9 if it cannot be read)
+        float ScreenAspect() {
+            if (!REL::Module::IsVR()) {
+                if (auto* nc = RE::Main::WorldRootCamera()) {
+                    const auto& fr = nc->GetRuntimeData2().viewFrustum;
+                    const float w = fr.fRight - fr.fLeft, h = fr.fTop - fr.fBottom;
+                    if (std::isfinite(w) && std::isfinite(h) && w > 0.0f && h > 0.0f) return std::clamp(w / h, 1.0f, 3.0f);
+                }
+            }
+            return 16.0f / 9.0f;
+        }
+
+        // the game's (horizontal) FOV that shows a_half units above and below the look point from where the camera is
+        float FitFov(const Target& t, float a_half) {
+            const float dx = t.look.x - t.pos.x, dy = t.look.y - t.pos.y, dz = t.look.z - t.pos.z;
+            const float dist = (std::max)(std::sqrt(dx * dx + dy * dy + dz * dz), 20.0f);
+            const float tanH = a_half / dist * ScreenAspect();
+            return std::clamp(2.0f * std::atan(tanH) * 57.2958f, 40.0f, 100.0f);
+        }
+
         Target FaceToFace(const RE::NiPoint3& P, const RE::NiPoint3& N) {
             constexpr float kFwd = 22.0f;
             const float     d    = (std::max)(Len2(N.x - P.x, N.y - P.y), 30.0f);
             const float     fx = (N.x - P.x) / d, fy = (N.y - P.y) / d;
             const float     fwd = (std::min)(kFwd, d * 0.35f);
             Target          t;
-            t.pos  = { P.x + fx * fwd, P.y + fy * fwd, P.z };
-            t.look = { N.x, N.y, N.z - 12.0f };
-            t.fov  = 45.0f;
+            t.pos  = { P.x + fx * fwd, P.y + fy * fwd, P.z + 6.0f };
+            t.look = { N.x, N.y, N.z + kFaceCentre };
+            t.fov  = FitFov(t, kFaceHalf);
             return t;
         }
 
@@ -529,7 +556,11 @@ namespace ConvoCam {
                 }
             }
             t.pos.z += s_cfg.tradeHeight;
-            if (s_cfg.tradeFov > 1.0f) t.fov = s_cfg.tradeFov;
+            if (s_cfg.tradeFov > 1.0f) {
+                t.fov = s_cfg.tradeFov;
+            } else if (s_cfg.tradeShot == 3 || s_s.tradeBlocked) {
+                t.fov = FitFov(t, kFaceHalf);   // 11-22: face to face - the lens for where Distance / Side / Height put the camera
+            }
             return t;
         }
 
@@ -870,6 +901,15 @@ namespace ConvoCam {
                 if (!s_s.turnLogged) {
                     s_s.turnLogged = true;
                     Event(std::format("turning you {:.0f} deg to face {}", diff * 57.2958f, s_s.speakerName));
+                } else if (s_s.turnBacks < 12) {
+                    // 11-22: something else may turn the player
+                    // away after the first turn - logged with what the dialogue is doing then, and turned back
+                    ++s_s.turnBacks;
+                    auto* mtm = RE::MenuTopicManager::GetSingleton();
+                    SKSE::log::info("ConvoCam: something turned you {:.0f} deg away from {} (heading now {:.0f} deg) - turning back; topic info {}, "
+                                    "your voice {}, their voice {}, shot {}",
+                        -diff * 57.2958f, s_s.speakerName, cur * 57.2958f, mtm && mtm->currentTopicInfo ? "set" : "none",
+                        VoicePlaying(p) ? "playing" : "not playing", VoicePlaying(npc) ? "playing" : "not playing", ShotName(s_s.shot));
                 }
             }
             if (std::fabs(diff) < 0.03f) {
@@ -942,6 +982,11 @@ namespace ConvoCam {
                         }
                     }
                     const Target t0 = ShotTarget(s_s.shot);  // also measures tradePush for the line below
+                    if (s_cfg.tradeShot == 3 || s_s.tradeBlocked) {
+                        const float dx = t0.look.x - t0.pos.x, dy = t0.look.y - t0.pos.y, dz = t0.look.z - t0.pos.z;
+                        SKSE::log::info("ConvoCam: face to face - the camera {:.0f} units from {}'s face, {:.0f} between you, FOV {:.0f}",
+                            std::sqrt(dx * dx + dy * dy + dz * dz), s_s.speakerName, Len2(s_s.npc.x - s_s.player.x, s_s.npc.y - s_s.player.y), t0.fov);
+                    }
                     if (s_cfg.tradeLive) {
                         s_s.settle = s_cfg.shotSwitch;
                     } else {
