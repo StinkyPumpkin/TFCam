@@ -28,6 +28,7 @@ namespace CamCollision {
         const char*  s_who = "";
         bool         s_ground = false;  // 11-17: this frame's driver wants the ground probe
         bool         s_realTime = false;  // 11-22: this frame's driver runs on real time under a paused menu
+        bool         s_snapNext = false;  // 11-22: a cut - the next push is set at once
 
         RE::NiPoint3 s_off{};  // 0.15.2: how far the camera is moved off what the driver wrote (slid along walls), now
         double s_holdUntil = 0.0;
@@ -310,6 +311,8 @@ namespace CamCollision {
         s_realTime = a_realTime;
     }
 
+    void SnapNext() { s_snapNext = true; }
+
     void Apply(RE::FreeCameraState* a_fcs, bool a_driving) {
         const bool  realTime = s_req && s_realTime;
         s_realTime           = false;
@@ -378,6 +381,10 @@ namespace CamCollision {
             }
         }
         const RE::NiPoint3 target = sol.pos - cam;
+        if (s_snapNext) {   // 11-22: the driver cut to a new shot - no easing over from the old spot's push
+            s_snapNext = false;
+            s_off      = target;
+        }
         const float        tl     = Len(target);
         const float        ol     = Len(s_off);
         const double       now    = Now();
@@ -428,7 +435,7 @@ namespace CamCollision {
         }
     }
 
-    RE::NiPoint3 ClearSpot(const RE::NiPoint3& a_pivot, const RE::NiPoint3& a_cam) {
+    RE::NiPoint3 ClearSpot(const RE::NiPoint3& a_pivot, const RE::NiPoint3& a_cam, const char* a_who) {
         if (!s_cfg.enabled) return a_cam;
         auto* player = RE::PlayerCharacter::GetSingleton();
         auto* cell   = player ? player->GetParentCell() : nullptr;
@@ -451,7 +458,7 @@ namespace CamCollision {
         const Solved sol     = Solve(world, a_pivot, a_cam, side, r, margin);
         if (sol.moved && Now() >= s_nextLog) {
             s_nextLog       = Now() + 0.5;
-            const auto text = std::format("archer camera: moved {:.0f} units off the wall of {:08X} (layer {})", Len(sol.pos - a_cam),
+            const auto text = std::format("{}: moved {:.0f} units off the wall of {:08X} (layer {})", a_who ? a_who : "a camera", Len(sol.pos - a_cam),
                 sol.nearest.ref, sol.nearest.layer);
             SKSE::log::info("CamCollision: {}", text);
             NotePush(text);

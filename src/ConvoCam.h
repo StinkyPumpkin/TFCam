@@ -20,7 +20,9 @@ namespace ConvoCam {
         bool  thirdPersonOnly = true;   // first person keeps the game's own dialogue view
         float blendIn        = 1.6f;    // seconds to settle on the first shot
         float blendOut       = 1.4f;    // seconds back to the game's camera
-        float shotSwitch     = 1.5f;    // seconds a change of shot takes to settle
+        float shotSwitch     = 1.5f;    // seconds a change of shot takes to settle (Swing)
+        bool  cutShots       = true;    // 11-22: a change of shot cuts (film); off = it swings round the two in shotSwitch
+        bool  faceSpeaker    = true;    // 11-22: turn the player to face the NPC they talk to (one can talk to someone behind)
         float minShotSec     = 2.5f;    // a shot stays at least this long
         float distance       = 115.0f;  // camera behind the foreground speaker (units)
         float shoulder       = 36.0f;   // camera to the side of the foreground speaker's shoulder (units)
@@ -34,9 +36,11 @@ namespace ConvoCam {
         float drift          = 1.0f;    // slow handheld sway, 0 = still; 0..3
         bool  noEdgePan      = false;   // the game's mouse edge-pan in dialogue (fPCDialogueLookSpeed) off in every dialogue; always off while the camera films
         // A menu the talk opens (barter, gift, training) pauses the game; the camera sits on this shot until it closes.
-        int   tradeShot      = 0;       // 0 = over your shoulder, 1 = both from the side, 2 = close on the NPC over your shoulder
+        int   tradeShot      = 3;       // 0 = over your shoulder, 1 = both from the side, 2 = close on the NPC over your shoulder,
+                                        // 3 = face to face (11-22: from your eyes to the NPC, in the open middle of a trade page)
         float tradeDistance  = 1.0f;    // x the shot's own distance (0.4..2.5)
         float tradeHeight    = 0.0f;    // units up / down
+        float tradeSide      = 0.0f;    // 11-22: units to the side (+ = right as the camera looks)
         float tradeTurn      = 0.0f;    // degrees round the pair (-90..90)
         float tradeFov       = 0.0f;    // lens; 0 = the shot's own
         bool  tradeLive      = true;    // the camera keeps its sway and follows them under the paused menu (real time)

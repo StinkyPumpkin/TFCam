@@ -218,7 +218,16 @@ namespace ConvoCam {
             Shot         shot      = Shot::kOverPlayer;
             double       shotSince = 0.0;
             bool         tradeHold = false;  // a menu opened from the talk (barter, gift ...) holds the camera on one shot
+            // --Claude 11-22: a picked line - the camera stays on the player until the NPC's voice starts
+            const RE::TESTopicInfo* lastInfo     = nullptr;
+            double                  pickAt       = 0.0;
+            bool                    npcVoiceSeen = true;
+            double                  nextVoiceLog = 0.0;
+            // --Claude 11-22: turning the player to face the NPC
+            bool turning    = false;
+            bool turnLogged = false;
             float        tradePush = 0.0f;   // how far the trade shot was moved out to keep the player's head off the NPC
+            bool         tradeBlocked = false;  // 11-22: a wall in the way of the shoulder trade shot - face to face for this menu
             float        settle    = 1.6f;  // seconds the damping takes to arrive (the entry is slower than a shot change)
             float        clock     = 0.0f;
             // return
@@ -287,6 +296,19 @@ namespace ConvoCam {
             auto spk = mtm->speaker.get();
             auto ours = s_s.speaker.get();
             return spk && ours && spk.get() == ours.get();
+        }
+
+        // --Claude 11-22: the actor's voice is playing - its high process voice sound handles. The current topic info is set from
+        // the moment a line is picked, while a player-voice mod (DBReV) is still saying the player's own line and holds the reply.
+        bool VoicePlaying(RE::Actor* a) {
+            if (!a) return false;
+            auto* proc = a->GetActorRuntimeData().currentProcess;
+            auto* high = proc ? proc->high : nullptr;
+            if (!high) return false;
+            for (auto& h : high->soundHandles) {
+                if (h.IsValid() && h.IsPlaying()) return true;
+            }
+            return false;
         }
 
         RE::Actor* SpeakerActor() {
@@ -440,10 +462,26 @@ namespace ConvoCam {
             return t;
         }
 
+        // --Claude 11-22: from the player's eyes to the NPC. The camera stands a little in front of the player's face on the line
+        // to the NPC (the player is turned to face them, faceSpeaker), so their own head is behind it, and looks at the NPC's face
+        // and chest: the NPC stands in the open middle of a trade page, where the side shots hid them behind its panels.
+        Target FaceToFace(const RE::NiPoint3& P, const RE::NiPoint3& N) {
+            constexpr float kFwd = 22.0f;
+            const float     d    = (std::max)(Len2(N.x - P.x, N.y - P.y), 30.0f);
+            const float     fx = (N.x - P.x) / d, fy = (N.y - P.y) / d;
+            const float     fwd = (std::min)(kFwd, d * 0.35f);
+            Target          t;
+            t.pos  = { P.x + fx * fwd, P.y + fy * fwd, P.z };
+            t.look = { N.x, N.y, N.z - 12.0f };
+            t.fov  = 45.0f;
+            return t;
+        }
+
         // --Claude 11-21: the shot under a menu the talk opened (barter, gift, training), from the Trade menus settings.
         Target TradeTarget() {
             const float side = s_cfg.swapSide ? -1.0f : 1.0f;
-            Target      t    = s_cfg.tradeShot == 1 ? TwoShot(s_s.player, s_s.npc, side) : OverShoulder(s_s.player, s_s.npc, side);
+            Target      t    = (s_cfg.tradeShot == 3 || s_s.tradeBlocked) ? FaceToFace(s_s.player, s_s.npc) :
+                               s_cfg.tradeShot == 1 ? TwoShot(s_s.player, s_s.npc, side) : OverShoulder(s_s.player, s_s.npc, side);
             if (s_cfg.tradeShot == 2) {  // closer on the NPC: the camera 40 % of the way to what it looks at, a longer lens
                 t.pos = Mix(t.pos, t.look, 0.4f);
                 t.fov = (std::max)(20.0f, t.fov - 8.0f);
@@ -460,8 +498,16 @@ namespace ConvoCam {
             // 11-22: over your shoulder, the default shoulder offset runs the line to the NPC only ~17 units past the middle of
             // your head when the two stand ~100 apart, so your head covers them. Under the trade menu the camera goes out to the
             // side (pivoting on the NPC) until that line clears your head by kTradeClear - looked at from above.
+            // 11-22: to the side, as the camera looks (+ = right)
+            if (s_cfg.tradeSide != 0.0f) {
+                const float lx = t.look.x - t.pos.x, ly = t.look.y - t.pos.y, ll = Len2(lx, ly);
+                if (ll > 1.0f) {
+                    t.pos.x += ly / ll * s_cfg.tradeSide;
+                    t.pos.y += -lx / ll * s_cfg.tradeSide;
+                }
+            }
             s_s.tradePush = 0.0f;
-            if (s_cfg.tradeShot != 1) {
+            if ((s_cfg.tradeShot == 0 || s_cfg.tradeShot == 2) && !s_s.tradeBlocked) {  // 11-22: not face to face (in front of the head)
                 constexpr float kTradeClear = 30.0f;
                 const auto&     P = s_s.player;
                 const auto&     N = s_s.npc;
@@ -488,7 +534,8 @@ namespace ConvoCam {
         }
 
         const char* TradeShotName() {
-            return s_cfg.tradeShot == 1 ? "both from the side" : s_cfg.tradeShot == 2 ? "close on the NPC" : "over your shoulder";
+            if (s_s.tradeBlocked) return "face to face (a wall was in the way)";
+            return s_cfg.tradeShot == 3 ? "face to face" : s_cfg.tradeShot == 1 ? "both from the side" : s_cfg.tradeShot == 2 ? "close on the NPC" : "over your shoulder";
         }
 
         Target ShotTarget(Shot shot) {
@@ -795,6 +842,46 @@ namespace ConvoCam {
             if (w >= 1.0f) FinishReturn();
         }
 
+        // --Claude 11-22: the camera put on a shot at once (a cut): its cylindrical place round the midpoint m and what it looks at,
+        // at rest; the wall push is solved afresh for the new place instead of easing over from the old one.
+        void CutTo(const Target& t, const RE::NiPoint3& m) {
+            s_s.ang  = std::atan2(t.pos.x - m.x, t.pos.y - m.y);
+            s_s.rad  = Len2(t.pos.x - m.x, t.pos.y - m.y);
+            s_s.z    = t.pos.z;
+            s_s.fov  = t.fov;
+            s_s.look = t.look;
+            s_s.vAng = s_s.vRad = s_s.vZ = s_s.vFov = 0.0f;
+            s_s.vLook = {};
+            g_turnPending = false;
+            CamCollision::SnapNext();
+        }
+
+        // --Claude 11-22: the player turns to face the NPC (about 230 deg/s at most, easing in at the end), from 9 deg off
+        void TurnToFace(RE::PlayerCharacter* p, RE::Actor* npc, float dt) {
+            if (!p || !npc || dt <= 0.0f) return;
+            if (p->IsOnMount() || p->AsActorState()->GetSitSleepState() != RE::SIT_SLEEP_STATE::kNormal) return;
+            const auto a = p->GetPosition(), b = npc->GetPosition();
+            if (Len2(b.x - a.x, b.y - a.y) < 1.0f) return;
+            const float cur  = p->GetAngleZ();
+            const float diff = WrapPi(std::atan2(b.x - a.x, b.y - a.y) - cur);
+            if (!s_s.turning) {
+                if (std::fabs(diff) < 0.15f) return;
+                s_s.turning = true;
+                if (!s_s.turnLogged) {
+                    s_s.turnLogged = true;
+                    Event(std::format("turning you {:.0f} deg to face {}", diff * 57.2958f, s_s.speakerName));
+                }
+            }
+            if (std::fabs(diff) < 0.03f) {
+                s_s.turning = false;
+                return;
+            }
+            const float maxStep = 4.0f * dt;
+            float       step    = diff * (std::min)(1.0f, dt * 9.0f);
+            if (std::fabs(step) < 0.01f) step = diff > 0.0f ? (std::min)(diff, 0.01f) : (std::max)(diff, -0.01f);
+            p->SetHeading(WrapPi(cur + std::clamp(step, -maxStep, maxStep)));
+        }
+
         void DriveRun(RE::FreeCameraState* fcs, float dt) {
             auto* player = RE::PlayerCharacter::GetSingleton();
             auto  ref    = s_s.speaker.get();
@@ -819,6 +906,9 @@ namespace ConvoCam {
                 s_s.npc       = Mix(s_s.npc, nRaw, w);
             }
             s_s.clock += dt;
+            // --Claude 11-22: turn the player to face the NPC - one can talk to someone standing behind; the shots on the player
+            // then show their face and Face to face looks past their head. Not under a trade menu (the game is paused there).
+            if (s_cfg.faceSpeaker && !TradeMenuOpen()) TurnToFace(player, npc, dt);
 
             // Which shot: over the player's shoulder while the NPC talks, the reverse while it is the player's turn - never
             // sooner than minShotSec after the last change.
@@ -836,6 +926,20 @@ namespace ConvoCam {
                     if (!s_cfg.tradeLive) {
                         s_s.player = pRaw;
                         s_s.npc    = nRaw;
+                    }
+                    // 11-22: the shoulder shot (or the close one) with a wall between it and the NPC - face to face instead, for this
+                    // menu (decided once, so it does not flip back and forth)
+                    s_s.tradeBlocked = false;
+                    if (s_cfg.tradeShot == 0 || s_cfg.tradeShot == 2) {
+                        constexpr float    kBlocked = 30.0f;
+                        const Target       sh       = TradeTarget();
+                        const RE::NiPoint3 clear    = CamCollision::ClearSpot(sh.look, sh.pos, "trade shot");
+                        const float        dx = clear.x - sh.pos.x, dy = clear.y - sh.pos.y, dz = clear.z - sh.pos.z;
+                        const float        in = std::sqrt(dx * dx + dy * dy + dz * dz);
+                        if (in > kBlocked) {
+                            s_s.tradeBlocked = true;
+                            Event(std::format("the shoulder trade shot is {:.0f} units into a wall - face to face for this menu", in));
+                        }
                     }
                     const Target t0 = ShotTarget(s_s.shot);  // also measures tradePush for the line below
                     if (s_cfg.tradeLive) {
@@ -857,16 +961,57 @@ namespace ConvoCam {
                 }
                 s_s.shotSince = now;
             } else if (s_s.tradeHold) {
-                s_s.tradeHold = false;
+                s_s.tradeHold    = false;
+                s_s.tradeBlocked = false;
                 s_s.shotSince = now;
             }
-            const Shot   wanted  = (s_cfg.alternate && s_s.seenMenu && DialogueOpen() && !NpcTalking() && s_s.clock > 0.5f && !s_s.tradeHold) ? Shot::kReverse : Shot::kOverPlayer;
-            if (wanted != s_s.shot && now - s_s.shotSince >= s_cfg.minShotSec) {
+            // --Claude 11-22: a picked line is the PLAYER's first - a player-voice mod (DBReV) says it and the NPC's reply waits for
+            // it - but the topic info is set from the pick. So the camera stays on the player until the NPC's own voice starts;
+            // a reply with no sound at all turns it after kHoldSilent. Logged twice a second for the first 6 s of each line.
+            constexpr double         kHoldSilent = 10.0;
+            const RE::TESTopicInfo* info        = NpcTalking() ? RE::MenuTopicManager::GetSingleton()->currentTopicInfo : nullptr;
+            if (info != s_s.lastInfo) {
+                s_s.lastInfo = info;
+                if (info) {
+                    s_s.pickAt       = now;
+                    s_s.npcVoiceSeen = false;
+                    s_s.nextVoiceLog = now;
+                }
+            }
+            bool holdOnPlayer = false;
+            if (info && !s_s.npcVoiceSeen) {
+                const bool npcVoice = VoicePlaying(npc);
+                if (now >= s_s.nextVoiceLog && now - s_s.pickAt < 6.0) {
+                    s_s.nextVoiceLog = now + 0.5;
+                    SKSE::log::info("ConvoCam: line +{:.2f} s - {}'s voice {}, your voice {}", now - s_s.pickAt, s_s.speakerName,
+                        npcVoice ? "playing" : "not playing", VoicePlaying(player) ? "playing" : "not playing");
+                }
+                if (npcVoice) {
+                    s_s.npcVoiceSeen = true;
+                    Event(std::format("{}'s voice started {:.2f} s after the line began", s_s.speakerName, now - s_s.pickAt));
+                } else if (now - s_s.pickAt > kHoldSilent) {
+                    s_s.npcVoiceSeen = true;
+                    Event(std::format("no voice from {} in {:.0f} s - turning to them anyway", s_s.speakerName, kHoldSilent));
+                } else {
+                    holdOnPlayer = true;
+                }
+            }
+            const bool   playersTurn = s_s.seenMenu && DialogueOpen() && (!info || holdOnPlayer);
+            const Shot   wanted      = (s_cfg.alternate && playersTurn && s_s.clock > 0.5f && !s_s.tradeHold) ? Shot::kReverse : Shot::kOverPlayer;
+            // the NPC's voice starting is a cue of its own: the change waits only 0.5 s after the last one, not minShotSec
+            const bool   voiceCue    = wanted == Shot::kOverPlayer && info != nullptr && s_s.npcVoiceSeen;
+            if (wanted != s_s.shot && (now - s_s.shotSince >= s_cfg.minShotSec || (voiceCue && now - s_s.shotSince >= 0.5))) {
                 s_s.shot      = wanted;
                 s_s.shotSince = now;
                 s_s.settle    = s_cfg.shotSwitch;
-                g_turnPending = true;
-                Event(std::format("shot: {}", ShotName(wanted)));
+                // 11-22: Cut (film) - the camera is put on the new shot at once; Swing - it turns round the two in shotSwitch
+                if (s_cfg.cutShots && !s_s.tradeHold && s_s.clock > s_cfg.blendIn) {
+                    CutTo(ShotTarget(wanted), Mix(s_s.player, s_s.npc, 0.5f));
+                    Event(std::format("shot: {} (cut)", ShotName(wanted)));
+                } else {
+                    g_turnPending = true;
+                    Event(std::format("shot: {}", ShotName(wanted)));
+                }
             } else if (s_s.settle != s_cfg.shotSwitch && now - s_s.shotSince > s_cfg.blendIn) {
                 s_s.settle = s_cfg.shotSwitch;  // the entry is over: later changes use the shot-change time
             }
@@ -944,9 +1089,10 @@ namespace ConvoCam {
         range(s_cfg.fovWide, 20.0f, 110.0f, 56.0f);
         range(s_cfg.drift, 0.0f, 3.0f, 1.0f);
         s_cfg.reverseKind = std::clamp(s_cfg.reverseKind, 0, 1);
-        s_cfg.tradeShot   = std::clamp(s_cfg.tradeShot, 0, 2);
+        s_cfg.tradeShot   = std::clamp(s_cfg.tradeShot, 0, 3);
         range(s_cfg.tradeDistance, 0.4f, 2.5f, 1.0f);
         range(s_cfg.tradeHeight, -60.0f, 80.0f, 0.0f);
+        range(s_cfg.tradeSide, -80.0f, 80.0f, 0.0f);
         range(s_cfg.tradeTurn, -90.0f, 90.0f, 0.0f);
         range(s_cfg.tradeFov, 0.0f, 100.0f, 0.0f);
         if (s_cfg.tradeFov > 0.0f && s_cfg.tradeFov < 20.0f) s_cfg.tradeFov = 20.0f;

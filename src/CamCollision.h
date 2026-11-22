@@ -33,11 +33,12 @@ namespace CamCollision {
     // shot), so the push off the wall eases on real time too instead of freezing where it was when the menu opened.
     void Request(const RE::NiPoint3& a_pivot, const char* a_who, bool a_ground = false, bool a_realTime = false);
     void Apply(RE::FreeCameraState* a_fcs, bool a_driving);       // Update hook, after every driver
+    void SnapNext();   // 11-22: a cut - the next Apply sets the push off the wall at once instead of easing from the old spot's
 
     // 10-29: the same walls for a camera that is not the free camera (the archer camera): where a camera wanted at a_cam,
     // seen from a_pivot, may be - in front of anything solid in between, characters and small props passed. a_cam itself
     // when the way is clear or walls are off. Main thread.
-    RE::NiPoint3 ClearSpot(const RE::NiPoint3& a_pivot, const RE::NiPoint3& a_cam);
+    RE::NiPoint3 ClearSpot(const RE::NiPoint3& a_pivot, const RE::NiPoint3& a_cam, const char* a_who = "archer camera");
 
     std::string MenuStatus();  // any thread
 }

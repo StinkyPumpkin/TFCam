@@ -62,8 +62,15 @@ When you talk to an NPC in third person, TFCam's free camera takes over and film
 
 - *Over your shoulder* while the NPC speaks (the NPC sits off to one side of the frame), and a *reverse shot* while it is your turn:
   over the NPC's shoulder, or a wide two-shot from the side (*Wide two-shot*). A shot stays at least *A shot stays at least* seconds.
-- Every move is smooth: the camera is held in cylindrical coordinates (angle, radius, height) round the midpoint of the two speakers and each
-  is damped, so a change of shot swings round the pair instead of cutting through them. *Handheld sway* adds a slow drift.
+- A change of shot **cuts**, as films do (*Change of shot: Cut*), or swings round the pair (*Swing*, taking *Swing takes* seconds). The
+  camera is held in cylindrical coordinates (angle, radius, height) round the midpoint of the two speakers and each is damped, so a swing
+  goes round the two instead of through them. *Handheld sway* adds a slow drift.
+- When you pick a line, the camera stays on you until the NPC's own voice starts, so a player-voice mod's line (and its lip sync) is on
+  screen; a reply with no sound at all turns the camera after 10 s.
+- *Turn me to face who I talk to* turns you to face the NPC (you can talk to someone standing behind you).
+- Trade menus (barter, gift, training) pause the game; the camera sits on the *Trade menus* shot until the menu closes. *Face to face*
+  (the default) looks from just in front of your face at the NPC's face and chest, so they stand in the middle of the screen, clear of
+  a trade menu's lists; *Distance*, *Height*, *Side*, *Turn round the two* and *FOV* move it.
 - The camera starts on the **release** of the Activate tap, once the game has started the dialogue (the game acts on the release; starting the
   free camera before it kept the dialogue from opening), and ends after the Dialogue Menu closes, easing back behind the player. It is
   not started for a bark with no dialogue menu, for dead / hostile / in-combat NPCs, while sneaking, in a SexLab scene, with a menu open or
@@ -80,7 +87,9 @@ have already jumped the menu queue function (`UIMessageQueue::AddMessage`) elsew
 jump. Without one (`TFCam.log` says so at the first frame) those talks keep the game's own view.
 
 Settings: `TFCam.ini` section `[Conversation]`: `bEnabled`, `bThirdPersonOnly`, `fBlendIn`, `fBlendOut`, `fShotSwitch`, `fMinShotSeconds`,
-`fDistance`, `fShoulder`, `fHeight`, `fLookShift`, `fFovNpc`, `fFovWide`, `bAlternate`, `iReverseKind`, `bSwapSide`, `fDrift`, `bNoEdgePan`.
+`fDistance`, `fShoulder`, `fHeight`, `fLookShift`, `fFovNpc`, `fFovWide`, `bAlternate`, `iReverseKind`, `bSwapSide`, `fDrift`, `bNoEdgePan`,
+`bCutShots`, `bFaceSpeaker`, and for trade menus `iTradeShot` (0 over your shoulder, 1 both from the side, 2 close on the NPC, 3 face to
+face), `fTradeDistance`, `fTradeHeight`, `fTradeSide`, `fTradeTurn`, `fTradeFov`, `bTradeLive`.
 
 ## Action FOV, archer camera and aim dot (0.18.0)
 
@@ -240,6 +249,15 @@ default.
 ## Changelog
 
 **Not released yet**
+- *Conversation camera*: a change of shot **cuts** by default (*Change of shot: Cut*); *Swing* keeps the turn round the
+  two of you. When you pick a line the camera stays on you until the NPC's own voice starts, so your voiced line (a
+  player-voice mod) is on screen; before, it turned to the NPC the moment the line was picked. *Turn me to face who I
+  talk to* (on by default) turns you to face the NPC.
+- *Conversation camera, trade menus*: a **Face to face** shot (the new default) looks from just in front of your face
+  at the NPC, who then stands in the middle of the screen, clear of a trade menu's lists. New *Side* slider. With
+  *Over your shoulder* or *Close on the NPC* and a wall in the way, that menu gets the face to face shot instead.
+- *Walls*: under a trade menu the push off a wall now eases on real time like the trade shot itself; it froze where
+  it was when the menu opened, so near walls the push pointed the wrong way.
 - *Idle camera*: a **Speed** slider (Idle and furniture page, Routines; `[Idle] fSpeed`, 0.25x to 3x) plays the spiral
   round you and the dolly zoom slower or faster. How long it runs and the blends between routines stay in real seconds.
 - *Conversation camera, trade menus*: with Keep moving on, the camera now glides to the trade shot like a change of shot
