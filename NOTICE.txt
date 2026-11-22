@@ -10,8 +10,8 @@ Modified version: TFCam 0.13.1 and later (0.14.0 adds the features listed in the
 Copyright (c) 2026 CageTV, for the changes listed in the README changelog. The modified version is distributed under
 the same license, the GNU General Public License version 3, as the original.
 
-Source code: the complete source of this download is in https://github.com/CageTV/TFCam (the tag named in the release
-notes). The original source is at https://github.com/StinkyPumpkin/TFCam.
+Source code: the complete source of this download (0.20.0 and later) is in https://github.com/StinkyPumpkin/TFCam,
+branch cam-tools. The fork's source up to 0.18.x is at https://github.com/CageTV/TFCam.
 
 TFCam.dll is built with alandtse's CommonLibSSE-NG 9.1.0 (https://github.com/alandtse/CommonLibSSE-NG, GPL-3.0 with a
 modding exception) and bundles the SKSE Menu Framework header (SKSEMenuFramework.h, GPL-3.0), the FCFW API header

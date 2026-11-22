@@ -248,7 +248,8 @@ default.
 
 ## Changelog
 
-**Not released yet**
+**0.20.0**
+- *Archer camera*: new defaults - further out, lower and with darker corners (the values tuned in game).
 - *Conversation camera*: a change of shot **cuts** by default (*Change of shot: Cut*); *Swing* keeps the turn round the
   two of you. When you pick a line the camera stays on you until the NPC's own voice starts, so your voiced line (a
   player-voice mod) is on screen; before, it turned to the NPC the moment the line was picked. *Turn me to face who I

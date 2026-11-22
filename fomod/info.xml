@@ -2,7 +2,7 @@
 <fomod>
   <Name>TFCam</Name>
   <Author>StinkyPumpkin (original), CageTV (fork)</Author>
-  <Version>0.19.0</Version>
-  <Website>https://github.com/CageTV/TFCam</Website>
+  <Version>0.20.0</Version>
+  <Website>https://github.com/StinkyPumpkin/TFCam</Website>
   <Description>A free camera overhaul for Skyrim SE / AE / VR (SKSE plugin, no ESP): camera roll, an attached camera light, time freeze, FOV control, screenshot keys, a cell-entry camera, the Scene Camera, the idle / furniture camera, and the Camera Path tool with image effects and a video recorder. The installer picks the TFCam.dll that matches your game version. Needs SKSE, the Address Library for SKSE Plugins and SKSE Menu Framework; PrismaUI (optional) gives the Camera Path its editor bar.</Description>
 </fomod>
