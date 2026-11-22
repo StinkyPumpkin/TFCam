@@ -1037,11 +1037,11 @@ namespace ConvoCam {
     // the camera may not film, or a camera that does not come within 2 s, lets it through; a talk that ends while it
     // waits drops it (its own close is let through).
     //
-    // The hook only CHAINS onto another mod's jump: in a load order where some mod has already put an absolute jump
-    // (FF 25 00000000 + address) at AddMessage's first byte, that jump's 8-byte address is swapped for ours and ours
-    // calls the old one. Swapping one aligned-in-a-cache-line qword is a single store, so a thread inside the queue
-    // at that moment takes either the old jump or ours, both whole. Anywhere else (the game's own first bytes, or
-    // another kind of hook) nothing is written and the NPC-started talk keeps the game's camera, as before.
+    // The hook only CHAINS onto another mod's jump: in a load order where some mod has already put a jump at
+    // AddMessage's first byte (an absolute FF 25 jump, or a near E9 jump), that jump's target is swapped for ours and
+    // ours calls the old one (see InstallDialogueHold). The swap is one store inside a cache line, so a thread inside
+    // the queue at that moment takes either the old jump or ours, both whole. Anywhere else (the game's own first
+    // bytes, or another kind of hook) nothing is written and the NPC-started talk keeps the game's camera, as before.
     namespace {
         using AddMessage_t = void (*)(RE::UIMessageQueue*, const RE::BSFixedString&, RE::UI_MESSAGE_TYPE, RE::IUIMessageData*);
         AddMessage_t s_prevAdd = nullptr;
@@ -1139,35 +1139,93 @@ namespace ConvoCam {
             return std::format("{}+{:X}", base ? base + 1 : path, a_addr - reinterpret_cast<std::uintptr_t>(mod));
         }
 
-        // Main thread, the first camera frame (every mod's own hooks are in by then).
+        // Where a jump at a leads, through relays (FF 25 absolute / E9 relative), named by the DLL it ends in. Logging only.
+        std::string DescribeJumpTarget(std::uintptr_t a) {
+            for (int hop = 0; hop < 4 && a; ++hop) {
+                const auto* q = reinterpret_cast<const std::uint8_t*>(a);
+                if (q[0] == 0xFF && q[1] == 0x25 && q[2] == 0 && q[3] == 0 && q[4] == 0 && q[5] == 0) {
+                    a = *reinterpret_cast<const std::uint64_t*>(q + 6);
+                } else if (q[0] == 0xE9) {
+                    a = a + 5 + *reinterpret_cast<const std::int32_t*>(q + 1);
+                } else {
+                    break;
+                }
+            }
+            return ModuleOf(a);
+        }
+
+        // One store inside a cache line is seen whole by a thread running the jump at that moment.
+        bool InOneLine(std::uintptr_t a_addr, std::size_t a_size) { return (a_addr & 63) + a_size <= 64; }
+
+        bool WriteWhole(void* a_at, std::uint64_t a_value, std::size_t a_size) {
+            DWORD old = 0;
+            if (!::VirtualProtect(a_at, a_size, PAGE_EXECUTE_READWRITE, &old)) return false;
+            if (a_size == 8) {
+                *static_cast<volatile std::uint64_t*>(a_at) = a_value;
+            } else {
+                *static_cast<volatile std::uint32_t*>(a_at) = static_cast<std::uint32_t>(a_value);
+            }
+            ::VirtualProtect(a_at, a_size, old, &old);
+            return true;
+        }
+
+        // Main thread, the first camera frame (every mod's own hooks are in by then). Two kinds of jump are chained:
+        //   FF 25 00000000 <8-byte address>  (an absolute jump)  - the address is swapped for AddMessageThunk's
+        //   E9 <4-byte distance>             (a near jump, MinHook / SKSE-trampoline style) - an absolute jump to
+        //      AddMessageThunk goes in TFCam's trampoline (near the game) and the distance is swapped for it.
+        // Either way the old target is what ours calls. Anything else: nothing is written.
         void InstallDialogueHold() {
             REL::Relocation<std::uintptr_t> fn{ RELOCATION_ID(13530, 13631) };
             auto*                         p = reinterpret_cast<std::uint8_t*>(fn.address());
+            const auto                    entry = reinterpret_cast<std::uintptr_t>(p);
             static constexpr std::uint8_t kAbsJmp[6]{ 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 };
-            if (std::memcmp(p, kAbsJmp, sizeof(kAbsJmp)) != 0) {
+            std::uintptr_t                prev = 0;
+            if (std::memcmp(p, kAbsJmp, sizeof(kAbsJmp)) == 0) {
+                if (!InOneLine(entry + 6, 8)) {
+                    SKSE::log::info("ConvoCam: the jump at UIMessageQueue::AddMessage crosses a cache line - no dialogue menu hold");
+                    return;
+                }
+                prev = static_cast<std::uintptr_t>(*reinterpret_cast<volatile std::uint64_t*>(p + 6));
+                if (!prev) return;
+                s_prevAdd = reinterpret_cast<AddMessage_t>(prev);
+                if (!WriteWhole(p + 6, reinterpret_cast<std::uint64_t>(&AddMessageThunk), 8)) {
+                    s_prevAdd = nullptr;
+                    SKSE::log::warn("ConvoCam: could not unprotect UIMessageQueue::AddMessage's jump - no dialogue menu hold");
+                    return;
+                }
+            } else if (p[0] == 0xE9) {
+                if (!InOneLine(entry + 1, 4)) {
+                    SKSE::log::info("ConvoCam: the jump at UIMessageQueue::AddMessage crosses a cache line - no dialogue menu hold");
+                    return;
+                }
+                prev = entry + 5 + *reinterpret_cast<const std::int32_t*>(p + 1);
+                auto* stub = static_cast<std::uint8_t*>(SKSE::GetTrampoline().allocate(14));
+                if (!stub) {
+                    SKSE::log::warn("ConvoCam: no trampoline room for the dialogue menu hold");
+                    return;
+                }
+                const auto dist = static_cast<std::int64_t>(reinterpret_cast<std::uintptr_t>(stub)) - static_cast<std::int64_t>(entry + 5);
+                if (dist < INT32_MIN || dist > INT32_MAX) {
+                    SKSE::log::warn("ConvoCam: TFCam's trampoline is too far from UIMessageQueue::AddMessage - no dialogue menu hold");
+                    return;
+                }
+                std::memcpy(stub, kAbsJmp, sizeof(kAbsJmp));
+                const auto thunk = reinterpret_cast<std::uint64_t>(&AddMessageThunk);
+                std::memcpy(stub + 6, &thunk, sizeof(thunk));
+                s_prevAdd = reinterpret_cast<AddMessage_t>(prev);
+                if (!WriteWhole(p + 1, static_cast<std::uint32_t>(static_cast<std::int32_t>(dist)), 4)) {
+                    s_prevAdd = nullptr;
+                    SKSE::log::warn("ConvoCam: could not unprotect UIMessageQueue::AddMessage's jump - no dialogue menu hold");
+                    return;
+                }
+            } else {
                 SKSE::log::info("ConvoCam: UIMessageQueue::AddMessage starts with {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}, not another mod's jump - "
                     "no dialogue menu hold, so a talk the NPC starts keeps the game's camera", p[0], p[1], p[2], p[3], p[4], p[5]);
                 return;
             }
-            auto*             slot = reinterpret_cast<std::uint64_t*>(p + 6);
-            const std::uintptr_t s = reinterpret_cast<std::uintptr_t>(slot);
-            if ((s & 63) + 8 > 64) {
-                SKSE::log::info("ConvoCam: the jump at UIMessageQueue::AddMessage crosses a cache line - no dialogue menu hold");
-                return;
-            }
-            const std::uint64_t prev = *reinterpret_cast<volatile std::uint64_t*>(slot);
-            if (!prev) return;
-            s_prevAdd = reinterpret_cast<AddMessage_t>(prev);
-            DWORD old = 0;
-            if (!::VirtualProtect(slot, 8, PAGE_EXECUTE_READWRITE, &old)) {
-                s_prevAdd = nullptr;
-                SKSE::log::warn("ConvoCam: could not unprotect UIMessageQueue::AddMessage's jump - no dialogue menu hold");
-                return;
-            }
-            *reinterpret_cast<volatile std::uint64_t*>(slot) = reinterpret_cast<std::uint64_t>(&AddMessageThunk);
-            ::VirtualProtect(slot, 8, old, &old);
             ::FlushInstructionCache(::GetCurrentProcess(), p, 14);
-            SKSE::log::info("ConvoCam: dialogue menu hold in - chained after {} (another mod's hook on UIMessageQueue::AddMessage)", ModuleOf(prev));
+            SKSE::log::info("ConvoCam: dialogue menu hold in - chained ({} jump) after {} (another mod's hook on UIMessageQueue::AddMessage)",
+                p[0] == 0xE9 ? "near" : "absolute", DescribeJumpTarget(prev));
         }
     }
 

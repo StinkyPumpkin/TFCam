@@ -240,6 +240,9 @@ default.
 ## Changelog
 
 **Not released yet**
+- *Archer camera*: the bow's zoom now follows the camera's own move into the shot, and the camera keeps up with your
+  head while it moves in, so both finish together - before, the zoom ran on about a third of a second after the camera
+  had arrived.
 - *Conversation camera*: talks the NPC starts, and talks the game opens on the Activate press, are filmed too: the
   Dialogue Menu's open request waits at the menu queue until the free camera is in (where another mod's jump on
   `UIMessageQueue::AddMessage` lets TFCam chain on; see Conversation camera).

@@ -356,6 +356,7 @@ namespace FovFx {
         // shot swayed too. The head's offset from your feet is kept in your own frame (turning with you) and eased; your
         // feet move the camera at once, the sway does not.
         RE::NiPoint3 eye;
+        float        headGap = 0.0f;  // how far the steadied head still trails the real one (units)
         {
             const RE::NiPoint3 feet = player->GetPosition();
             const RE::NiPoint3 off  = head->world.translate - feet;
@@ -365,8 +366,12 @@ namespace FovFx {
                 s_headOff  = local;
                 s_haveHead = true;
             } else {
-                s_headOff = s_headOff + (local - s_headOff) * (1.0f - std::exp(-dt / 0.3f));
+                // 11-22: quick while the camera is still moving in (the pull carries the head forward and down; eased at
+                // 0.3 s the camera kept drifting after the pull had stopped), the slow steadying only once it is in.
+                const float tau = s_aimW < 0.98f ? 0.08f : 0.3f;
+                s_headOff = s_headOff + (local - s_headOff) * (1.0f - std::exp(-dt / tau));
             }
+            headGap = (local - s_headOff).Length();
             const RE::NiPoint3 back{ s_headOff.x * ch + s_headOff.y * sh, -s_headOff.x * sh + s_headOff.y * ch, s_headOff.z };  // by +h
             eye = feet + back + RE::NiPoint3{ sh * 4.0f, ch * 4.0f, 7.0f };
         }
@@ -465,8 +470,9 @@ namespace FovFx {
             while (off > 180.0f) off -= 360.0f;
             while (off < -180.0f) off += 360.0f;
             SKSE::log::info("FovFx: archer camera in - {:.0f} units from the eyes, aim point {:.0f} out from the arrow tip; framed on {} "
-                "(the body's aim heading is {:.0f} deg off the view)",
-                (want - eye).Length(), s_reach, steered ? "your view" : "the body's aim", off);
+                "(the body's aim heading is {:.0f} deg off the view); zoom {:.1f} of {:.1f} deg, head trailing {:.1f} units",
+                (want - eye).Length(), s_reach, steered ? "your view" : "the body's aim", off, s_bowNow * s_settings.strength,
+                s_settings.bow ? kBowPull * s_settings.strength : 0.0f, headGap);
         }
         if (s_aimW < 0.05f) s_logged = false;
     }
@@ -555,9 +561,15 @@ namespace FovFx {
             SKSE::log::info("FovFx: speed stretch over");
         }
 
-        // the bow's pull while drawn, eased back after
-        const float bowTarget = s_bowDrawn && s_settings.bow ? kBowPull * SmoothStep(static_cast<float>(now - s_bowStart) / kBowPullTime) : 0.0f;
-        s_bowNow += (bowTarget - s_bowNow) * (dt > 0.0f ? 1.0f - std::exp(-dt / (s_bowDrawn ? 0.15f : 0.08f)) : 0.0f);
+        // the bow's pull while drawn, eased back after. 11-22: with the archer camera on, the pull follows the camera's own
+        // move in (the same SmoothStep of its weight), so the zoom and the move into the shot end together; the separate
+        // 0.6 s pull plus its 0.15 s easing ran on about a third of a second after the camera had arrived.
+        const bool  withCam   = s_settings.aimCam && s_pubOn;
+        const float bowTarget = !(s_bowDrawn && s_settings.bow) ? 0.0f
+                              : withCam ? kBowPull * SmoothStep(s_pubIn)
+                                        : kBowPull * SmoothStep(static_cast<float>(now - s_bowStart) / kBowPullTime);
+        const float bowTau    = withCam && s_bowDrawn ? 0.03f : (s_bowDrawn ? 0.15f : 0.08f);
+        s_bowNow += (bowTarget - s_bowNow) * (dt > 0.0f ? 1.0f - std::exp(-dt / bowTau) : 0.0f);
 
         float pulses = 0.0f;
         for (const auto& p : s_pulses) {
