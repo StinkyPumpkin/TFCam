@@ -785,7 +785,8 @@ namespace AmbientCam {
             if (!s_subj.ok) return;
 
             // Fresh into the spiral: stay on the face until the crossfade has landed there, then a moment more.
-            const float freshHold = s_cfg.crossfade + 0.5f * AreaSec();
+            // in the routine's clock: the crossfade runs in real time, so at Speed x it covers x times as much routine time
+            const float freshHold = s_cfg.crossfade * s_cfg.routineSpeed + 0.5f * AreaSec();
 
             if (s_v.state == VState::kStarting) {
                 s_v.state      = VState::kRunning;
@@ -802,7 +803,7 @@ namespace AmbientCam {
             }
 
             s_v.elapsed += dt;
-            s_v.rt += dt;
+            s_v.rt += dt * s_cfg.routineSpeed;  // the routine's own clock: Speed plays both routines slower / faster
             if (s_cfg.vanityDuration > 0.0f && s_v.elapsed >= s_cfg.vanityDuration) {
                 BeginReturn(s_cfg.returnTime, "idle camera time is up", true);
                 return;
@@ -1042,6 +1043,7 @@ namespace AmbientCam {
         range(s_cfg.vanityStart, 5.0f, 600.0f, 25.0f);
         range(s_cfg.vanityDuration, 0.0f, 1800.0f, 75.0f);
         range(s_cfg.crossfade, 0.0f, 5.0f, 1.5f);
+        range(s_cfg.routineSpeed, 0.25f, 3.0f, 1.0f);
         range(s_cfg.returnTime, 0.0f, 3.0f, 0.7f);
         range(s_cfg.interiorScale, 0.3f, 1.0f, 0.6f);
         range(s_cfg.dollyFraming, 40.0f, 400.0f, 110.0f);

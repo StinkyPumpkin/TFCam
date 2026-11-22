@@ -217,6 +217,7 @@ namespace ConvoCam {
             Shot         shot      = Shot::kOverPlayer;
             double       shotSince = 0.0;
             bool         tradeHold = false;  // a menu opened from the talk (barter, gift ...) holds the camera on one shot
+            float        tradePush = 0.0f;   // how far the trade shot was moved out to keep the player's head off the NPC
             float        settle    = 1.6f;  // seconds the damping takes to arrive (the entry is slower than a shot change)
             float        clock     = 0.0f;
             // return
@@ -454,6 +455,31 @@ namespace ConvoCam {
                 const float x = t.pos.x - m.x, y = t.pos.y - m.y;
                 t.pos.x = m.x + x * c - y * s;
                 t.pos.y = m.y + x * s + y * c;
+            }
+            // 11-22: over your shoulder, the default shoulder offset runs the line to the NPC only ~17 units past the middle of
+            // your head when the two stand ~100 apart, so your head covers them. Under the trade menu the camera goes out to the
+            // side (pivoting on the NPC) until that line clears your head by kTradeClear - looked at from above.
+            s_s.tradePush = 0.0f;
+            if (s_cfg.tradeShot != 1) {
+                constexpr float kTradeClear = 30.0f;
+                const auto&     P = s_s.player;
+                const auto&     N = s_s.npc;
+                for (int i = 0; i < 8; ++i) {
+                    const float ux = N.x - t.pos.x, uy = N.y - t.pos.y;
+                    const float len = Len2(ux, uy);
+                    if (len < 1.0f) break;
+                    const float nx = ux / len, ny = uy / len;
+                    const float along = (P.x - t.pos.x) * nx + (P.y - t.pos.y) * ny;
+                    if (along <= 0.0f || along >= len) break;  // you are not between the camera and the NPC
+                    const float s = nx * (P.y - t.pos.y) - ny * (P.x - t.pos.x);  // your distance off the line, + = to its left
+                    if (std::fabs(s) >= kTradeClear) break;
+                    // a sideways step of the camera moves the line at you by (len - along) / len of it (the NPC is the pivot)
+                    const float need = (kTradeClear - std::fabs(s)) * len / (std::max)(len - along, 1.0f);
+                    const float sgn  = s >= 0.0f ? -1.0f : 1.0f;  // away from your side of the line
+                    t.pos.x += -ny * sgn * need;
+                    t.pos.y += nx * sgn * need;
+                    s_s.tradePush += need;
+                }
             }
             t.pos.z += s_cfg.tradeHeight;
             if (s_cfg.tradeFov > 1.0f) t.fov = s_cfg.tradeFov;
@@ -797,24 +823,34 @@ namespace ConvoCam {
             // sooner than minShotSec after the last change.
             const double now     = Now();
             // --Claude 11-21: such a menu pauses the game, so the damped swing below stopped wherever it was when the menu opened
-            // and every barter looked different. Under it the camera sits at once on the shot over your shoulder (facing the
-            // NPC, the one you trade with) and stays there; after the menu the talk carries on from that shot.
+            // and every barter looked different. Under it the camera goes to the trade shot and stays there; after the menu the
+            // talk carries on from that shot. 11-22: with Keep moving (real time under the menu) it glides there like a change
+            // of shot, carrying on from however it was moving; without it the paused game gives no time to glide, so it is set
+            // at once as before.
             if (TradeMenuOpen()) {
                 if (!s_s.tradeHold) {
                     s_s.tradeHold = true;
                     s_s.shot      = Shot::kOverPlayer;
-                    s_s.player    = pRaw;
-                    s_s.npc       = nRaw;
-                    const Target t0 = ShotTarget(s_s.shot);
-                    const auto   m0 = Mix(s_s.player, s_s.npc, 0.5f);
-                    s_s.ang  = std::atan2(t0.pos.x - m0.x, t0.pos.y - m0.y);
-                    s_s.rad  = Len2(t0.pos.x - m0.x, t0.pos.y - m0.y);
-                    s_s.z    = t0.pos.z;
-                    s_s.fov  = t0.fov;
-                    s_s.look = t0.look;
-                    s_s.vAng = s_s.vRad = s_s.vZ = s_s.vFov = 0.0f;
-                    s_s.vLook = {};
-                    Event(std::format("a menu opened over the talk - camera set on the trade shot ({}) until it closes{}", TradeShotName(),
+                    if (!s_cfg.tradeLive) {
+                        s_s.player = pRaw;
+                        s_s.npc    = nRaw;
+                    }
+                    const Target t0 = ShotTarget(s_s.shot);  // also measures tradePush for the line below
+                    if (s_cfg.tradeLive) {
+                        s_s.settle = s_cfg.shotSwitch;
+                    } else {
+                        const auto m0 = Mix(s_s.player, s_s.npc, 0.5f);
+                        s_s.ang  = std::atan2(t0.pos.x - m0.x, t0.pos.y - m0.y);
+                        s_s.rad  = Len2(t0.pos.x - m0.x, t0.pos.y - m0.y);
+                        s_s.z    = t0.pos.z;
+                        s_s.fov  = t0.fov;
+                        s_s.look = t0.look;
+                        s_s.vAng = s_s.vRad = s_s.vZ = s_s.vFov = 0.0f;
+                        s_s.vLook = {};
+                    }
+                    Event(std::format("a menu opened over the talk - camera {} the trade shot ({}) until it closes{}{}",
+                        s_cfg.tradeLive ? std::format("gliding over {:.1f} s to", s_cfg.shotSwitch) : "set at once on", TradeShotName(),
+                        s_s.tradePush > 0.5f ? std::format(", moved {:.0f} units out so your head is off the NPC", s_s.tradePush) : "",
                         s_cfg.tradeLive ? ", moving on real time" : ""));
                 }
                 s_s.shotSince = now;

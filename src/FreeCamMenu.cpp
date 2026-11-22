@@ -464,6 +464,7 @@ namespace FreeCamMenu {
         WriteINIInt("Idle", "bDolly", a.dolly ? 1 : 0);
         WriteINIInt("Idle", "bSpiral", a.spiral ? 1 : 0);
         WriteINIFloat("Idle", "fCrossfade", a.crossfade);
+        WriteINIFloat("Idle", "fSpeed", a.routineSpeed);
         WriteINIFloat("Idle", "fReturnTime", a.returnTime);
         WriteINIFloat("Idle", "fInteriorScale", a.interiorScale);
         WriteINIFloat("Idle", "fDollyFraming", a.dollyFraming);
@@ -1464,6 +1465,9 @@ namespace FreeCamMenu {
         ImGuiMCP::SameLine();
         changed |= ImGuiMCP::Checkbox("Spiral up the body##amSpiral", &a.spiral);
         ImGuiMCP::SetNextItemWidth(200.0f);
+        changed |= ImGuiMCP::SliderFloat("Speed##amSpeed", &a.routineSpeed, 0.25f, 3.0f, "%.2fx");
+        ImGuiMCP::TextColored(grey, "Plays both routines slower or faster (the spiral round you, the dolly zoom and its turn).");
+        ImGuiMCP::SetNextItemWidth(200.0f);
         changed |= ImGuiMCP::SliderFloat("Blend between routines (s)##amXf", &a.crossfade, 0.0f, 5.0f, "%.1f");
         ImGuiMCP::SetNextItemWidth(200.0f);
         changed |= ImGuiMCP::SliderFloat("Back to the normal camera (s)##amRet", &a.returnTime, 0.0f, 3.0f, "%.1f");
@@ -1740,6 +1744,7 @@ namespace FreeCamMenu {
             a.dolly           = readInt("Idle", "bDolly", d.dolly ? 1 : 0) != 0;
             a.spiral          = readInt("Idle", "bSpiral", d.spiral ? 1 : 0) != 0;
             a.crossfade       = readFloat("Idle", "fCrossfade", d.crossfade);
+            a.routineSpeed    = readFloat("Idle", "fSpeed", d.routineSpeed);
             a.returnTime      = readFloat("Idle", "fReturnTime", d.returnTime);
             a.interiorScale   = readFloat("Idle", "fInteriorScale", d.interiorScale);
             a.dollyFraming    = readFloat("Idle", "fDollyFraming", d.dollyFraming);

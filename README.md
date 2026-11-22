@@ -240,6 +240,11 @@ default.
 ## Changelog
 
 **Not released yet**
+- *Idle camera*: a **Speed** slider (Idle and furniture page, Routines; `[Idle] fSpeed`, 0.25x to 3x) plays the spiral
+  round you and the dolly zoom slower or faster. How long it runs and the blends between routines stay in real seconds.
+- *Conversation camera, trade menus*: with Keep moving on, the camera now glides to the trade shot like a change of shot
+  instead of jumping there; and over your shoulder it moves out to the side until the line to the NPC clears your head
+  (the default shoulder offset put your head over the NPC when the two of you stand close).
 - *Archer camera*: the bow's zoom now follows the camera's own move into the shot, and the camera keeps up with your
   head while it moves in, so both finish together - before, the zoom ran on about a third of a second after the camera
   had arrived.
