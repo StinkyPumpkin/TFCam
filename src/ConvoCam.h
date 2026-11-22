@@ -63,7 +63,9 @@ namespace ConvoCam {
     void BeginPending();
 
     // FixedCam's camera update, every frame (main thread): a dialogue the NPC started (no Activate press) starts the camera
-    // too, if it is seen before the Dialogue Menu opens.
+    // too, if it is seen before the Dialogue Menu opens. The first call also puts in the dialogue menu hold (ConvoCam.cpp):
+    // where another mod has already jumped UIMessageQueue::AddMessage elsewhere, the Dialogue Menu's open request waits
+    // there until the free camera is in, so an NPC-started talk, or one the game opens on the Activate press, is filmed.
     void FrameCheck();
 
     struct MenuStatus {

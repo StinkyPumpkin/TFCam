@@ -72,8 +72,12 @@ When you talk to an NPC in third person, TFCam's free camera takes over and film
 - The game's mouse edge-pan in dialogue (`fPCDialogueLookSpeed`) is held at 0 while the camera films, and put back after. *No mouse edge-pan
   in any dialogue* (`bNoEdgePan`) holds it at 0 for every dialogue.
 
-Not done yet: a dialogue the NPC starts by itself (a quest scene that walks up to you and talks) is not filmed, because the camera has no
-Activate press to start from; the game's own view is used there.
+A dialogue the NPC starts by itself (a courier or a quest NPC that walks up to you and talks), or one the game opens on
+the Activate press rather than its release, opens its menu before TFCam can see the talk, and the free camera has to
+begin before that menu opens. TFCam holds the Dialogue Menu's open request at the game's menu queue until the camera is
+in, then lets it through (never more than 2 s; a talk it may not film goes through at once). This needs another mod to
+have already jumped the menu queue function (`UIMessageQueue::AddMessage`) elsewhere: TFCam only chains onto such a
+jump. Without one (`TFCam.log` says so at the first frame) those talks keep the game's own view.
 
 Settings: `TFCam.ini` section `[Conversation]`: `bEnabled`, `bThirdPersonOnly`, `fBlendIn`, `fBlendOut`, `fShotSwitch`, `fMinShotSeconds`,
 `fDistance`, `fShoulder`, `fHeight`, `fLookShift`, `fFovNpc`, `fFovWide`, `bAlternate`, `iReverseKind`, `bSwapSide`, `fDrift`, `bNoEdgePan`.
@@ -236,6 +240,9 @@ default.
 ## Changelog
 
 **Not released yet**
+- *Conversation camera*: talks the NPC starts, and talks the game opens on the Activate press, are filmed too: the
+  Dialogue Menu's open request waits at the menu queue until the free camera is in (where another mod's jump on
+  `UIMessageQueue::AddMessage` lets TFCam chain on; see Conversation camera).
 - *Settings pages*: the SKSE Menu Framework section is now **TFCam** (was FreeCam), with ten pages, one subject
   each: Free camera, Camera light, Walls, Conversation camera, Idle and furniture, Cell entry, Scene camera, Action FOV
   and archery, Camera path, Image and video. The camera light, the walls and the conversation camera have their own

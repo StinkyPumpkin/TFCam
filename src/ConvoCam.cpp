@@ -252,6 +252,10 @@ namespace ConvoCam {
 
         void ResetSession() { s_s = Session{}; }
 
+        // The dialogue menu hold (defined above FrameCheck): a Dialogue Menu asked to open waits until the free camera is in.
+        void   ReleaseHeld(const std::string& a_why);
+        double HeldFor();  // seconds the held menu has waited; -1 = nothing held
+
         // ---- the conversation ---------------------------------------------------------------------------------------
         bool DialogueOpen() {
             auto* mtm = RE::MenuTopicManager::GetSingleton();
@@ -655,6 +659,14 @@ namespace ConvoCam {
                 return;
             }
             RunPressWatch(now);
+            // A held Dialogue Menu never waits long: Drive lets it through once the camera is in, else it goes through here.
+            if (const double held = HeldFor(); held >= 0.0) {
+                if (held > 2.0) {
+                    ReleaseHeld("the camera did not come in time");
+                } else if (s_s.st == St::kOff && held > 0.5) {
+                    ReleaseHeld("no camera session for it");
+                }
+            }
             if (s_s.st == St::kOff) {
                 RememberControls();
                 CheckControlsAfter();
@@ -918,6 +930,7 @@ namespace ConvoCam {
         if (s_s.st == St::kStarting) {
             s_s.st = St::kRunning;
             Event("conversation camera running");
+            ReleaseHeld("the camera is in");  // the Dialogue Menu opens on top of the free camera, never under it
         }
         DriveRun(fcs, dt);
     }
@@ -1006,6 +1019,7 @@ namespace ConvoCam {
                 SKSE::log::info("ConvoCam: {} started a dialogue - over again {:.0f} ms later, not filming", who, ms);
                 return;
             }
+            if (s_s.st != St::kOff) return;  // the dialogue menu hold has already started the camera for this talk
             if (const char* block = ArmBlock(a)) {
                 SKSE::log::info("ConvoCam: {} started a dialogue with you - not filming ({:.0f} ms after it began): {}", who, ms, block);
                 return;
@@ -1015,7 +1029,181 @@ namespace ConvoCam {
         }
     }
 
+    // ---- the dialogue menu hold -----------------------------------------------------------------------------------
+    // The game can open the Dialogue Menu before TFCam sees the talk at all: an NPC walking up to talk, or a talk the
+    // game opens on the Activate PRESS (the release then goes to the open menu and never reaches the handler). The free
+    // camera must begin before that menu opens (see Arm), so the menu's open request is held at the menu queue
+    // (UIMessageQueue::AddMessage, "Dialogue Menu", kShow) until the camera is in, then sent on. It is never lost: a talk
+    // the camera may not film, or a camera that does not come within 2 s, lets it through; a talk that ends while it
+    // waits drops it (its own close is let through).
+    //
+    // The hook only CHAINS onto another mod's jump: in a load order where some mod has already put an absolute jump
+    // (FF 25 00000000 + address) at AddMessage's first byte, that jump's 8-byte address is swapped for ours and ours
+    // calls the old one. Swapping one aligned-in-a-cache-line qword is a single store, so a thread inside the queue
+    // at that moment takes either the old jump or ours, both whole. Anywhere else (the game's own first bytes, or
+    // another kind of hook) nothing is written and the NPC-started talk keeps the game's camera, as before.
+    namespace {
+        using AddMessage_t = void (*)(RE::UIMessageQueue*, const RE::BSFixedString&, RE::UI_MESSAGE_TYPE, RE::IUIMessageData*);
+        AddMessage_t s_prevAdd = nullptr;
+
+        struct Held {
+            bool                on    = false;
+            RE::UIMessageQueue* queue = nullptr;
+            RE::IUIMessageData* data  = nullptr;
+            double              at    = 0.0;
+        };
+        std::mutex        s_holdLock;
+        Held              s_held;
+        std::atomic<bool> s_holding{ false };
+
+        bool IsDialogueMenu(const RE::BSFixedString& a_name) {
+            auto* istr = RE::InterfaceStrings::GetSingleton();
+            return istr && a_name.data() == istr->dialogueMenu.data();  // pooled strings: one pointer per name
+        }
+
+        // Main thread (a task queued by the hook): film this talk, or let its menu through.
+        void DecideHeld() {
+            if (HeldFor() < 0.0) return;
+            if (s_s.st == St::kRunning || s_s.st == St::kReturning) {
+                ReleaseHeld("a conversation camera is already running");
+                return;
+            }
+            if (s_s.st == St::kStarting) {
+                Event("the Dialogue Menu waits - the camera is starting");
+                return;  // Drive lets it through once the camera is in
+            }
+            auto* mtm = RE::MenuTopicManager::GetSingleton();
+            auto  ref = mtm ? mtm->speaker.get() : RE::NiPointer<RE::TESObjectREFR>{};
+            auto* a   = ref ? ref->As<RE::Actor>() : nullptr;
+            if (!a || a->IsPlayerRef()) {
+                ReleaseHeld("no NPC speaking");
+                return;
+            }
+            const char* nm = a->GetDisplayFullName();
+            if (const char* block = ArmBlock(a)) {
+                ReleaseHeld(std::format("not filming {}: {}", nm ? nm : "the NPC", block));
+                return;
+            }
+            s_pending = {};  // a press whose release went to the open menu: this talk is started here instead
+            Arm(a, "is talking to you - the Dialogue Menu waits for the camera");
+        }
+
+        bool HoldShow(RE::UIMessageQueue* a_queue, RE::IUIMessageData* a_data) {
+            if (!s_cfg.enabled) return false;
+            {
+                std::scoped_lock l(s_holdLock);
+                if (s_held.on) return false;  // one at a time
+                s_held = Held{ true, a_queue, a_data, Now() };
+            }
+            s_holding = true;
+            SKSE::log::info("ConvoCam: the Dialogue Menu was asked to open - held until the camera is in");
+            if (auto* tasks = SKSE::GetTaskInterface()) {
+                tasks->AddTask([] { DecideHeld(); });
+            } else {
+                ReleaseHeld("no task interface");
+            }
+            return true;
+        }
+
+        void DropHeld(const char* a_why) {
+            {
+                std::scoped_lock l(s_holdLock);
+                if (!s_held.on) return;
+                s_held = Held{};
+            }
+            s_holding = false;
+            SKSE::log::info("ConvoCam: the held Dialogue Menu was dropped - {}", a_why);
+        }
+
+        // Any thread: the game's (or the previous hook's) AddMessage, with the Dialogue Menu's open request held.
+        void AddMessageThunk(RE::UIMessageQueue* a_queue, const RE::BSFixedString& a_menu, RE::UI_MESSAGE_TYPE a_type, RE::IUIMessageData* a_data) {
+            if (s_prevAdd && IsDialogueMenu(a_menu)) {
+                if (a_type == RE::UI_MESSAGE_TYPE::kShow) {
+                    if (HoldShow(a_queue, a_data)) return;
+                } else if (a_type == RE::UI_MESSAGE_TYPE::kHide || a_type == RE::UI_MESSAGE_TYPE::kForceHide) {
+                    DropHeld("the dialogue was closed while its menu waited");
+                }
+            }
+            s_prevAdd(a_queue, a_menu, a_type, a_data);
+        }
+
+        std::string ModuleOf(std::uintptr_t a_addr) {
+            HMODULE mod = nullptr;
+            if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    reinterpret_cast<LPCWSTR>(a_addr), &mod) || !mod) {
+                return std::format("code outside any DLL at {:X}", a_addr);
+            }
+            char path[MAX_PATH]{};
+            ::GetModuleFileNameA(mod, path, MAX_PATH);
+            const char* base = std::strrchr(path, '\\');
+            return std::format("{}+{:X}", base ? base + 1 : path, a_addr - reinterpret_cast<std::uintptr_t>(mod));
+        }
+
+        // Main thread, the first camera frame (every mod's own hooks are in by then).
+        void InstallDialogueHold() {
+            REL::Relocation<std::uintptr_t> fn{ RELOCATION_ID(13530, 13631) };
+            auto*                         p = reinterpret_cast<std::uint8_t*>(fn.address());
+            static constexpr std::uint8_t kAbsJmp[6]{ 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 };
+            if (std::memcmp(p, kAbsJmp, sizeof(kAbsJmp)) != 0) {
+                SKSE::log::info("ConvoCam: UIMessageQueue::AddMessage starts with {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}, not another mod's jump - "
+                    "no dialogue menu hold, so a talk the NPC starts keeps the game's camera", p[0], p[1], p[2], p[3], p[4], p[5]);
+                return;
+            }
+            auto*             slot = reinterpret_cast<std::uint64_t*>(p + 6);
+            const std::uintptr_t s = reinterpret_cast<std::uintptr_t>(slot);
+            if ((s & 63) + 8 > 64) {
+                SKSE::log::info("ConvoCam: the jump at UIMessageQueue::AddMessage crosses a cache line - no dialogue menu hold");
+                return;
+            }
+            const std::uint64_t prev = *reinterpret_cast<volatile std::uint64_t*>(slot);
+            if (!prev) return;
+            s_prevAdd = reinterpret_cast<AddMessage_t>(prev);
+            DWORD old = 0;
+            if (!::VirtualProtect(slot, 8, PAGE_EXECUTE_READWRITE, &old)) {
+                s_prevAdd = nullptr;
+                SKSE::log::warn("ConvoCam: could not unprotect UIMessageQueue::AddMessage's jump - no dialogue menu hold");
+                return;
+            }
+            *reinterpret_cast<volatile std::uint64_t*>(slot) = reinterpret_cast<std::uint64_t>(&AddMessageThunk);
+            ::VirtualProtect(slot, 8, old, &old);
+            ::FlushInstructionCache(::GetCurrentProcess(), p, 14);
+            SKSE::log::info("ConvoCam: dialogue menu hold in - chained after {} (another mod's hook on UIMessageQueue::AddMessage)", ModuleOf(prev));
+        }
+    }
+
+    namespace {
+        double HeldFor() {
+            std::scoped_lock l(s_holdLock);
+            return s_held.on ? Now() - s_held.at : -1.0;
+        }
+
+        void ReleaseHeld(const std::string& a_why) {
+            Held h;
+            {
+                std::scoped_lock l(s_holdLock);
+                if (!s_held.on) return;
+                h      = s_held;
+                s_held = Held{};
+            }
+            s_holding = false;
+            const double ms  = (Now() - h.at) * 1000.0;
+            auto*        mtm = RE::MenuTopicManager::GetSingleton();
+            auto*        istr = RE::InterfaceStrings::GetSingleton();
+            if (!mtm || !mtm->menuOpen || !istr || !s_prevAdd) {
+                SKSE::log::info("ConvoCam: the held Dialogue Menu was dropped after {:.0f} ms - the dialogue is over ({})", ms, a_why);
+                return;
+            }
+            SKSE::log::info("ConvoCam: the Dialogue Menu let through after {:.0f} ms - {}", ms, a_why);
+            s_prevAdd(h.queue, istr->dialogueMenu, RE::UI_MESSAGE_TYPE::kShow, h.data);
+        }
+    }
+
     void FrameCheck() {
+        static bool s_holdTried = false;
+        if (!s_holdTried) {
+            s_holdTried = true;
+            InstallDialogueHold();
+        }
         auto*        mtm  = RE::MenuTopicManager::GetSingleton();
         const bool   open = mtm && mtm->menuOpen;
         const double now  = Now();
@@ -1025,6 +1213,10 @@ namespace ConvoCam {
         }
         s_prevTopicMenu = open;
         if (!open) s_npcWatch = false;
+        if (s_holding.load()) {  // the hold has this talk (DecideHeld)
+            s_npcWatch = false;
+            return;
+        }
         if (!s_npcWatch) return;
         // The Activate path, a session already running, or the camera turned off: nothing to do for this dialogue.
         if (!s_cfg.enabled || s_s.st != St::kOff || s_pending) {
@@ -1062,6 +1254,7 @@ namespace ConvoCam {
     }
 
     void OnGameLoad(const char* a_why) {
+        DropHeld(a_why);  // a menu held across a load belongs to a dialogue that no longer exists
         if (s_s.st != St::kOff) Event(std::format("{} - session dropped", a_why));
         ResetSession();
     }
